@@ -1,0 +1,55 @@
+[project]
+name = 'xtremeparse'
+description = 'XtremeParse: extreme-concurrency structured extraction — chunk, route, fan out, self-correct'
+readme = 'README.md'
+requires-python = '>=3.9'
+license = 'MIT'
+authors = [
+    {name = 'Flow Jiang', email = 'flowjzh@gmail.com'},
+]
+keywords = ['llm', 'extraction', 'json-schema', 'concurrency', 'structured-data', 'parsing']
+classifiers = [
+    'Development Status :: 3 - Alpha',
+    'Intended Audience :: Developers',
+    'Topic :: Software Development :: Libraries :: Python Modules',
+    'Programming Language :: Python :: 3',
+    'Programming Language :: Python :: 3.9',
+    'Programming Language :: Python :: 3.10',
+    'Programming Language :: Python :: 3.11',
+    'Programming Language :: Python :: 3.12',
+    'Programming Language :: Python :: 3.13',
+    'Programming Language :: Python :: 3 :: Only',
+    'Operating System :: OS Independent',
+    'Typing :: Typed',
+]
+dependencies = [
+    'xtremeflow>=0.4.4',
+]
+dynamic = ["version"]
+
+[project.optional-dependencies]
+evals = [
+    'pydantic-evals',
+]
+
+[dependency-groups]
+dev = [
+    'pytest>=8.4.2',
+    'pytest-asyncio>=0.24.0',
+    'pydantic-evals',
+]
+
+[project.urls]
+Homepage = 'https://github.com/flowjzh/xtremeparse'
+Repository = 'https://github.com/flowjzh/xtremeparse.git'
+Issues = 'https://github.com/flowjzh/xtremeparse/issues'
+
+[build-system]
+requires = ["hatchling", "uv-dynamic-versioning"]
+build-backend = "hatchling.build"
+
+[tool.hatch.version]
+source = "uv-dynamic-versioning"
+
+[tool.uv.sources]
+xtremeflow = { workspace = true }

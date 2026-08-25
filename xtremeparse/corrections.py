@@ -1,0 +1,166 @@
+"""Correction loop: whole-data validation, issue routing, bounded re-runs.
+
+The injected validator defines severity — whatever it feeds is retried.
+Issues route back to the specialist call that owns their path (per-item
+calls only when the item index is derivable), and re-runs carry the call's
+conversation history plus the routed feedback. Stops on clean, budget
+(default 2 rounds), or no progress (issue paths identical to the previous
+round). Never raises on bad data; unresolved issues return with the data.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import re
+from dataclasses import dataclass
+from typing import Optional
+
+from xtremeparse.contracts import AgentRunner, Validator
+from xtremeparse.paths import resolve, resolve_list
+from xtremeparse.executor import Call, Execution, dispatch_specialist, values_from_calls
+from xtremeparse.merge import merge
+from xtremeparse.prompting import json_len
+from xtremeparse.scheduling import TaskScheduler
+from xtremeparse.units import MISC
+
+MAX_ROUNDS = 2
+
+
+@dataclass
+class Round:
+    """One correction round's trace material."""
+
+    unit_path: str
+    item: Optional[int]
+    issue_paths: list
+
+
+async def correct(runner: AgentRunner, execution: Execution, *, validator: Validator,
+                  payload: str, scheduler: TaskScheduler,
+                  max_rounds: int = MAX_ROUNDS,
+                  specialist_instructions: str = None) -> tuple:
+    """Re-run failing calls with feedback until clean, budgeted, or
+    stuck. Returns ``(data, issues, rounds)`` — always lenient. Call
+    results mutate in place; re-merge from ``execution.calls`` rather
+    than the now-stale ``execution.values``. ``specialist_instructions``
+    must be the same override the first round ran with — a correction
+    round continues that call's conversation history."""
+    calls = execution.calls
+    data = merge(values_from_calls(calls))
+    issues = list(validator(data) or [])
+    rounds, seen = [], None
+    for _ in range(max_rounds):
+        paths = {i.path for i in issues}
+        if not issues or paths == seen:
+            break
+        seen = paths
+        routed = _route(calls, issues)
+        if not routed:
+            break
+        rounds.extend(Round(call.unit.path, call.item, [i.path for i in feedback])
+                      for call, feedback in routed)
+        tasks = [await dispatch_specialist(
+            runner, call.unit, payload=payload, scope=call.scope,
+            whole=call.strategy == 'whole', scheduler=scheduler,
+            specialist_instructions=specialist_instructions,
+            history=call.result.history if call.result else None,
+            feedback=feedback)
+            for call, feedback in routed]
+        for (call, _), result in zip(routed, await asyncio.gather(*tasks)):
+            call.result = result
+        data = merge(values_from_calls(calls))
+        issues = list(validator(data) or [])
+    return data, issues, rounds
+
+
+def _route(calls: list, issues: list) -> list:
+    """Map issues to owning calls. Longest unit path wins; per-item calls
+    match only their item; $misc is the fallback for unmatched paths."""
+    grouped = {}
+    for issue in issues:
+        if call := _owner(calls, issue.path):
+            grouped.setdefault(id(call), (call, []))[1].append(issue)
+    return list(grouped.values())
+
+
+def _owner(calls: list, path: str):
+    covering = [c for c in calls if c.unit.path != MISC and _under(path, c.unit.path)]
+    exact = [c for c in covering if c.item is None and not c.batch
+             or c.item is not None and _under(path, f'{c.unit.path}[{c.item}]')
+             or c.batch and (_item_index(path, c.unit.path) or -1) in c.batch]
+    pool = exact or [c for c in calls if c.unit.path == MISC]
+    return max(pool, key=lambda c: len(c.unit.path), default=None)
+
+
+def _item_index(path: str, unit_path: str):
+    m = re.fullmatch(rf'{re.escape(unit_path)}\[(\d+)\](\..*)?', path)
+    return int(m.group(1)) if m else None
+
+
+def _under(path: str, root: str) -> bool:
+    """``path`` is ``root`` itself or a proper child of it."""
+    return path == root or path.startswith(f'{root}.') or path.startswith(f'{root}[')
+
+
+def item_chars(budgets: dict, data: dict) -> dict:
+    """Per budgeted path: ``[(key, arranged, chars)]`` — one entry per
+    item for lists, one for the whole value otherwise, each carrying
+    its own arranged budget (a lone number covers every item; a short
+    list's last value covers items beyond it). The counting surface for
+    budget reads (trace, eval audits); the unit is the compact
+    serialized item JSON (keys and punctuation included) — exactly what
+    a specialist types and pays decode for. Overruns are ACCEPTED,
+    never retried: a retry costs a full extra decode, the very thing
+    budgets exist to save — budgets shape batch scheduling only."""
+    out = {}
+    for path, arranged in budgets.items():
+        if (value := resolve(data, path)) is None:
+            continue
+        values = arranged if isinstance(arranged, list) else [arranged]
+        entries = []
+        for i, item in (enumerate(value) if isinstance(value, list)
+                        else [(None, value)]):
+            budget = values[i] if i is not None and i < len(values) else values[-1]
+            entries.append((f'{path}[{i}]' if i is not None else path,
+                            budget, json_len(item)))
+        out[path] = entries
+    return out
+
+
+@dataclass
+class _CountIssue:
+    """A routed item count the merged data does not honour — typically a
+    whole-array call that collapsed instances into fewer entries."""
+
+    path: str
+    code: str = 'item_count'
+    message: str = ''
+    expected: int = None
+    got: int = None
+
+
+def count_issues(counts: dict, data: dict) -> list:
+    """The router's declared counts (map-validated ground truth) against
+    the merged arrays. A short array means instances were collapsed or
+    dropped — silent to schema validation (nothing declares minItems).
+    Items concatenate in item-index order, so a short array is missing
+    its tail: each missing index becomes its own issue and routes to the
+    call that owns it (a batch member or a single). One that survives a
+    retry stops via the no-progress rule."""
+    issues = []
+    for path, declared in counts.items():
+        actual = len(resolve_list(data, path))
+        if actual < declared:
+            issues += [_CountIssue(
+                f'{path}[{i}]', expected=declared, got=actual,
+                message=f'{path} is missing item {i} of {declared} — the '
+                        f'array holds {actual}; return every instance as '
+                        'its own entry, without splitting or duplicating')
+                       for i in range(actual, declared)]
+        elif actual > declared:
+            issues.append(_CountIssue(
+                path, expected=declared, got=actual,
+                message=f'declared {declared} items but the array holds '
+                        f'{actual} — merge the duplicates'))
+    return issues
+
