@@ -23,14 +23,23 @@ repeating (array) unit.
   - `code` is a letter code from the legend the prompt carries —
     assigned by the library in unit order; `-` is reserved.
   - `.item` on a repeating unit is the instance's index, numbered across
-    the WHOLE document in the order the map meets the instances.
+    the WHOLE document in the order the map meets the instances — unless
+    the unit's card declares a numbering order (e.g. reverse
+    chronological), which overrides document order: the map's ascending
+    lines then carry the card-ranked indexes, so a document listing the
+    instances in the opposite direction puts the largest index on its
+    first line.
 - A bare repeating code (`4-9 x`) means several instances share the run
   unsplit — that material is extracted once, whole.
 - A run may feed several DIFFERENT units at once, comma-joined
   (`5 x.0,y.0`) — a summary or cross-cutting unit rides the lines of the
   unit whose text it shares, item by item.
-- Several items of the SAME unit may share one line (`3 x.0,x.1,x.2`)
-  when chunk boundaries cannot separate the instances.
+- Items of the same unit that separable chunk boundaries CAN separate
+  must each get their own line — that is what fans the unit out into
+  parallel per-item calls with per-item budgets. Several items share
+  one line (`3 x.0,x.1,x.2`) ONLY when chunk boundaries cannot
+  separate the instances — one chunk holding material of two or more
+  of them; that material is extracted once, whole.
 - `-` on its own (never comma-joined) marks chunks irrelevant to every
   unit.
 

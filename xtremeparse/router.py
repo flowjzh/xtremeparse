@@ -76,12 +76,15 @@ Rules:
   order you meet them across the WHOLE document — a new item index per
   instance, early and late instances alike. When the unit's card
   describes a numbering order for its instances (e.g. 'number in
-  reverse chronological order'), follow the card's declared order
-  instead — the card's rule overrides document order; the count line
-  after the map reports the highest index plus one, 0 for a unit the
-  document does not contain at all. A unit with no text of its own
-  that only summarizes another unit declares just its source and
-  takes NO map lines:
+  reverse chronological order'), rank the instances under the card's
+  rule FIRST, however the card defines that order, then write the
+  map's ascending lines carrying those
+  ranked indexes — a document that lists the instances in the
+  opposite direction puts the LARGEST index on its first line; the
+  count line after the map reports the highest index plus one, 0
+  for a unit the document does not contain at all. A unit with no
+  text of its own that only summarizes another unit declares just
+  its source and takes NO map lines:
   "x = y @30%" — its items (and its count) mirror the source's
   material, but its budget is its own: set it for the lines the
   summary will emit — a ratio scales against the source material it
@@ -115,10 +118,13 @@ Rules:
   of the unit whose text it shares, item by item:
       5 x.0,y.0
       6 x.1,y.1
-- Several items of the SAME unit may share one line when the run holds
-  several instances that chunk boundaries cannot separate
-  ("3 x.0,x.1,x.2"): that material is then extracted once, whole.
-  Prefer one item per line whenever boundaries do separate instances.
+- Items of the SAME unit that separable chunk boundaries CAN separate
+  MUST each get their own line ("5-9 x.0" then "10-11 x.1"): each
+  item's call then fans out on its own and its budget scales against
+  its own material. Sharing one line ("3 x.0,x.1,x.2") is ONLY for a
+  run whose chunk boundaries cannot separate the instances — one chunk
+  holding material of two or more instances; that material is then
+  extracted once, whole.
 - Every declared item receives at least one chunk. A unit sharing
   another's run may repeat one item across several lines (one instance
   spanning what another unit splits into many).
@@ -130,8 +136,9 @@ Rules:
 - Before answering, verify: every repeating unit has a declaration line
   (its count "x: <n>" or its source "x = y"), the map covers 0..{top}
   exactly once in ascending non-overlapping lines, item indexes of
-  each unit run 0..used-1 with no gaps, and every count line matches
-  the map.
+  each unit run 0..used-1 with no gaps, every count line matches
+  the map, and a unit whose card declares an instance order numbers
+  its items by that order.
 
 Unit codes:
 {legend}
@@ -153,8 +160,9 @@ units not marked RECOUNT, their counts and map lines are final:
   item of that unit: choose that unit's code from the list, never a
   count, never map lines;
 - a count, "x: <n>", when the unit has its own text in the chunks —
-  then add its map lines in the routing DSL ("4-5 x.0,x.1"), one item
-  per instance, covering exactly its material.
+  then add its map lines in the routing DSL ("4 x.0", "5 x.1"), one
+  item per instance, covering exactly its material, numbered by the
+  card's declared order when the card declares one.
 0 only for a unit the document truly does not contain.
 
 Repeating units (code = unit card; RECOUNT = left at zero):
