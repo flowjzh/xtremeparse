@@ -131,3 +131,14 @@ def test_misc_sub_schema_wraps_its_fields():
 
 def test_deterministic():
     assert decompose(GOLDEN) == decompose(GOLDEN)
+
+
+def test_nullable_section_decomposes_like_a_plain_object():
+    # docxcast encodes an optional section as a type list — the unit
+    # walker must see through it, not file it under $misc
+    schema = {'type': 'object', 'properties': {
+        'info': {'type': ['object', 'null'], 'description': '基本信息', 'properties': {
+            'name': {'type': 'string', 'description': '姓名'},
+        }},
+    }}
+    assert [u.path for u in decompose(schema)] == ['info']

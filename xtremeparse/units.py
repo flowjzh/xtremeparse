@@ -36,14 +36,34 @@ class Unit:
         return self.card.splitlines()[0]
 
 
+def type_set(prop: JSONSchema) -> set:
+    """The property's JSON type names. docxcast marks an optional
+    section with a type list ('object' / 'null'); a plain property
+    carries one name."""
+    t = prop.get('type')
+    return set(t) if isinstance(t, list) else {t}
+
+
+def value_branches(prop: JSONSchema) -> list:
+    """The property's value subschemas. docxcast marks an optional
+    field as anyOf over the value and an empty-string alternative;
+    plain properties (and type-listed sections) carry the value at
+    the top level."""
+    if isinstance(prop.get('anyOf'), list):
+        return prop['anyOf']
+    return [prop]
+
+
 def decompose(schema: JSONSchema) -> list[Unit]:
     """Split a JSON Schema into object units, array units, and one
-    $misc scalar group. Same schema always yields the same units."""
+    $misc scalar group. Same schema always yields the same units.
+    Nullable sections (docxcast emits ``type: ["object", "null"]``)
+    decompose like plain objects."""
     units, misc = [], {}
     for name, prop in (schema.get('properties') or {}).items():
-        if prop.get('type') == 'object':
+        if 'object' in (types := type_set(prop)):
             units.extend(_object_units(name, prop))
-        elif prop.get('type') == 'array':
+        elif 'array' in types:
             units.append(_array_unit(name, prop))
         else:
             misc[name] = prop
@@ -55,7 +75,7 @@ def decompose(schema: JSONSchema) -> list[Unit]:
 
 def _object_units(path: str, prop: JSONSchema) -> list[Unit]:
     props = prop.get('properties') or {}
-    arrays = {k for k, v in props.items() if v.get('type') == 'array'}
+    arrays = {k for k, v in props.items() if 'array' in type_set(v)}
     rest = {k: v for k, v in props.items() if k not in arrays}
     units = []
     if rest:
