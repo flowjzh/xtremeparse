@@ -78,7 +78,9 @@ prompt produced them.
 - Repair and recount feedback messages — generated from validation
   errors, not prose.
 - The shared payload prefix (`content`) — byte-identical across every
-  call of one extraction; the provider KV cache depends on it.
+  call it serves (router: full text + full schema; specialists: the
+  text alone, each call's own partial schema riding beside its unit
+  card); the provider KV cache depends on the byte identity.
 
 ## Stability caveat
 

@@ -42,7 +42,7 @@ class Extractor:
         self.router_scheduler = router_scheduler  # …and then its own quota
         self.scheduler = scheduler or TaskScheduler(
             max_concurrency)  # injected: one process-global budget for
-        # every LLM call (argus-style TokenRateScheduler); the bare
+        # every LLM call (a TokenRateScheduler); the bare
         # default is a plain concurrency cap for tests and small hosts
         self.unit_strategy = unit_strategy or {}
         self.max_rounds = max_rounds
@@ -85,7 +85,7 @@ class Extractor:
                 estimated_tokens=estimate_tokens(payload, text))
             routing = await route_task
             budgets = {**(routing.budgets or {}), **self.output_budgets}
-            execution = await execute(self.runner, routing, payload=payload,
+            execution = await execute(self.runner, routing, payload=text,
                                       scheduler=self.scheduler,
                                       unit_strategy=self.unit_strategy,
                                       budgets=budgets,
@@ -95,7 +95,7 @@ class Extractor:
             # map-validated ground truth — a short array is collapsed
             # instances, invisible to schema validation; re-run it
             data, issues, rounds = await correct(
-                self.runner, execution, payload=payload,
+                self.runner, execution, payload=text,
                 scheduler=self.scheduler, max_rounds=self.max_rounds,
                 specialist_instructions=self.specialist_instructions,
                 validator=lambda d: list(validator(d) or [])

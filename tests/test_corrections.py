@@ -144,19 +144,19 @@ def test_item_chars_pairs_each_item_with_its_own_budget():
                                 {'company': '腾讯',
                                  'positions': [{'title': '工程师'}]}]}}
     assert item_chars({'career.jobs': [10, 20]}, data) == {
-        'career.jobs': [('career.jobs[0]', 10, 16),
-                        ('career.jobs[1]', 20, 46)]}
+        'career.jobs': [('career.jobs[0]', 10, 2),
+                        ('career.jobs[1]', 20, 5)]}
 
 
 def test_item_chars_lone_number_covers_every_item():
     assert item_chars({'career.jobs': 5}, {'career': {'jobs': [
         {'company': '腾讯'}, {'company': '阿里'}]}}) == {
-        'career.jobs': [('career.jobs[0]', 5, 16), ('career.jobs[1]', 5, 16)]}
+        'career.jobs': [('career.jobs[0]', 5, 2), ('career.jobs[1]', 5, 2)]}
 
 
 def test_item_chars_checks_non_list_values_whole_and_skips_missing():
     assert item_chars({'basic_info': 1}, {'basic_info': {'name': '张三'}}) == {
-        'basic_info': [('basic_info', 1, 13)]}
+        'basic_info': [('basic_info', 1, 2)]}
     assert item_chars({'jobs': 5}, {}) == {}
 
 

@@ -82,27 +82,26 @@ leading index.
 
 ## Budgets
 
-The suffix is the router's arrangement — its estimate of the characters
-each item's output JSON will run to (keys and punctuation included).
-It declares the estimate in the form that matches the extraction's
+The suffix is the router's arrangement — its estimate of the value
+characters each item's extraction will run to: the leaf values' own
+text, never key names, punctuation, or JSON structure. It declares
+the estimate in the form that matches the extraction's
 shape:
 
 - `@<n>` — an absolute cap, for fixed-length summaries and anything
   else.
 - `@<n>%` — a ratio of the item's mapped material, for verbatim or
   unbounded-refinement extraction (`@100%` is a verbatim copy; one
-  shared ratio scales per item against each item's own material). The
-  resolved estimate adds the item schema's skeleton (key names and
-  punctuation, computed from the schema) on top — the ratio covers the
-  content, the structure is code-known.
+  shared ratio scales per item against each item's own material —
+  co-chunked items' material splits across them).
 - `@<avg>x<count>` — an average keyword length times the document's
   keyword count, for lists of short same-shaped entries. One shared
   entry is the document-level total: the resolver splits it across the
-  items it covers.
+  items it covers, and audits judge the total, not the shares.
 
-The library resolves every form to absolute characters against the
-routed material before use; the declared forms ride in the trace's
-router budgets verbatim. Budgets shape output through batch scheduling
+The library resolves every form to absolute value characters against
+the routed material before use; the declared forms ride in the
+trace's router budgets verbatim. Budgets shape output through batch
 (consecutive small items coalesce into one shared call while their
 accumulated budget fits the per-call capacity) and are never enforced
 on the output. Overruns are accepted — a retry would cost a full

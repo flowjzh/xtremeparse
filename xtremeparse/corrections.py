@@ -19,7 +19,7 @@ from xtremeparse.contracts import AgentRunner, Validator
 from xtremeparse.paths import resolve, resolve_list
 from xtremeparse.executor import Call, Execution, dispatch_specialist, values_from_calls
 from xtremeparse.merge import merge
-from xtremeparse.prompting import json_len
+from xtremeparse.prompting import value_chars
 from xtremeparse.scheduling import TaskScheduler
 from xtremeparse.units import MISC
 
@@ -107,11 +107,12 @@ def item_chars(budgets: dict, data: dict) -> dict:
     item for lists, one for the whole value otherwise, each carrying
     its own arranged budget (a lone number covers every item; a short
     list's last value covers items beyond it). The counting surface for
-    budget reads (trace, eval audits); the unit is the compact
-    serialized item JSON (keys and punctuation included) — exactly what
-    a specialist types and pays decode for. Overruns are ACCEPTED,
-    never retried: a retry costs a full extra decode, the very thing
-    budgets exist to save — budgets shape batch scheduling only."""
+    budget reads (trace, eval audits); the unit is the item's
+    extracted VALUE characters — the leaf values' own text, keys and
+    punctuation never counted, exactly what a budget declares.
+    Overruns are ACCEPTED, never retried: a retry costs a full extra
+    decode, the very thing budgets exist to save — budgets shape batch
+    scheduling only."""
     out = {}
     for path, arranged in budgets.items():
         if (value := resolve(data, path)) is None:
@@ -122,7 +123,7 @@ def item_chars(budgets: dict, data: dict) -> dict:
                         else [(None, value)]):
             budget = values[i] if i is not None and i < len(values) else values[-1]
             entries.append((f'{path}[{i}]' if i is not None else path,
-                            budget, json_len(item)))
+                            budget, value_chars(item)))
         out[path] = entries
     return out
 

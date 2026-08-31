@@ -21,19 +21,24 @@ def budget_result(groups, data):
     return SimpleNamespace(data=data, trace=SimpleNamespace(router={}, groups=groups))
 
 
+def kw_result(groups, data, declared):
+    return SimpleNamespace(data=data, trace=SimpleNamespace(
+        router={'budgets': declared}, groups=groups))
+
+
 def test_budget_fit_judges_each_item_not_the_mean():
     # one item dead-on, one at 0.2: the mean (0.6) would pass — the item may not
-    spread = budget_result([{'unit': 'career.jobs', 'budget': 200, 'item': None}],
+    spread = budget_result([{'unit': 'career.jobs', 'budget': 20, 'item': None}],
                            {'career': {'jobs': [{'company': '十' * 10},
                                                 {'company': '腾讯'}]}})
     verdict = BudgetFit().evaluate(ctx(spread))
     assert verdict.value is False
-    assert 'jobs[1]' in verdict.reason and '0.08' in verdict.reason
+    assert 'jobs[1]' in verdict.reason and '0.1' in verdict.reason
 
 
 def test_budget_fit_judges_a_per_item_budget_list():
-    # item 0 at its own 12 (2.0, the upper edge), item 1 far under its own 200 (0.08)
-    result = budget_result([{'unit': 'career.jobs', 'budget': [12, 200], 'item': None}],
+    # item 0 dead-on its own 10, item 1 far under its own 20 (0.1)
+    result = budget_result([{'unit': 'career.jobs', 'budget': [10, 20], 'item': None}],
                            {'career': {'jobs': [{'company': '十' * 10},
                                                 {'company': '腾讯'}]}})
     verdict = BudgetFit().evaluate(ctx(result))
@@ -41,12 +46,12 @@ def test_budget_fit_judges_a_per_item_budget_list():
 
 
 def test_budget_fit_band_and_clean_pass():
-    close = budget_result([{'unit': 'career.jobs', 'budget': 8, 'item': 0}],
-                          {'career': {'jobs': [{'company': '腾讯'}]}})  # 16/8
-    tight = budget_result([{'unit': 'career.jobs', 'budget': 2, 'item': 0}],
-                          {'career': {'jobs': [{'company': '腾讯集团云计算'}]}})  # 21/2
+    close = budget_result([{'unit': 'career.jobs', 'budget': 2, 'item': 0}],
+                          {'career': {'jobs': [{'company': '腾讯'}]}})  # 2/2
+    tight = budget_result([{'unit': 'career.jobs', 'budget': 3, 'item': 0}],
+                          {'career': {'jobs': [{'company': '腾讯集团云计算'}]}})  # 7/3
     loose = budget_result([{'unit': 'career.jobs', 'budget': 200, 'item': 0}],
-                          {'career': {'jobs': [{'company': '腾讯'}]}})  # 16/200
+                          {'career': {'jobs': [{'company': '腾讯'}]}})  # 2/200
     unbudgeted = budget_result([{'unit': 'career.jobs', 'budget': None, 'item': 0}], {})
     assert BudgetFit().evaluate(ctx(close)).value is True
     assert BudgetFit().evaluate(ctx(tight)).value is False
@@ -54,23 +59,38 @@ def test_budget_fit_band_and_clean_pass():
     assert 'no budgets declared' in BudgetFit().evaluate(ctx(unbudgeted)).reason
 
 
+def test_budget_fit_judges_a_keyword_form_on_its_total():
+    # uneven keyword lengths are the norm: 45+5+10 = 60 against a
+    # declared 20x3 (60) — per-item shares (20 each) would flag two
+    # of the three items, the total reads 1.0
+    groups = [{'unit': 'certs', 'budget': [20, 20, 20], 'item': None,
+               'batch': [0, 1, 2]}]
+    data = {'certs': ['x' * 45, 'x' * 5, 'x' * 10]}
+    verdict = BudgetFit().evaluate(ctx(kw_result(groups, data, {'certs': '20x3'})))
+    assert verdict.value is True, verdict.reason
+    # a declared total ~4x the real one fails the shared band
+    short = {'certs': ['x' * 5, 'x' * 5, 'x' * 5]}  # 15/60 = 0.25
+    verdict = BudgetFit().evaluate(ctx(kw_result(groups, short, {'certs': '20x3'})))
+    assert verdict.value is False and '0.25' in verdict.reason
+
+
 def test_budget_fit_judges_each_item_against_its_own_group_budget():
     # the corpus shape: per-item groups each carrying a different number —
     # a unit-keyed dict would judge every item by the LAST group's budget.
-    # Item JSON is {"company":"…"} = 14 + len(value) serialized chars.
-    groups = [{'unit': 'career.jobs', 'budget': 80, 'item': 0},
-              {'unit': 'career.jobs', 'budget': 600, 'item': 1},
-              {'unit': 'career.jobs', 'budget': [70, 100], 'item': None,
+    # The unit is value characters: a job's cost is its company's length.
+    groups = [{'unit': 'career.jobs', 'budget': 40, 'item': 0},
+              {'unit': 'career.jobs', 'budget': 700, 'item': 1},
+              {'unit': 'career.jobs', 'budget': [50, 60], 'item': None,
                'batch': [2, 3]}]
     data = {'career': {'jobs': [
-        {'company': '十' * 20},       # 34/80
-        {'company': 'x' * 686},       # 700/600 own (1.17); 700/150 poisoned (4.67)
-        {'company': '十' * 20},       # 34/70
-        {'company': '十' * 30}]}}     # 44/100
+        {'company': '十' * 20},       # 20/40
+        {'company': 'x' * 686},       # 686/700 own (0.98); 686/40 poisoned
+        {'company': '十' * 20},       # 20/50
+        {'company': '十' * 30}]}}     # 30/60
     verdict = BudgetFit().evaluate(ctx(budget_result(groups, data)))
     assert verdict.value is True, verdict.reason
     # the same items judged against one unit-wide number would fail
-    poisoned = budget_result([{'unit': 'career.jobs', 'budget': 150, 'item': None}],
+    poisoned = budget_result([{'unit': 'career.jobs', 'budget': 40, 'item': None}],
                              data)
     assert BudgetFit().evaluate(ctx(poisoned)).value is False
 

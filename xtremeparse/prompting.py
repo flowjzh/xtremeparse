@@ -10,9 +10,10 @@ from xtremeparse.contracts import JSONSchema
 
 
 SPECIALIST_INSTRUCTIONS = '''You are a structured-extraction specialist. Extract this unit's fields
-from the assigned material below. The full document and JSON Schema in the
-shared context provide background; extract only what the unit card asks
-for, from the assigned material. Output only the structured data.
+from the assigned material below. The full document in the shared
+context provides background; extract only what the unit card asks
+for, from the assigned material. Output only the structured data of
+the output schema stated at the end of this message.
 
 Unit:
 
@@ -39,16 +40,26 @@ def provenance(template) -> str:
 
 
 def shared_payload(text: str, schema: JSONSchema) -> str:
-    """The byte-identical content prefix every agent call of one
-    extraction shares (full text + full schema), so the provider's KV
-    cache hits across the router and all specialists behind it."""
+    """The byte-identical content prefix the ROUTER's call carries —
+    full text plus the full schema, whose field descriptions feed the
+    budget ratios. Specialists carry the text alone (their own partial
+    schema rides per call beside the unit card), so the schema's bytes
+    are paid once, by the one call that reads them."""
     return f'{text}\n\n---\nJSON Schema:\n{json.dumps(schema, ensure_ascii=False, sort_keys=True)}'
 
 
-def json_len(value) -> int:
-    """The compact serialized length of a value — keys and punctuation
-    included — exactly what a specialist types and pays decode for."""
-    return len(json.dumps(value, ensure_ascii=False, separators=(',', ':')))
+def value_chars(value) -> int:
+    """The characters of a value's leaf content — strings by length,
+    containers by the sum of their members' value characters; keys and
+    punctuation never count. This is the unit a budget declares and is
+    audited in."""
+    if isinstance(value, str):
+        return len(value)
+    if isinstance(value, dict):
+        return sum(value_chars(v) for v in value.values())
+    if isinstance(value, list):
+        return sum(value_chars(v) for v in value)
+    return len(str(value))
 
 
 CHARS_PER_TOKEN = 1.6  # zh-heavy calibration, same heuristic as argus

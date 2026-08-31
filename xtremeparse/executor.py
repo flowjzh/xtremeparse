@@ -51,9 +51,10 @@ async def execute(runner: AgentRunner, routing: Routing, *, payload: str,
                   specialist_instructions: str = None,
                   batch_cap: int = BATCH_BUDGET_CAP) -> Execution:
     """Run specialist calls concurrently and collect values keyed by unit
-    path. ``payload`` must be the byte-identical shared prefix the router
-    was called with — that identity is what makes the provider KV cache
-    hit for the whole fleet."""
+    path. ``payload`` must be the byte-identical content prefix every
+    specialist of one extraction shares — the document text; each
+    call's own partial schema rides per call beside its unit card, so
+    the full document schema's bytes are never re-sent here."""
     calls, tasks = [], []
     for unit, groups in _by_unit(routing.groups):
         strategy = _strategy(unit, groups, unit_strategy or {}) \
@@ -179,8 +180,8 @@ def _batched(unit: Unit, item_rows, budgets: dict,
 def _strategy(unit: Unit, groups: list, unit_strategy: dict) -> Strategy:
     """Decode time is output-bound, so separable items fan out — parallel
     small streams beat one long one even when the material is short
-    (measured 18s -> 8s on the corpus' smallest file). Whole is for what
-    per-item scoping cannot split: co-chunked instances, single items."""
+    (measured 18s -> 8s). Whole is for what per-item scoping cannot
+    split: co-chunked instances, single items."""
     if override := unit_strategy.get(unit.path):
         if override not in ('whole', 'per-item'):
             raise ValueError(f'unknown unit_strategy for {unit.path}: {override!r}')

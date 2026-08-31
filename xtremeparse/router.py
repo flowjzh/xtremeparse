@@ -31,8 +31,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 from xtremeparse.contracts import AgentRunner, JSONSchema
-from xtremeparse.prompting import json_len
-from xtremeparse.units import Unit
+from xtremeparse.units import Unit, type_set, value_branches
 
 NONE = '-'
 # placeholders every prompt template must carry (host overrides are
@@ -48,9 +47,9 @@ _BUDGET = re.compile(r'@\s*([0-9][0-9xX%,\s]*)')
 def _budget(token: str):
     """One declared suffix entry: 'n%' a ratio of the item's mapped
     material, 'nxm' an average keyword length times a keyword count,
-    'n' an absolute cap (the scaled forms add the item schema's
-    skeleton upstream). None on garbage — the suffix is tolerated,
-    never checked."""
+    'n' an absolute cap — every form counts extracted value
+    characters only, never keys or punctuation. None on garbage — the
+    suffix is tolerated, never checked."""
     if m := re.fullmatch(r'(\d+)%', token):
         return Budget('ratio', int(m.group(1)))
     if m := re.fullmatch(r'(\d+)[xX](\d+)', token):
@@ -58,6 +57,15 @@ def _budget(token: str):
     if token.isdigit():
         return Budget('abs', int(token))
     return None
+
+def budget_kind(token: str) -> Optional[str]:
+    """The declared suffix's form — 'abs', 'ratio', or 'kw' — or None
+    on garbage. The one grammar for budget tokens: routing parses the
+    declaration and the audit reads the same tokens back from the
+    trace."""
+    b = _budget(token)
+    return b.kind if b else None
+
 
 _INSTRUCTIONS = '''You route document chunks to extraction units. Output the segment
 map: one line per contiguous run of chunks ("4-9 x.1" — start-end
@@ -91,26 +99,37 @@ Rules:
   summarizes, so a terse summary sits well below 100%.
 - A declaration line ends with an output-budget suffix — one entry per
   item in item-index order ("x: 3 @100%,80%,50%", or "x: 3 @100%" when
-  items share one): an estimate of the characters that item's output
-  JSON will run to. A ratio, "@<n>%", is the DEFAULT form — the
-  output as that percentage of the item's mapped material. It fits
+  items share one): an estimate of the characters the item's extracted
+  VALUES run to — the values' own text, never key names, punctuation,
+  or JSON structure. A ratio, "@<n>%", is the DEFAULT form — the
+  values as a percentage of ALL the text the item's mapped lines
+  carry, the parts no field can hold included — never just the
+  relevant-looking parts. It fits
   every item whose output mirrors the material field by field: the
   same facts, carried into the schema's fields. Set the ratio from
   the field descriptions in the JSON Schema (the shared context):
-  fields told to keep every listed entry or every figure stay near
-  100%, fields told to summarize or compress sit well below (say
-  30-50%); a verbatim copy is "@100%". Two shapes take another form
-  instead:
-  - a list of short, same-shaped entries (certificates, skills,
-    tags): the average length of one entry times the number of
-    entries the document holds, "@<avg>x<count>" — a list of 3
-    certificates averaging 20 characters is "@20x3";
+  fields told to keep every listed entry or every figure keep their
+  fields' own content; a verbatim copy of the whole material is
+  "@100%". An item whose lines are mostly narration no field can
+  hold sits well under half; an item whose lines are all
+  field-bound content stays near full — when items differ like
+  that, give each its own percentage instead of one shared number
+  ("@30%,90%"). Fields told to summarize or compress sit well
+  below (say 30-50%). A card saying an entry holds only certain
+  fields prices THOSE fields. Two
+  shapes take a non-ratio form instead:
+  - a list of names: average the entries' own lengths as they
+    stand in the assigned chunks, and multiply by the number of
+    entries the document holds. An entry's length is the field
+    value's own text — the name alone, not the labels, headings,
+    or grades printed beside it in the chunk. The length counts
+    CHARACTERS, never words — word counts understate a name
+    badly;
   - a fixed-length summary — the card or schema pins the output size
     ("one line", "about 100 characters") — or an item whose output
     does not mirror the material at all: a plain character estimate,
-    "@<n>" ("x: 3 @300"). Scalar fields cost their key name plus
-    four punctuation characters and the value: a date ≈7, a name
-    ≈10, a one-line title ≈20.
+    "@<n>" ("x: 3 @300"). A value's cost is its own text alone:
+    a date ≈7, a name ≈10, a one-line title ≈20.
   Every declaration line carries one.
 - Map lines ascend, never overlap, and together cover EVERY chunk id in 0..{top}.
 - A run may feed several DIFFERENT units at once: comma-join their
@@ -193,16 +212,18 @@ class Group:
 class Routing:
     groups: list
     raw: dict  # normalized assignments, counts, budgets and code legend, for the trace
-    budgets: dict = None  # unit path → resolved per-item output estimate in
-    # absolute chars (the declared forms ride in raw['budgets'])
+    budgets: dict = None  # unit path → resolved per-item value-char
+    # estimate (the declared forms ride in raw['budgets'])
 
 
 @dataclass(frozen=True)
 class Budget:
     """One declared output estimate: 'abs' a fixed character cap,
     'ratio' a percentage of the item's mapped material, 'kw' an
-    average keyword length times a keyword count — both scaled forms
-    sit on top of the item schema's skeleton."""
+    average keyword length times a keyword count — every form counts
+    the characters of the item's extracted VALUES only: key names,
+    punctuation, and JSON structure are never the model's to
+    estimate."""
 
     kind: str
     value: int
@@ -211,30 +232,28 @@ class Budget:
     def __post_init__(self):
         assert self.kind in ('abs', 'ratio', 'kw'), self.kind
 
-    def chars(self, material: int, skeleton: int) -> int:
-        """One item's absolute estimate — a ratio scales against the
-        mapped material (whitespace stripped) it is declared over, a
-        keyword total adds the same structure overhead; key names and
-        punctuation are code-known, not the model's to estimate."""
+    def chars(self, material: int) -> int:
+        """One item's absolute estimate in value characters — a ratio
+        scales against the mapped material (whitespace stripped) it is
+        declared over, a keyword total is its own sum."""
         if self.kind == 'ratio':
-            return skeleton + round(self.value / 100 * material)
+            return round(self.value / 100 * material)
         if self.kind == 'kw':
-            return self.value * self.count + skeleton
+            return self.value * self.count
         return self.value
 
-    def per_item(self, material: dict, skeleton: int) -> list:
+    def per_item(self, material: dict) -> list:
         """The estimate for every item this declaration covers: a
         shared ratio scales against each item's own material, a shared
         keyword total splits across the items it covers, anything else
         is one number covering all (the executor repeats a lone
         value)."""
         if self.kind == 'ratio' and material:
-            return [self.chars(material[i], skeleton)
+            return [self.chars(material[i])
                     for i in sorted(material, key=lambda k: (k is None, k))]
         if self.kind == 'kw' and material:
-            share = round(self.value * self.count / len(material))
-            return [share + skeleton] * len(material)
-        return [self.chars(0, skeleton)]
+            return [round(self.value * self.count / len(material))] * len(material)
+        return [self.chars(0)]
 
     def __str__(self):
         if self.kind == 'ratio':
@@ -261,6 +280,31 @@ def _listing(chunks: list[str]) -> str:
                      for i, c in enumerate(chunks))
 
 
+def _name_list(unit: Unit) -> bool:
+    """The unit's items are each one string value and nothing else —
+    the mechanical shape of a list of names: either the item schema is
+    a plain string (a scalar repeat) or an object carrying exactly one
+    string field. The
+    keyword budget form is decided HERE, in code, so the per-unit
+    legend marker is a fact, not a judgement call the model can flip
+    on. Array units only: a single-string ``$misc`` (a root schema
+    with one scalar field) or a single-string summary unit is not a
+    name list."""
+    if unit.kind != 'array':
+        return False
+    sub = unit.sub_schema
+    if 'string' in type_set(sub):
+        return True
+    if 'object' not in type_set(sub):
+        return False
+    props = sub.get('properties') or {}
+    if len(props) != 1:
+        return False
+    branches = value_branches(next(iter(props.values())))
+    return sum(b.get('type') == 'string' for b in branches) == 1 \
+        and len(branches) <= 2
+
+
 async def route(runner: AgentRunner, *, payload: str,
                 units: list[Unit], chunks: list[str],
                 instructions: str = None,
@@ -280,6 +324,9 @@ async def route(runner: AgentRunner, *, payload: str,
         # what a unit collects — and for recognizing a unit that only
         # summarizes another (its card names the unit it mirrors)
         legend='\n'.join(f'{code} = {unit.header}'
+                         + (' — a list of names: its budget is the keyword '
+                            'form "@<avg>x<count>", never a percentage'
+                            if _name_list(unit) else '')
                          for code, unit in by_code.items()),
         chunks=_listing(chunks))
     schema: JSONSchema = {'type': 'string',
@@ -343,9 +390,7 @@ async def route(runner: AgentRunner, *, payload: str,
                 budgets_by_path,
                 _material(assignments, chunks,
                           {by_code[d].path: by_code[s].path
-                           for d, s in derived.items()}) if budgets_by_path else {},
-                {by_code[c].path: _skeleton(by_code[c].sub_schema)
-                 for c in budgets})
+                           for d, s in derived.items()}) if budgets_by_path else {})
             return Routing(_groups(segments, by_code, chunks, derived),
                            {'counts': {by_code[c].path: k for c, k in counts.items()}
                                       | {by_code[d].path: counts[s]
@@ -499,37 +544,17 @@ def _material(assignments, chunks, derived: dict) -> dict:
     return material
 
 
-def _empty(schema) -> dict | list | str:
-    """The compact JSON of an empty value of this schema — the
-    recursive sibling of json_len: nested objects cost their keys,
-    an array counts one empty entry, the rest of the entries are
-    content the ratio covers."""
-    if props := schema.get('properties'):
-        return {k: _empty(v) for k, v in props.items()}
-    if schema.get('type') == 'array':
-        return [_empty(schema.get('items') or {})]
-    return ''
-
-
-def _skeleton(schema) -> int:
-    """The compact JSON length of an empty item — key names and
-    punctuation every ratio's content estimate must add on top of."""
-    return json_len(_empty(schema))
-
-
-def _resolved(budgets, material, skeletons) -> dict:
-    """Absolute per-item estimates the executor compares against its
-    batch capacity. A lone Budget expands to every item it covers; a
-    list carries each item's own declaration."""
+def _resolved(budgets, material) -> dict:
+    """Absolute per-item value-char estimates the executor compares
+    against its batch capacity. A lone Budget expands to every item it
+    covers; a list carries each item's own declaration."""
     out = {}
     for path, declared in budgets.items():
-        skeleton = skeletons[path]
         if isinstance(declared, Budget):
-            values = declared.per_item(material.get(path, {}), skeleton)
+            values = declared.per_item(material.get(path, {}))
         else:
             by_item = material.get(path, {})
-            values = [b.chars(by_item.get(i, 0), skeleton)
-                      for i, b in enumerate(declared)]
+            values = [b.chars(by_item.get(i, 0)) for i, b in enumerate(declared)]
         out[path] = values[0] if len(values) == 1 else values
     return out
 

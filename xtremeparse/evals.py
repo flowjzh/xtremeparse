@@ -14,6 +14,7 @@ from xtremeparse.corrections import item_chars
 from xtremeparse.evalkit import per_item_budgets, router_overlap
 from xtremeparse.judging import JUDGE_PLACEHOLDERS, judge
 from xtremeparse.prompting import check_placeholders
+from xtremeparse.router import budget_kind
 
 
 class RouterOverlap(Evaluator):
@@ -29,26 +30,40 @@ class RouterOverlap(Evaluator):
 
 class BudgetFit(Evaluator):
     """Allocation audit: the model ARRANGES each budget — its estimate
-    of the characters an item's output JSON will run to, resolved by
-    code against the routed material — so actuals should land near
-    the arranged number. The lower edge is loose on purpose: an idle
-    estimate on a naturally short item is harmless (output runs at
-    natural size either way). The upper edge flags arrangements so
-    far off the router clearly wasn't counting. Per item: a mean
-    would hide spread."""
+    of the value characters an item's extraction will run to, resolved
+    by code against the routed material — so actuals (the extracted
+    values' own characters, keys never counted) should land near the
+    arranged number. Ratio and absolute forms are judged per item: a
+    mean would hide spread. A keyword form is judged on its TOTAL —
+    the entries' length sum against the declared average-times-count:
+    the declaration is the model's own reading of the entries, so the
+    same band as every other form applies. The lower edge is loose on
+    purpose: an idle estimate on a naturally short item is harmless
+    (output runs at natural size either way). The upper edge flags
+    arrangements so far off the router clearly wasn't counting."""
 
     BAND = (0.4, 2.0)
 
     def evaluate(self, ctx: EvaluatorContext):
         ratios, wild = {}, []
         budgets = per_item_budgets(ctx.output.trace.groups)
+        declared = (ctx.output.trace.router or {}).get('budgets') or {}
         for path, entries in item_chars(budgets, ctx.output.data).items():
             unit = path.rsplit('.', 1)[-1]
-            judged = [e for e in entries if e[1] and e[2]]  # budgeted, non-empty
-            if rs := [round(chars / budget, 2) for _, budget, chars in judged]:
+            tokens = declared.get(path)
+            tokens = [str(t) for t in tokens] if isinstance(tokens, list) else [str(tokens)]
+            is_kw = [budget_kind(tokens[min(i, len(tokens) - 1)]) == 'kw'
+                     for i in range(len(entries))]
+            checks = [(key, budget, chars) for i, (key, budget, chars)
+                      in enumerate(entries) if not is_kw[i] and budget and chars]
+            if kw := [e for i, e in enumerate(entries) if is_kw[i] and e[1]]:
+                checks.append((f'{path} (kw total)',
+                               sum(b for _, b, _ in kw),
+                               sum(c for _, _, c in kw)))
+            if rs := [round(chars / budget, 2) for _, budget, chars in checks if budget]:
                 ratios[unit] = f'{min(rs)}' if len(rs) == 1 else f'{min(rs)}-{max(rs)}'
-            wild += [key.rsplit('.', 1)[-1] for key, budget, chars in judged
-                     if not self.BAND[0] <= chars / budget <= self.BAND[1]]
+            wild += [key.rsplit('.', 1)[-1] for key, budget, chars in checks
+                     if budget and not self.BAND[0] <= chars / budget <= self.BAND[1]]
         return EvaluationReason(
             not wild, f'act/budget {ratios or "no budgets declared"}'
                       + (f', wild: {wild}' if wild else ''))

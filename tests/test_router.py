@@ -3,7 +3,7 @@
 import pytest
 
 from xtremeparse.router import (NONE, RECOUNT_PLACEHOLDERS, ROUTE_PLACEHOLDERS,
-                                RouterError, Group, _skeleton, route)
+                                RouterError, Group, _name_list, route)
 from xtremeparse.units import MISC, decompose
 from tests.helpers import ScriptedRunner, agent_result
 
@@ -22,10 +22,6 @@ SCHEMA = {
 UNITS = decompose(SCHEMA)
 CHUNKS = ['姓名张三', '第一段：腾讯', '第二段：阿里', '无关页脚']
 PAYLOAD = '全文\n\n---\nJSON Schema: ...'
-# the jobs item schema's compact empty JSON — key names and punctuation
-# overhead; computed from the production helper so the encoding lives
-# in one place (the summary item below shares the same shape)
-JOBS_SKELETON = _skeleton(UNITS[1].sub_schema)
 
 
 def runner_ok():
@@ -474,11 +470,11 @@ async def test_per_item_budget_list_parses():
     assert routing.raw['budgets'] == {'jobs': ['500', '300']}
 
 
-async def test_ratio_budget_resolves_content_plus_schema_skeleton():
+async def test_ratio_budget_resolves_value_chars_against_material():
     # one shared ratio scales per item: chunk 1 is '第一段：腾讯' (6 chars),
-    # chunk 2 is '第二段：阿里' (6 chars), plus the item schema's skeleton
+    # chunk 1 is '第一段：腾讯' (6 value chars), chunk 2 likewise
     routing = await route_with('0 a\n1 b.0\n2 b.1\n3 -\nb: 2 @100%')
-    assert routing.budgets == {'jobs': [JOBS_SKELETON + 6, JOBS_SKELETON + 6]}
+    assert routing.budgets == {'jobs': [6, 6]}
     assert routing.raw['budgets'] == {'jobs': '100%'}
 
 
@@ -486,28 +482,27 @@ async def test_shared_chunk_material_splits_across_items():
     # co-chunked items share one run ("1-2 b.0,b.1") but each mirrors
     # its own slice: the 12 chars split across the two, 6 apiece
     routing = await route_with('0 a\n1-2 b.0,b.1\n3 -\nb: 2 @100%')
-    assert routing.budgets == {'jobs': [JOBS_SKELETON + 6, JOBS_SKELETON + 6]}
+    assert routing.budgets == {'jobs': [6, 6]}
 
 
 async def test_keyword_budget_splits_its_document_total_across_items():
     # 20x3 is the document's total (60): two mapped items share it,
-    # each carrying the item schema's skeleton on top
     routing = await route_with('0 a\n1 b.0\n2 b.1\n3 -\nb: 2 @20x3')
-    assert routing.budgets == {'jobs': [JOBS_SKELETON + 30, JOBS_SKELETON + 30]}
+    assert routing.budgets == {'jobs': [30, 30]}
     assert routing.raw['budgets'] == {'jobs': '20x3'}
 
 
 async def test_mixed_budget_forms_resolve_per_item():
     routing = await route_with('0 a\n1 b.0\n2 b.1\n3 -\nb: 2 @50%,20x3')
-    assert routing.budgets == {'jobs': [JOBS_SKELETON + 3, JOBS_SKELETON + 60]}
+    assert routing.budgets == {'jobs': [3, 60]}
     # a listed keyword entry is its item's own total, not split
     assert routing.raw['budgets'] == {'jobs': ['50%', '20x3']}
 
 
 async def test_ratio_budget_on_a_derived_line_scales_against_the_source():
     routing = await route_shared('0 a\n1 b.0,c.0\n2 b.1,c.1\n3 -\nb: 2\nc = b @50%')
-    assert routing.budgets == {'summary': [JOBS_SKELETON + 3, JOBS_SKELETON + 3]}
-    # half of each source item, plus the summary item's own skeleton
+    assert routing.budgets == {'summary': [3, 3]}
+    # half of each source item's material, in value characters
     assert routing.raw['budgets'] == {'summary': '50%'}
 
 
@@ -528,13 +523,36 @@ async def test_budget_on_a_map_line_is_rejected():
         await route(runner, payload=PAYLOAD, units=UNITS, chunks=CHUNKS)
 
 
+def test_name_list_predicate():
+    """One string field per item is the mechanical name-list shape;
+    optional (anyOf-wrapped) strings count, two fields or a scalar
+    $misc do not."""
+    def unit(kind, sub_schema):
+        from xtremeparse.units import Unit
+        return Unit(path='x', kind=kind, sub_schema=sub_schema, card='c')
+
+    assert _name_list(unit('array', {'type': 'object', 'properties': {
+        'name': {'type': 'string'}}}))
+    assert _name_list(unit('array', {'type': 'object', 'properties': {
+        'name': {'anyOf': [{'type': 'string'}, {'enum': ['']}]}}}))
+    assert _name_list(unit('array', {'type': 'string'}))  # scalar repeat
+    assert not _name_list(unit('array', {'type': 'object', 'properties': {
+        'name': {'type': 'string'}, 'date': {'type': 'string'}}}))
+    assert not _name_list(unit('array', {'type': 'object', 'properties': {
+        'count': {'type': 'integer'}}}))
+
+    assert not _name_list(unit('scalar', {'type': 'object', 'properties': {
+        'name': {'type': 'string'}}}))
+
+
 async def test_prompt_carries_the_budget_rule():
     runner = runner_ok()
     await route(runner, payload=PAYLOAD, units=UNITS, chunks=CHUNKS)
     assert '"x: 3 @100%,80%,50%"' in runner.calls[0]['instructions']
     assert '"x: 3 @300"' in runner.calls[0]['instructions']  # the abs example
     assert '"@<n>%"' in runner.calls[0]['instructions']
-    assert '"@20x3"' in runner.calls[0]['instructions']
+    assert '"@20x3"' not in runner.calls[0]['instructions']  # no numeric anchor
+    assert 'never words' in runner.calls[0]['instructions']  # char arithmetic stays
 
 
 async def test_a_repaired_error_that_reappears_is_called_out():
