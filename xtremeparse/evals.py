@@ -37,12 +37,15 @@ class BudgetFit(Evaluator):
     mean would hide spread. A keyword form is judged on its TOTAL —
     the entries' length sum against the declared average-times-count:
     the declaration is the model's own reading of the entries, so the
-    same band as every other form applies. The lower edge is loose on
-    purpose: an idle estimate on a naturally short item is harmless
-    (output runs at natural size either way). The upper edge flags
-    arrangements so far off the router clearly wasn't counting."""
+    same band as every other form applies. Both edges carry an
+    absolute slack: an entry's schema fields cost a fixed overhead
+    the material cannot predict (dates, a distilled name beside a
+    verbatim description) — clearing the band by less than that
+    overhead in absolute characters is the same harmless case."""
 
     BAND = (0.4, 2.0)
+    SLACK = 25  # characters either way; small items clear the band
+    # by less than their fields' own fixed cost
 
     def evaluate(self, ctx: EvaluatorContext):
         ratios, wild = {}, []
@@ -63,7 +66,8 @@ class BudgetFit(Evaluator):
             if rs := [round(chars / budget, 2) for _, budget, chars in checks if budget]:
                 ratios[unit] = f'{min(rs)}' if len(rs) == 1 else f'{min(rs)}-{max(rs)}'
             wild += [key.rsplit('.', 1)[-1] for key, budget, chars in checks
-                     if budget and not self.BAND[0] <= chars / budget <= self.BAND[1]]
+                     if budget and (not self.BAND[0] <= chars / budget <= self.BAND[1]
+                                    and abs(chars - budget) > self.SLACK)]
         return EvaluationReason(
             not wild, f'act/budget {ratios or "no budgets declared"}'
                       + (f', wild: {wild}' if wild else ''))

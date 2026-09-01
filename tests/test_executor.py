@@ -254,10 +254,10 @@ async def test_budget_reaches_non_array_units_too():
 
 async def test_no_budget_leaves_instructions_untouched():
     runner = ProbeRunner()
-    await execute(runner, routing(group('career.jobs', item=0, text='短')),
+    await execute(runner, routing(group('basic_info', text='短')),
                   payload='p', scheduler=TaskScheduler(8))
     assert runner.calls[0]['instructions'] == SPECIALIST_INSTRUCTIONS.format(
-        card=UNITS['career.jobs'].card)
+        card=UNITS['basic_info'].card)
 
 
 def test_default_specialist_prompt_carries_all_placeholders():
@@ -287,3 +287,18 @@ async def test_two_small_items_share_the_capacity():
                               budgets={'career.jobs': [150, 150]})
     calls = [c for c in execution.calls]
     assert len(calls) == 1 and calls[0].batch == (0, 1) and calls[0].budget == [150, 150]
+
+
+async def test_array_shaped_calls_carry_the_no_merge_addendum():
+    # a whole array call (single unsplit group) reads the addendum; an
+    # object-shaped call (basic_info, or a multi-item per-item fan-out) does not
+    for routings, expect_addendum in [
+            ([group('career.jobs', text='腾讯 阿里', ids=(1,))], True),
+            ([group('basic_info', text='姓名张三')], False),
+            ([group('career.jobs', item=0, text='腾讯', ids=(1,)),
+              group('career.jobs', item=1, text='阿里', ids=(2,))], False)]:
+        probe = ProbeRunner()
+        await execute(probe, routing(*routings), payload='p',
+                      scheduler=TaskScheduler(8))
+        assert all(('never merge' in c['instructions']) == expect_addendum
+                   for c in probe.calls)

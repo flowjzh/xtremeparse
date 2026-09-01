@@ -14,7 +14,9 @@ pipelines. Given plain text and a JSON Schema, it:
    sections, whole-array for short ones — under xtremeflow's scheduler.
 4. **Self-corrects**: validates the merged result with your validator,
    routes issues back to the failing specialists, and re-runs only them
-   with the errors appended to their conversation history.
+   — asking for a JSON Patch (RFC 6902) against their previous result,
+   so untouched entries cannot collapse in a rewrite. Router repairs
+   after a valid map diff the model's own answer the same way.
 
 The full-text prefix is shared across all calls to maximize provider-side
 KV-cache hits; the router runs first and warms the cache for the fleet
@@ -84,5 +86,5 @@ mechanisms for hosts building regression suites.
 
 ## Status
 
-Pipeline complete (chunk → route → fan out → merge → correct), 160+
+Pipeline complete (chunk → route → fan out → merge → correct), 200+
 deterministic tests, zero LLM required for the suite.

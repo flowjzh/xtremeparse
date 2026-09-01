@@ -27,20 +27,20 @@ def kw_result(groups, data, declared):
 
 
 def test_budget_fit_judges_each_item_not_the_mean():
-    # one item dead-on, one at 0.2: the mean (0.6) would pass — the item may not
+    # one item dead-on, one at 5x: the mean (3.0) reads mild — the item may not
     spread = budget_result([{'unit': 'career.jobs', 'budget': 20, 'item': None}],
                            {'career': {'jobs': [{'company': '十' * 10},
-                                                {'company': '腾讯'}]}})
+                                                {'company': '十' * 100}]}})
     verdict = BudgetFit().evaluate(ctx(spread))
     assert verdict.value is False
-    assert 'jobs[1]' in verdict.reason and '0.1' in verdict.reason
+    assert 'jobs[1]' in verdict.reason and '5.0' in verdict.reason
 
 
 def test_budget_fit_judges_a_per_item_budget_list():
-    # item 0 dead-on its own 10, item 1 far under its own 20 (0.1)
+    # item 0 dead-on its own 10, item 1 far over its own 20 (5x)
     result = budget_result([{'unit': 'career.jobs', 'budget': [10, 20], 'item': None}],
                            {'career': {'jobs': [{'company': '十' * 10},
-                                                {'company': '腾讯'}]}})
+                                                {'company': 'x' * 100}]}})
     verdict = BudgetFit().evaluate(ctx(result))
     assert verdict.value is False and 'jobs[1]' in verdict.reason
 
@@ -54,9 +54,23 @@ def test_budget_fit_band_and_clean_pass():
                           {'career': {'jobs': [{'company': '腾讯'}]}})  # 2/200
     unbudgeted = budget_result([{'unit': 'career.jobs', 'budget': None, 'item': 0}], {})
     assert BudgetFit().evaluate(ctx(close)).value is True
-    assert BudgetFit().evaluate(ctx(tight)).value is False
+    # the 4-char overshoot is an entry's fixed field cost — slack absorbs it
+    assert BudgetFit().evaluate(ctx(tight)).value is True
+    # both edges validated: the under-run misses the band by 198 — flagged
     assert BudgetFit().evaluate(ctx(loose)).value is False
     assert 'no budgets declared' in BudgetFit().evaluate(ctx(unbudgeted)).reason
+
+
+def test_budget_fit_slack_absorbs_field_cost_both_edges():
+    small = budget_result([{'unit': 'career.jobs', 'budget': 20, 'item': 0}],
+                          {'career': {'jobs': [{'company': '十' * 42}]}})  # 2.1x, diff 22
+    assert BudgetFit().evaluate(ctx(small)).value is True  # field-cost slack
+    big = budget_result([{'unit': 'career.jobs', 'budget': 20, 'item': 0}],
+                        {'career': {'jobs': [{'company': '十' * 100}]}})  # 5x, diff 80
+    assert BudgetFit().evaluate(ctx(big)).value is False
+    under = budget_result([{'unit': 'career.jobs', 'budget': 200, 'item': 0}],
+                          {'career': {'jobs': [{'company': '腾讯'}]}})  # 2/200
+    assert BudgetFit().evaluate(ctx(under)).value is False  # lower edge validated
 
 
 def test_budget_fit_judges_a_keyword_form_on_its_total():
@@ -68,8 +82,13 @@ def test_budget_fit_judges_a_keyword_form_on_its_total():
     data = {'certs': ['x' * 45, 'x' * 5, 'x' * 10]}
     verdict = BudgetFit().evaluate(ctx(kw_result(groups, data, {'certs': '20x3'})))
     assert verdict.value is True, verdict.reason
-    # a declared total ~4x the real one fails the shared band
-    short = {'certs': ['x' * 5, 'x' * 5, 'x' * 5]}  # 15/60 = 0.25
+    # a declared total the entries overrun 4x fails: 240/60 = 4.0,
+    # diff 180 — past ratio and slack both; so does a 4x under-run
+    # (15/60 = 0.25, diff 45)
+    long = {'certs': ['x' * 80, 'x' * 80, 'x' * 80]}
+    verdict = BudgetFit().evaluate(ctx(kw_result(groups, long, {'certs': '20x3'})))
+    assert verdict.value is False and '4.0' in verdict.reason
+    short = {'certs': ['x' * 5, 'x' * 5, 'x' * 5]}
     verdict = BudgetFit().evaluate(ctx(kw_result(groups, short, {'certs': '20x3'})))
     assert verdict.value is False and '0.25' in verdict.reason
 

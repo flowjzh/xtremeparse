@@ -19,6 +19,15 @@ Unit:
 
 {card}'''
 
+# appended to array-shaped calls (whole runs and budget batches): left
+# alone the model summarizes a multi-instance material into one entry —
+# the collapsed-array failure mode every downstream check starts from
+WHOLE_ARRAY_ADDENDUM = '''
+
+The output schema is an array: return every instance the assigned
+material holds as its own entry, in material order — never merge
+instances into one entry, never summarize.'''
+
 SPECIALIST_PLACEHOLDERS = frozenset({'card'})
 
 

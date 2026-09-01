@@ -3,9 +3,14 @@
 The injected validator defines severity — whatever it feeds is retried.
 Issues route back to the specialist call that owns their path (per-item
 calls only when the item index is derivable), and re-runs carry the call's
-conversation history plus the routed feedback. Stops on clean, budget
-(default 2 rounds), or no progress (issue paths identical to the previous
-round). Never raises on bad data; unresolved issues return with the data.
+conversation history plus the routed feedback. A re-run with a previous
+result asks for a JSON Patch against it (see patching) — untouched
+entries cannot collapse in a rewrite, and the decode shrinks to the fix;
+a reply that is not a patch applies as the full corrected value, and a
+patch that fails to apply keeps the previous result with the next round
+asking for the full value. Stops on clean, budget (default 2 rounds), or
+no progress (issue paths identical to the previous round). Never raises
+on bad data; unresolved issues return with the data.
 """
 
 from __future__ import annotations
@@ -15,15 +20,51 @@ import re
 from dataclasses import dataclass
 from typing import Optional
 
-from xtremeparse.contracts import AgentRunner, Validator
+from xtremeparse.contracts import AgentResult, AgentRunner, Validator
 from xtremeparse.paths import resolve, resolve_list
 from xtremeparse.executor import Call, Execution, dispatch_specialist, values_from_calls
 from xtremeparse.merge import merge
+from xtremeparse.patching import PATCH_ARRAY, apply_patch, is_patch
 from xtremeparse.prompting import value_chars
 from xtremeparse.scheduling import TaskScheduler
 from xtremeparse.units import MISC
 
 MAX_ROUNDS = 2
+SLIVER = 10  # a whole-array call short by ≤SLIVER% of its declaration is
+# not retried — the retry re-decodes the unit's full material and re-emits
+# the same belief; the shortfall surfaces as issues instead
+# the protocol directive rides the last routed issue's message — it must
+# be the freshest text before the adapter's output block, which pins the
+# wire shape; see patching.PATCH_ARRAY for the shape half of the contract
+PATCH_HOWTO = ('\n\nFix by JSON Patch (RFC 6902): reply with an array '
+               'of {"op", "path", "value"} operations applied to your '
+               'previous result — op "add" (path "/<index>", "-" appends), '
+               '"remove" or "replace"; a pointer may be rooted at the '
+               'unit path. Emit only what changes; never re-emit entries '
+               'that were already correct. If the fix cannot be expressed '
+               'as a patch, reply with the full corrected value instead.')
+
+
+class _Directed:
+    """The last routed issue with the patch protocol appended to its
+    message. Delegation, not a dataclass copy: validators inject
+    arbitrary Issue-protocol objects the loop must not assume."""
+
+    def __init__(self, issue):
+        self._issue = issue
+
+    def __getattr__(self, name):
+        return getattr(self._issue, name)
+
+    @property
+    def message(self):
+        return self._issue.message + PATCH_HOWTO
+
+
+def _patch_schema(call: Call) -> dict:
+    """The reply shape of a patch round: a JSON Patch or the unit's
+    full value."""
+    return {'anyOf': [PATCH_ARRAY, call.value_shape]}
 
 
 @dataclass
@@ -40,15 +81,18 @@ async def correct(runner: AgentRunner, execution: Execution, *, validator: Valid
                   max_rounds: int = MAX_ROUNDS,
                   specialist_instructions: str = None) -> tuple:
     """Re-run failing calls with feedback until clean, budgeted, or
-    stuck. Returns ``(data, issues, rounds)`` — always lenient. Call
-    results mutate in place; re-merge from ``execution.calls`` rather
-    than the now-stale ``execution.values``. ``specialist_instructions``
-    must be the same override the first round ran with — a correction
-    round continues that call's conversation history."""
+    stuck. Re-runs with a previous result ask for a JSON Patch against
+    it; a patch that fails to apply keeps the previous result and the
+    next round for that call re-asks in full. Returns ``(data, issues,
+    rounds)`` — always lenient. Call results mutate in place; re-merge
+    from ``execution.calls`` rather than the now-stale
+    ``execution.values``. ``specialist_instructions`` must be the same
+    override the first round ran with — a correction round continues
+    that call's conversation history."""
     calls = execution.calls
     data = merge(values_from_calls(calls))
     issues = list(validator(data) or [])
-    rounds, seen = [], None
+    rounds, seen, full_form = [], None, set()
     for _ in range(max_rounds):
         paths = {i.path for i in issues}
         if not issues or paths == seen:
@@ -59,28 +103,79 @@ async def correct(runner: AgentRunner, execution: Execution, *, validator: Valid
             break
         rounds.extend(Round(call.unit.path, call.item, [i.path for i in feedback])
                       for call, feedback in routed)
+        # one patch decision per call, shared by the dispatch and the
+        # reply interpretation — they must never drift apart
+        plan = [(call, feedback, _patching(call, full_form))
+                for call, feedback in routed]
         tasks = [await dispatch_specialist(
-            runner, call.unit, payload=payload, scope=call.scope,
-            whole=call.strategy == 'whole', scheduler=scheduler,
+            runner, call, payload=payload, scheduler=scheduler,
             specialist_instructions=specialist_instructions,
             history=call.result.history if call.result else None,
-            feedback=feedback)
-            for call, feedback in routed]
-        for (call, _), result in zip(routed, await asyncio.gather(*tasks)):
-            call.result = result
+            feedback=[_Directed(feedback[-1])] if patching else feedback,
+            schema=_patch_schema(call) if patching else None)
+            for call, feedback, patching in plan]
+        for (call, _, patching), result in zip(plan,
+                                               await asyncio.gather(*tasks)):
+            if not patching or not is_patch(result.data):
+                call.result = result  # the full corrected value replaces
+                continue
+            patched, err = apply_patch(call.result.data, result.data,
+                                       root=call.unit.path)
+            if err is None:
+                call.result = AgentResult(data=patched,
+                                          history=result.history)
+            else:  # protocol broke: forget the baseline, re-ask in full
+                full_form.add(id(call))
+                seen = None
         data = merge(values_from_calls(calls))
         issues = list(validator(data) or [])
     return data, issues, rounds
 
 
+def _patching(call: Call, full_form: set) -> bool:
+    """Whether this re-run asks for a patch: the call has a previous
+    result to diff against and has not broken the protocol."""
+    return call.result is not None and id(call) not in full_form
+
+
 def _route(calls: list, issues: list) -> list:
     """Map issues to owning calls. Longest unit path wins; per-item calls
-    match only their item; $misc is the fallback for unmatched paths."""
+    match only their item; $misc is the fallback for unmatched paths.
+    Count shortfalls route to the SHORT calls only — a call that
+    returned its full slot count holds no missing instance, and re-running
+    one under "return every instance" feedback hazards its healthy
+    result for nothing (measured: a full batch re-emitted fewer entries
+    and the merge replaced them)."""
     grouped = {}
     for issue in issues:
-        if call := _owner(calls, issue.path):
+        owners = (_short_calls(calls, issue) if isinstance(issue, _CountIssue)
+                  else [_owner(calls, issue.path)])
+        for call in filter(None, owners):
             grouped.setdefault(id(call), (call, []))[1].append(issue)
     return list(grouped.values())
+
+
+def _short_calls(calls: list, issue) -> list:
+    """The unit's calls still short of their slots — a full call holds
+    no missing instance. Whole-array calls owe the unit's declared
+    count (the issue's ``expected``); batches and singles owe their own
+    ``slots``. A whole call short by a sliver (≤SLIVER%) is not retried."""
+    unit = issue.path.partition('[')[0]
+    out = []
+    for c in calls:
+        if c.unit.path != unit or c.result is None:
+            continue
+        slots = c.slots if c.slots is not None else \
+            (issue.expected if c.array_shaped else None)
+        if slots is None:
+            continue
+        got = len(c.result.data or [])
+        if got >= slots:
+            continue
+        if c.strategy == 'whole' and (slots - got) * 100 <= slots * SLIVER:
+            continue
+        out.append(c)
+    return out
 
 
 def _owner(calls: list, path: str):
@@ -134,7 +229,8 @@ class _CountIssue:
     whole-array call that collapsed instances into fewer entries."""
 
     path: str
-    code: str = 'item_count'
+    code: str = 'item_count'  # trace vocabulary only — _route keys the
+    # short-call routing on this type, never on the code
     message: str = ''
     expected: int = None
     got: int = None

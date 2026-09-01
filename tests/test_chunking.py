@@ -63,6 +63,39 @@ def test_digit_dots_never_split_but_sentence_dots_do():
     assert chunks == ['Joined 2015.3.', ' Left 2018.5.']
 
 
+def test_ticker_dot_never_splits_mid_token():
+    text = '投资霸王茶姬(CHA. US)；投资宁德时代(03750.HK)；'
+    chunks = chunk_text(text, max_chars=40)
+    assert any('03750.HK' in c for c in chunks)
+    assert ''.join(chunks) == text
+
+
+def test_semicolon_clause_runs_split_per_entry():
+    text = '职责一，做了a；职责二，做了b；职责三，做了c。总结。'
+    assert chunk_text(text, max_chars=40) == [
+        '职责一，做了a；', '职责二，做了b；', '职责三，做了c。总结。']
+
+
+def test_lone_semicolon_clause_still_packs():
+    assert chunk_text('前句；后句继续。', max_chars=40) == ['前句；后句继续。']
+
+
+def test_mid_line_symbol_bullets_split_per_entry():
+    bullet = chr(0x9f)
+    text = f'{bullet} 条目一提供法律服务； {bullet} 条目二提供法律服务； {bullet} 条目三；'
+    assert chunk_text(text, max_chars=40) == [
+        f'{bullet} 条目一提供法律服务；', f' {bullet} 条目二提供法律服务；',
+        f' {bullet} 条目三；']
+
+
+def test_entry_over_ceiling_still_windowed():
+    bullet = chr(0x9f)
+    text = f'{bullet} {"长" * 300}；{bullet} 短条目；'
+    chunks = chunk_text(text, max_chars=250)
+    assert chunks[0] == f'{bullet} ' + '长' * 248  # windowed to the ceiling
+    assert chunks[-1] == f'{bullet} 短条目；'
+
+
 def test_unpunctuated_line_falls_to_character_windows():
     assert chunk_text('密' * 1300, max_chars=600) == ['密' * 600, '密' * 600, '密' * 100]
 

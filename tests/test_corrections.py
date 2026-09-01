@@ -5,6 +5,7 @@ from xtremeflow.scheduler import TaskScheduler
 from xtremeparse.contracts import AgentResult
 from xtremeparse.corrections import correct, count_issues, item_chars
 from xtremeparse.executor import Call, Execution
+from xtremeparse.patching import is_patch_round
 from xtremeparse.units import MISC, decompose
 from tests.helpers import FakeIssue, ScriptedRunner, agent_result
 
@@ -23,8 +24,9 @@ SCHEMA = {
 UNITS = {u.path: u for u in decompose(SCHEMA)}
 
 
-def call(path, data, *, item=None, strategy=None, scope='材料'):
-    return Call(UNITS[path], item, strategy, [0], scope, agent_result(data))
+def call(path, data, *, item=None, strategy=None, scope='材料', batch=()):
+    return Call(UNITS[path], item, strategy, [0], scope, agent_result(data),
+                batch=batch)
 
 
 def execution(*calls):
@@ -178,3 +180,73 @@ def test_count_issues_reconcile_declared_against_data():
         [('career.jobs[2]', 'item_count', 3, 2)]
     assert 'missing item 2' in collapsed[0].message
     assert [i.path for i in count_issues({'jobs': 2}, {})] == ['jobs[0]', 'jobs[1]']
+
+
+async def test_count_shortfall_retries_only_short_batches():
+    # a full batch holds no missing instance — the shortfall retries the
+    # short batch alone, and the full batch's healthy result stands
+    full = call('jobs', [{'company': '腾讯'}, {'company': '阿里'}],
+                strategy='per-item', scope='s01', batch=(0, 1))
+    short = call('jobs', [{'company': '美团'}],
+                 strategy='per-item', scope='s23', batch=(2, 3))
+    runner = ScriptedRunner(agent_result([{'company': '美团'}, {'company': '京东'}]))
+    data, issues, rounds = await correct(
+        runner, execution(full, short),
+        validator=lambda d: count_issues({'jobs': 4}, d),
+        payload='p', scheduler=scheduler())
+    assert [c['scope'] for c in runner.calls] == ['s23']
+    assert [c['company'] for c in data['jobs']] == ['腾讯', '阿里', '美团', '京东']
+    assert issues == []
+
+
+async def test_count_shortfall_with_no_short_call_surfaces_unrouted():
+    # every call returned its slots; the extra declared index has no owner
+    # — no destructive retries, the shortfall reports
+    full = call('jobs', [{'company': '腾讯'}, {'company': '阿里'}],
+                strategy='per-item', scope='s01', batch=(0, 1))
+    runner = ScriptedRunner()
+    data, issues, rounds = await correct(
+        runner, execution(full),
+        validator=lambda d: count_issues({'jobs': 3}, d),
+        payload='p', scheduler=scheduler())
+    assert runner.calls == [] and rounds == []
+    assert [i.path for i in issues] == ['jobs[2]']
+
+
+def _needs_second_job(data):
+    """One missing entry fires one correction round (FakeIssue, not
+    count_issues: the generic-issue routing is what reaches the patch
+    round under test)."""
+    if len(data.get('jobs') or []) < 2:
+        return [FakeIssue('jobs[1]')]
+    return []
+
+
+async def test_patch_reply_is_applied_not_replaced():
+    # the correction round asks for a JSON Patch against the previous
+    # result; untouched entries cannot collapse in a rewrite
+    runner = ScriptedRunner(agent_result([
+        {'op': 'add', 'path': '/jobs/1', 'value': {'company': '阿里'}}]))
+    data, issues, rounds = await correct(
+        runner, execution(call('jobs', [{'company': '腾讯'}])),
+        validator=_needs_second_job, payload='p', scheduler=scheduler())
+    assert data == {'jobs': [{'company': '腾讯'}, {'company': '阿里'}]}
+    assert issues == [] and len(rounds) == 1
+    rerun = runner.calls[0]
+    assert is_patch_round(rerun['result_schema'])
+    assert 'RFC 6902' in rerun['feedback'][0].message
+
+
+async def test_a_failing_patch_keeps_the_result_then_reasks_in_full():
+    runner = ScriptedRunner(
+        agent_result([{'op': 'add', 'path': '/nope/9', 'value': 1}]),
+        agent_result([{'company': '腾讯'}, {'company': '阿里'}]))
+    data, issues, rounds = await correct(
+        runner, execution(call('jobs', [{'company': '腾讯'}])),
+        validator=_needs_second_job, payload='p', scheduler=scheduler())
+    assert data == {'jobs': [{'company': '腾讯'}, {'company': '阿里'}]}
+    assert issues == []
+    # round one's unapplicable patch kept the previous result; round two
+    # re-asked in full (no patch schema, no protocol directive)
+    assert not runner.calls[1]['result_schema'].get('anyOf')
+    assert 'RFC 6902' not in runner.calls[1]['feedback'][0].message

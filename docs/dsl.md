@@ -31,6 +31,17 @@ repeating (array) unit.
     first line.
 - A bare repeating code (`4-9 x`) means several instances share the run
   unsplit — that material is extracted once, whole.
+- A starred bare run (`12-93 x*`) marks an entry-style run — every chunk
+  holds exactly one instance. Code splits it mechanically into one item
+  per chunk in ascending order, and the unit's declared count is read
+  off the run's chunk total (the count line stays, the number is
+  ignored). Within one unit star and numbered destinations cannot mix,
+  and a star takes its line alone — never comma-joined. This is the
+  fan-out form for long enumerations: writing 80 indexes is where the
+  model's counting breaks, judging "one entry per chunk" is not. The
+  mark presumes the chunker's entry-run guarantee (`_pack_entries`
+  keeps runs of parallel entries unmerged) — starred chunks holding
+  several instances would fuse them.
 - A run may feed several DIFFERENT units at once, comma-joined
   (`5 x.0,y.0`) — a summary or cross-cutting unit rides the lines of the
   unit whose text it shares, item by item.
@@ -41,7 +52,8 @@ repeating (array) unit.
   separate the instances — one chunk holding material of two or more
   of them; that material is extracted once, whole.
 - `-` on its own (never comma-joined) marks chunks irrelevant to every
-  unit.
+  unit. A bare section heading (a title introducing the entries after
+  it, no instance and no field-bound text of its own) takes `-`.
 
 ### Declaration lines
 
@@ -107,3 +119,33 @@ accumulated budget fits the per-call capacity) and are never enforced
 on the output. Overruns are accepted — a retry would cost a full
 extra decode. A host's `output_budgets={'path': n | [n, ...]}`
 overrides the router's declarations per path.
+
+## Repairs
+
+Two loops re-contact the model, and both ask for a diff against what
+it already answered — a rewrite re-decodes everything and can collapse
+entries that were correct (measured: a retry asked for one missing
+entry returned none).
+
+Router repairs come in two kinds. Repairs of an INVALID map re-emit
+the whole answer — there is no valid base to diff against. Repairs of
+a VALID map (the star hint, a recount disagreement) ask for a unified
+diff: `-` lines remove, `+` lines add, one edit per line; `@@` headers
+and context lines never touch the map, and line numbers are hints —
+the applier anchors on content, since the diff's lines are the model's
+own previous answer quoted back. The patched text then parses as a
+fresh answer, so every rule above holds of the RESULT, not the patch.
+Two degradations are accepted without ceremony: a reply with no diff
+markers parses as a full re-emission, and an empty reply declines the
+suggestion (the previous map stands).
+
+Executor corrections ask for a JSON Patch (RFC 6902) against the
+call's previous result: an array of `{op, path, value}` operations,
+`add` (with `"/<index>"`, `-` appending), `remove`, `replace` (plus
+`move`, `copy`, `test`). Two tolerances, both observed in the wild: a
+pointer may be rooted at the unit path (`/jobs/2` for a bare `/2`),
+and a reply that is not a patch at all applies as the full corrected
+value — the pre-patch semantics, so a draw that ignores the protocol
+degrades gracefully. A patch that fails to apply keeps the previous
+result and the next round re-asks in full; an empty operation list is
+a no-op, never a wipe.

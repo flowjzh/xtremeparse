@@ -4,7 +4,9 @@ from xtremeflow.scheduler import TaskScheduler
 
 from xtremeparse import Extractor, ExtractionResult
 from xtremeparse.prompting import estimate_tokens, shared_payload
-from tests.helpers import FakeIssue, agent_result
+from tests.helpers import (FakeIssue, ScriptedRunner, agent_result,
+                           plain_schema)
+
 
 SCHEMA = {
     'type': 'object',
@@ -31,14 +33,16 @@ TEXT = '''姓名：张三
 
 
 class PipelineRunner:
-    """Answers the router's index map, then each specialist's extraction."""
+    """Answers the router's index map, then each specialist's extraction.
+    A patch-or-value correction round (the anyOf schema) is answered
+    with the full value — the scripted model never patches."""
 
     def __init__(self):
         self.calls = []
 
     async def run(self, **kwargs):
         self.calls.append(kwargs)
-        schema = kwargs['result_schema']
+        schema = plain_schema(kwargs['result_schema'])
         if schema.get('type') == 'string':  # router DSL
             return agent_result('0 a\n1 -\n2 b.0\n3 b.1\n4 c\nb: 2')
         scope = kwargs['scope']
@@ -254,7 +258,7 @@ class CollapsingRunner(PipelineRunner):
         self._collapsed = True
 
     async def run(self, **kwargs):
-        schema = kwargs['result_schema']
+        schema = plain_schema(kwargs['result_schema'])
         if schema.get('type') == 'array':
             scope = kwargs['scope']
             if self._collapsed:
@@ -321,7 +325,8 @@ async def test_correction_round_reuses_the_specialist_override():
     # only recorded name call IS the correction re-dispatch
     assert result.trace.corrections
     (correction,) = [c for c in runner.calls
-                     if 'name' in c['result_schema'].get('properties', {})]
+                     if 'name' in plain_schema(c['result_schema'])
+                     .get('properties', {})]
     assert correction['instructions'].startswith('SPEC [basic_info')
 
 

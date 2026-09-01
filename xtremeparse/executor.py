@@ -13,8 +13,9 @@ import asyncio
 from dataclasses import dataclass
 from typing import Literal, Optional
 
-from xtremeparse.contracts import AgentRunner, AgentResult
-from xtremeparse.prompting import SPECIALIST_INSTRUCTIONS, estimate_tokens
+from xtremeparse.contracts import AgentRunner, AgentResult, JSONSchema
+from xtremeparse.prompting import (SPECIALIST_INSTRUCTIONS, WHOLE_ARRAY_ADDENDUM,
+                                   estimate_tokens)
 from xtremeparse.router import Routing
 from xtremeparse.scheduling import TaskScheduler
 from xtremeparse.units import Unit
@@ -37,6 +38,29 @@ class Call:
     budget: Optional[int | list] = None  # the call's arranged estimate: one
     # number, or the per-item list a batch/whole-array call carries
     batch: tuple = ()  # item indexes when small items share this call
+
+    @property
+    def array_shaped(self) -> bool:
+        """The call's result schema is an array — whole runs and budget
+        batches. One formula, shared by every dispatch site: a retry
+        must re-open the shape the call was first run under."""
+        return self.strategy == 'whole' or bool(self.batch)
+
+    @property
+    def value_shape(self) -> JSONSchema:
+        """The result schema for the unit's own value — the fallback
+        branch a patch round's anyOf offers beside the patch array."""
+        return ({'type': 'array', 'items': self.unit.sub_schema}
+                if self.array_shaped else self.unit.sub_schema)
+
+    @property
+    def slots(self) -> Optional[int]:
+        """Entries the call owes: the batch's item count, one for a
+        per-item single, None when the owed count is the unit's declared
+        whole (whole-array and object calls — compare against that)."""
+        if self.batch:
+            return len(self.batch)
+        return 1 if self.item is not None else None
 
 
 @dataclass
@@ -69,11 +93,11 @@ async def execute(runner: AgentRunner, routing: Routing, *, payload: str,
                       [i for g in unique for i in g.chunk_ids], None,
                       _arranged(budgets, unit, None))]
         for item, scope, ids, batch, budget in specs:
-            calls.append(Call(unit, item, strategy, ids, scope, budget=budget,
-                              batch=batch))
+            call = Call(unit, item, strategy, ids, scope, budget=budget,
+                        batch=batch)
+            calls.append(call)
             tasks.append(await dispatch_specialist(
-                runner, unit, payload=payload, scope=scope,
-                whole=strategy == 'whole' or bool(batch), scheduler=scheduler,
+                runner, call, payload=payload, scheduler=scheduler,
                 specialist_instructions=specialist_instructions))
     for call, result in zip(calls, await asyncio.gather(*tasks)):
         call.result = result
@@ -98,27 +122,34 @@ def values_from_calls(calls: list) -> dict:
     return values
 
 
-async def dispatch_specialist(runner: AgentRunner, unit: Unit, *, payload: str,
-                              scope: str, whole: bool, scheduler: TaskScheduler,
+async def dispatch_specialist(runner: AgentRunner, call: Call, *, payload: str,
+                              scheduler: TaskScheduler,
                               specialist_instructions: str = None,
                               history: list = None,
-                              feedback: list = None) -> asyncio.Task:
+                              feedback: list = None,
+                              schema: JSONSchema = None) -> asyncio.Task:
     """Schedule the one specialist invocation (executor and correction
     rounds share it, so the cache-frozen prompt layout stays identical)
     under the shared budget, seeded with the recipe's own token
-    estimate. Returns the dispatched task."""
+    estimate. ``schema`` overrides ``call.value_shape`` — correction
+    rounds pass the patch-or-value anyOf so the reply may be either a
+    JSON Patch or the full corrected value. Returns the dispatched
+    task."""
     async def invoke() -> AgentResult:
-        schema = {'type': 'array', 'items': unit.sub_schema} if whole else unit.sub_schema
+        reply_schema = schema if schema is not None else call.value_shape
         instructions = (specialist_instructions or SPECIALIST_INSTRUCTIONS).format(
-            card=unit.card)
+            card=call.unit.card)
+        if call.array_shaped:
+            instructions += WHOLE_ARRAY_ADDENDUM
         # a history round already carries the card and scope in the
         # transcript — only the per-round feedback is fresh material
         return await runner.run(instructions='' if history else instructions,
-                                result_schema=schema, content=payload,
-                                scope='' if history else scope, history=history,
-                                feedback=feedback)
+                                result_schema=reply_schema, content=payload,
+                                scope='' if history else call.scope,
+                                history=history, feedback=feedback)
     return await scheduler.start_task(
-        invoke(), estimated_tokens=estimate_tokens(payload, scope, unit.card))
+        invoke(), estimated_tokens=estimate_tokens(payload, call.scope,
+                                                   call.unit.card))
 
 
 def _arranged(budgets: dict, unit: Unit, item: Optional[int]):

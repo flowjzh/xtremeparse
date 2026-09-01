@@ -77,6 +77,11 @@ prompt produced them.
   resolved and consumed by code, not by prompt wording.
 - Repair and recount feedback messages — generated from validation
   errors, not prose.
+- The diff protocol — a correction round with a previous result asks
+  for a JSON Patch (RFC 6902) against it, and a router repair after a
+  valid map asks for a unified diff (see [dsl.md](dsl.md) §Repairs).
+  Hosts shape what is retried via the validator's issues, never the
+  reply contract.
 - The shared payload prefix (`content`) — byte-identical across every
   call it serves (router: full text + full schema; specialists: the
   text alone, each call's own partial schema riding beside its unit

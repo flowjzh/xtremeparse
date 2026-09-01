@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from xtremeparse.contracts import AgentResult
+from xtremeparse.patching import is_patch_round, value_branch
 
 
 @dataclass
@@ -16,6 +17,16 @@ class FakeIssue:
     code: str = 'type_mismatch'
     expected: object = None
     got: object = None
+
+
+def plain_schema(schema: dict) -> dict:
+    """A patch-or-value correction round's full-value branch — the
+    shape a scripted runner keys a non-patch reply on. Plain schemas
+    pass through unchanged."""
+
+    if is_patch_round(schema):
+        return value_branch(schema)
+    return schema
 
 
 class ScriptedRunner:
