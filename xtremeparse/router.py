@@ -20,11 +20,12 @@ entry-style run — every chunk holds exactly one instance — and code
 splits it one item per chunk, ascending, its count read off the chunk
 total: the model judges instance-per-chunk shape (easy, it sees the
 chunks) instead of enumerating every index (weak), and code never
-mistakes the run for an unsplit whole. A valid map that leaves a long
-run shared while its declared count equals the run's chunk total gets
-one confirmation round — star it, or re-emit unchanged to keep it
-shared (the model's call; measured: left alone, the model stars
-the dense lists it had mapped shared). The declared counts make the
+mistakes the run for an unsplit whole. A valid map that leaves fan-out
+on the table — a long run shared while its declared count equals the
+run's chunk total, or instances sharing one run far longer than their
+count — gets one hint round: star it, split it one line per instance,
+or reply empty to keep it shared (the model's call; measured: asked,
+the model stars the dense lists it had mapped shared). The declared counts make the
 map self-consistent: item indexes must run exactly 0..declared-1 and
 every declared item must receive chunks. Coverage and order hold per
 line range, uniqueness per destination; violations get bounded repairs
@@ -371,7 +372,7 @@ async def route(runner: AgentRunner, *, payload: str,
                           'description': 'Segment map and count declarations '
                                          'only — no prose, no JSON.'}
     feedback, last, history, verified = None, None, [], False
-    star_asked = False  # the fan-out hint is asked once per routing
+    hint_asked = False  # the fan-out hint is asked once per routing
     diff_base = None  # the raw answer text a diff-replying repair round
     # edits — set when a hint or a recount disagreement asks the model
     # to diff instead of re-emit
@@ -395,18 +396,48 @@ async def route(runner: AgentRunner, *, payload: str,
         errors, counts, derived, segments, budgets = parsed
         if not errors:
             diff_base = None
-            if not star_asked and (hints := _star_hints(segments, counts,
+            if not hint_asked and (hints := _star_hints(segments, counts,
                                                         by_code)):
                 # a run covering exactly as many chunks as the unit has
                 # instances is probably an entry list left unstarred —
                 # the costliest form (one whole-material stream). Ask
-                # once: the model stars it via a diff, re-emits the map
-                # (a declined suggestion, accepted), or stays silent
-                star_asked = True
+                # once: the model stars it via a diff, or stays silent
+                # (empty declines; a full re-emission is still tolerated
+                # and parses as ever)
+                hint_asked = True
                 diff_base = last.data
                 feedback = [_RouteIssue('segments', 'route_hint',
                                         h + _DIFF_REPLY) for h in hints]
                 continue
+            if not hint_asked and (shared := _shared_hints(segments, counts)):
+                # instances merged into one long run: the anchored
+                # conversation will not unmerge its own map (a repair
+                # round shown the map re-emits it, measured — and the
+                # splits it does make scatter). A fresh conversation
+                # recounts the unit — count plus each instance's opening
+                # text, the one form that survives without the map — and
+                # code anchors the quotes back to chunks and re-splits
+                # the run; adoption is code's, not the model's. An
+                # unusable recount falls back to the diff round.
+                hint_asked = True
+                code, material, declared = shared[0]
+                answer = await _recount_shared(runner, payload, code,
+                                               by_code[code], chunks)
+                if merged := _resplit(segments, counts, code, answer,
+                                      by_code, derived, chunks):
+                    segments, counts = merged
+                else:
+                    diff_base = last.data
+                    feedback = [_RouteIssue(
+                        'segments', 'route_hint',
+                        f'{code}: this run holds {material} chunks for '
+                        f'{declared} instance(s). If the chunk boundaries '
+                        f'can separate the instances, re-emit with one line '
+                        f'per instance and a matching count ("5-9 {code}.0", '
+                        f'"10-11 {code}.1"). If the instances truly share '
+                        f'their chunks, reply with nothing.'
+                        + _DIFF_REPLY)]
+                    continue
             if not verified and (zeros := [c for c, u in by_code.items()
                                            if u.kind == 'array' and c not in derived
                                            and counts.get(c) == 0]):
@@ -502,6 +533,110 @@ async def _recount(runner: AgentRunner, payload: str, by_code: dict,
                                                             'RECOUNT units only'},
                               content=payload, feedback=None)
     return str(result.data)
+
+
+_SHARED_CHECK = '''A document's chunks are listed below. One repeating unit's instances
+were left merged as one; recount them.
+
+Unit: {code} = {header}
+
+Answer:
+1. a count line "{code}: <n>" — how many instances the DOCUMENT holds;
+2. then exactly n lines, one per instance in the card's order, each
+   quoting VERBATIM the opening text of that instance as it stands in
+   the chunk listing — enough text to locate its chunk, no commentary.
+
+Chunks:
+
+{chunks}
+'''
+
+
+async def _recount_shared(runner: AgentRunner, payload: str, code: str,
+                          unit: Unit, chunks: list[str]):
+    """Fresh-attention recount of one unit left merged into a shared
+    run — deliberately not a repair round (no history: anchoring on its
+    own map is the failure being corrected). The answer carries the
+    count and each instance's opening text: quotes anchor to chunks by
+    content, the one coordinate the model quotes reliably — index
+    arithmetic echoes the prompt's own examples instead of the chunks
+    (measured: a stable count over hallucinated indexes). Returns the
+    parsed ``(count, quotes)``, or None when malformed."""
+    instructions = _SHARED_CHECK.format(code=code, header=unit.header,
+                                        chunks=_listing(chunks))
+    result = await runner.run(instructions=instructions,
+                              result_schema={'type': 'string',
+                                             'description': 'A count line and '
+                                                            'the instances\' '
+                                                            'opening quotes'},
+                              content=payload, feedback=None)
+    count, quotes = None, []
+    for line in (l.strip() for l in str(result.data or '').splitlines()):
+        if not line:
+            continue
+        if count is None:
+            if (m := _COUNT.match(line)) and m.group(1) == code:
+                count = int(m.group(2) or 0)
+            continue
+        quotes.append(re.sub(r'^\d+\s*[.、)]\s*', '', line).strip())
+    quotes = [q for q in quotes if q]
+    return (count, quotes) if count else None
+
+
+def _norm(s: str) -> str:
+    """Whitespace-collapsed text for content seeks — the chunk listing
+    renders newlines as ' ¶ ' and layouts pad their lines with blanks."""
+    return ' '.join(s.replace(' ¶ ', ' ').split())
+
+
+def _resplit(segments: list, counts: dict, code: str, answer,
+             by_code: dict, derived: dict, chunks: list[str]):
+    """Replace a merged unit's map lines with per-instance lines built
+    from a fresh recount: each quoted opening anchors to its chunk
+    (content seek, whitespace-normalized) and the unit's owned chunks
+    partition at those anchors — quotes are in the card's order, chunks
+    in document order, so anchors dedupe and sort rather than assume
+    either direction. Other units' destinations on the same chunks are
+    preserved. Adoption is code's; any unusable piece (a quote off the
+    unit's material, two quotes on one chunk, a count disagreeing with
+    the quote total) returns None for the caller's fallback. Returns
+    the rebuilt ``(segments, counts)``."""
+    if not answer or not (count := answer[0]) or count != len(answer[1]):
+        return None
+    owned = sorted({c for s, e, dests in segments for c in range(s, e + 1)
+                    if code in {d for d, _ in dests}})
+    if not owned:
+        return None
+    hits = []
+    for q in answer[1]:
+        n = _norm(q)
+        hit = next((c for c in owned if c not in hits and n in _norm(chunks[c]))
+                   if n else None, None)
+        if hit is None:
+            return None
+        hits.append(hit)
+    hits = sorted(set(hits))
+    if len(hits) != count:  # two quotes anchoring one chunk
+        return None
+    item_of = {c: 0 for c in owned}  # before the first anchor: instance 0
+    for i, h in enumerate(hits):
+        for c in owned:
+            if h <= c < (hits[i + 1] if i + 1 < len(hits) else owned[-1] + 1):
+                item_of[c] = i
+    cover = {c: dests for s, e, dests in segments for c in range(s, e + 1)}
+    rebuilt = []
+    for c in range(len(chunks)):
+        dests = tuple((d, i) for d, i in cover.get(c, ()) if d != code)
+        if c in item_of:
+            dests += ((code, item_of[c]),)
+        if rebuilt and rebuilt[-1][2] == dests:
+            rebuilt[-1] = (rebuilt[-1][0], c, dests)
+        else:
+            rebuilt.append((c, c, dests))
+    counts = {**counts, code: count}
+    if _map_errors(rebuilt, counts, derived, by_code, len(chunks)):
+        return None
+    return rebuilt, counts
 
 
 def _parse_diff(reply, base_text, by_code: dict, n: int):
@@ -816,8 +951,37 @@ def _star_hints(segments: list, counts: dict, by_code: dict) -> list:
             f'instances. If every chunk holds exactly one instance, re-emit '
             f'the map with every {code} run starred ("{s}-{e} {code}*") — '
             f'it then extracts one instance per chunk in parallel. If the '
-            f'instances share their chunks, re-emit the map unchanged.')
+            f'instances share their chunks, reply with nothing.')
     return hints
+
+
+def _shared_hints(segments: list, counts: dict) -> list:
+    """Array units whose instances share one long run — comma-joined
+    items, or a unit declared once whose lone item spans far more
+    chunks than one entry plausibly reads alone. The mirror of the
+    star hint: there the run holds one instance per chunk and should
+    split per chunk; here several chunks per instance may still
+    separate at chunk boundaries (measured lazy draw: a whole section
+    mapped as one shared item). A genuinely huge single entry is
+    indistinguishable from the merged form — the recount lets the
+    model confirm it; a declined suggestion costs one round.
+    Already-separated maps (each instance its own line) never fire;
+    small excesses don't pay for the round. Returns ``(code, chunk
+    count, declared)`` tuples."""
+    shared = {}
+    for start, end, dests in segments:
+        if _is_star(dests) or start == end:
+            continue
+        per = {}
+        for d, _ in dests:
+            if d != NONE:
+                per[d] = per.get(d, 0) + 1
+        for d, n in per.items():
+            if n > 1 or counts.get(d) == 1:
+                shared[d] = shared.get(d, 0) + end - start + 1
+    return [(code, chunks, counts.get(code)) for code, chunks in shared.items()
+            if chunks >= (counts.get(code) or 0) * 4
+            and chunks - (counts.get(code) or 0) >= STAR_HINT_MIN]
 
 
 def _is_star(dests: tuple):
@@ -898,8 +1062,10 @@ def _map_errors(segments, counts, derived, by_code: dict, n: int) -> list:
                     f'holds none; or, when it merely summarizes another '
                     f'repeating unit, declare "{code} = <source>" instead of '
                     f'a count' if not items else
-                    f' — several instances may share one run: comma-join them '
-                    f'on that line, e.g. "5 {code}.0,{code}.1"')
+                    f' — give each instance its own line where chunk boundaries '
+                    f'can separate them ("5-9 {code}.0", "10-11 {code}.1"); only '
+                    f'instances that share one chunk ride one line '
+                    f'("5 {code}.0,{code}.1")')
             errors.append(f'{code}: declared {declared} items but the map '
                           f'uses {sorted(items)}{hint}')
     if missing := sorted(set(range(n)) - {

@@ -129,12 +129,17 @@ entry returned none).
 
 Router repairs come in two kinds. Repairs of an INVALID map re-emit
 the whole answer — there is no valid base to diff against. Repairs of
-a VALID map (the star hint, a recount disagreement) ask for a unified
-diff: `-` lines remove, `+` lines add, one edit per line; `@@` headers
-and context lines never touch the map, and line numbers are hints —
-the applier anchors on content, since the diff's lines are the model's
-own previous answer quoted back. The patched text then parses as a
-fresh answer, so every rule above holds of the RESULT, not the patch.
+a VALID map (the fan-out hints, a recount disagreement) ask for a
+unified diff: `-` lines remove, `+` lines add, one edit per line;
+`@@` headers and context lines never touch the map, and line numbers
+are hints — the applier anchors on content, since the diff's lines are
+the model's own previous answer quoted back. The patched text then
+parses as a fresh answer, so every rule above holds of the RESULT, not
+the patch. Two fan-out hints exist, one round per routing: a run
+covering exactly as many chunks as its unit has instances is asked to
+star (one instance per chunk), and instances sharing a run far longer
+than their count are asked to separate one line per instance — either
+way an empty reply declines and keeps the shared form.
 Two degradations are accepted without ceremony: a reply with no diff
 markers parses as a full re-emission, and an empty reply declines the
 suggestion (the previous map stands).

@@ -710,3 +710,79 @@ async def test_small_shared_runs_skip_the_star_hint():
     routing = await route(runner, payload=PAYLOAD, units=UNITS, chunks=chunks)
     assert len(runner.calls) == 1
     assert routing.raw['counts']['jobs'] == 3
+
+
+# --- shared-run hint: instances merged into one long run (the lazy draw) ---
+
+LAZY_CHUNKS = [f'c{i}' for i in range(40)]
+LAZY = '0 a\n1-37 b.0\n38-39 -\na: 1\nb: 1'
+
+
+async def test_lazy_single_instance_gets_recounted_and_resplit():
+    # one item spanning 37 chunks for a unit declared once — the mirror
+    # of the dense-list case. A fresh conversation recounts (count plus
+    # quoted openings) and code re-splits the run at the anchored
+    # chunks; the anchored model never sees the map
+    runner = ScriptedRunner(agent_result(LAZY), agent_result('b: 2\nc5\nc30'))
+    routing = await route(runner, payload=PAYLOAD, units=UNITS,
+                          chunks=LAZY_CHUNKS)
+    recount = runner.calls[1]
+    assert 'were left merged as one' in recount['instructions'] \
+        and 'b = [jobs | array]' in recount['instructions']
+    assert len(runner.calls) == 2
+    assert [g.item for g in routing.groups if g.unit.path == 'jobs'] == [0, 1]
+    assert routing.raw['counts'] == {'jobs': 2}
+    jobs = [a for a in routing.raw['assignments'] if a['unit'] == 'jobs']
+    assert jobs[0]['chunks'] == list(range(1, 30))
+    assert jobs[1]['chunks'] == list(range(30, 38))
+
+
+async def test_resplit_keeps_co_riding_destinations():
+    # a cross-cutting unit riding the shared run's chunks keeps them
+    runner = ScriptedRunner(
+        agent_result('0 a\n1-37 b.0,c.0\n38-39 -\na: 1\nb: 1'),
+        agent_result('b: 2\nc5\nc30'))
+    routing = await route(runner, payload=PAYLOAD, units=UNITS,
+                          chunks=LAZY_CHUNKS)
+    misc = [a for a in routing.raw['assignments'] if a['unit'] == MISC]
+    assert sorted(c for a in misc for c in a['chunks']) == list(range(1, 38))
+    assert [g.item for g in routing.groups if g.unit.path == 'jobs'] == [0, 1]
+
+
+async def test_unusable_recount_falls_back_to_the_diff_hint():
+    # a recount answer without quotes is unusable: the anchored
+    # conversation gets the diff round, whose empty reply declines —
+    # the shared form stands
+    runner = ScriptedRunner(
+        agent_result('0 a\n1-37 b.0,b.1,b.2,b.3\n38-39 -\na: 1\nb: 4'),
+        agent_result('b: 4'),
+        agent_result(''))
+    routing = await route(runner, payload=PAYLOAD, units=UNITS,
+                          chunks=LAZY_CHUNKS)
+    hint = runner.calls[2]['feedback'][0]
+    assert hint.code == 'route_hint' and 'one line per instance' in hint.message
+    assert len(runner.calls) == 3  # asked once, then declined
+    proj = [a for a in routing.raw['assignments'] if a['unit'] == 'jobs']
+    assert len(proj) == 4 and all(len(a['chunks']) == 37 for a in proj)
+
+
+async def test_per_item_multi_chunk_map_skips_the_shared_hint():
+    # each instance already on its own line (entries spanning several
+    # chunks — the correct form for career sections): no round at all
+    runner = ScriptedRunner(
+        agent_result('0 a\n1-20 b.0\n21-37 b.1\n38-39 -\na: 1\nb: 2'))
+    routing = await route(runner, payload=PAYLOAD, units=UNITS,
+                          chunks=LAZY_CHUNKS)
+    assert len(runner.calls) == 1
+    assert routing.raw['counts'] == {'jobs': 2}
+
+
+async def test_short_shared_runs_skip_the_shared_hint():
+    # the run's excess over the declared count is under STAR_HINT_MIN:
+    # a round would cost more than the split could save
+    runner = ScriptedRunner(
+        agent_result('0 a\n1-6 b.0,b.1\n7-8 -\na: 1\nb: 2'))
+    routing = await route(runner, payload=PAYLOAD, units=UNITS,
+                          chunks=LAZY_CHUNKS[:9])
+    assert len(runner.calls) == 1
+    assert routing.raw['counts']['jobs'] == 2
