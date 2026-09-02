@@ -213,6 +213,82 @@ async def test_count_shortfall_with_no_short_call_surfaces_unrouted():
     assert [i.path for i in issues] == ['jobs[2]']
 
 
+async def test_over_count_retries_only_the_over_full_batch():
+    # duplicates push one batch past its slots — the over-count routes to
+    # the batch holding the extras, and healthy calls stand
+    full = call('jobs', [{'company': '腾讯'}, {'company': '阿里'}],
+                strategy='per-item', scope='s01', batch=(0, 1))
+    over = call('jobs', [{'company': '美团'}, {'company': '京东'},
+                         {'company': '美团'}, {'company': '京东'}],
+                strategy='per-item', scope='s23', batch=(2, 3))
+    runner = ScriptedRunner(agent_result([{'company': '美团'}, {'company': '京东'}]))
+    data, issues, rounds = await correct(
+        runner, execution(full, over),
+        validator=lambda d: count_issues({'jobs': 4}, d),
+        payload='p', scheduler=scheduler())
+    assert [c['scope'] for c in runner.calls] == ['s23']
+    assert [c['company'] for c in data['jobs']] == ['腾讯', '阿里', '美团', '京东']
+    assert issues == []
+
+
+async def test_over_count_whole_call_holding_the_duplicates_is_rerun():
+    # a whole-array call over its declared count owns the merge itself
+    whole = call('jobs', [{'company': '腾讯'}, {'company': '阿里'},
+                          {'company': '阿里'}], strategy='whole', scope='s')
+    runner = ScriptedRunner(agent_result([{'company': '腾讯'}, {'company': '阿里'}]))
+    data, issues, rounds = await correct(
+        runner, execution(whole),
+        validator=lambda d: count_issues({'jobs': 2}, d),
+        payload='p', scheduler=scheduler())
+    assert [c['scope'] for c in runner.calls] == ['s']
+    assert [c['company'] for c in data['jobs']] == ['腾讯', '阿里']
+    assert issues == []
+
+
+def test_soft_count_issues_report_without_routing():
+    # a disputed declaration: the over-count stays visible, marked
+    # report-only, its message naming the dispute — not a repair order
+    data = {'jobs': [{'company': '腾讯'}, {'company': '阿里'},
+                     {'company': '美团'}]}
+    (soft,) = count_issues({'jobs': 2}, data, soft={'jobs'})
+    assert soft.report_only and soft.expected == 2 and soft.got == 3
+    assert 'could not settle' in soft.message
+    (plain,) = count_issues({'jobs': 2}, data)
+    assert not plain.report_only and 'merge the duplicates' in plain.message
+
+
+async def test_a_disputed_over_count_never_triggers_a_round():
+    # a report-only issue rides out with the data — no repair, no merge
+    whole = call('jobs', [{'company': '腾讯'}, {'company': '阿里'},
+                          {'company': '美团'}], strategy='whole', scope='s')
+    runner = ScriptedRunner()
+    data, issues, rounds = await correct(
+        runner, execution(whole),
+        validator=lambda d: count_issues({'jobs': 2}, d, soft={'jobs'}),
+        payload='p', scheduler=scheduler())
+    assert runner.calls == [] and rounds == []
+    assert [i.report_only for i in issues] == [True]
+    assert [c['company'] for c in data['jobs']] == ['腾讯', '阿里', '美团']
+
+
+async def test_a_report_only_issue_does_not_mask_repairable_progress():
+    # mixed issues: the actionable one drives the round; the report-only
+    # one neither routes nor counts as stuckness
+    over = call('jobs', [{'company': '腾讯'}, {'company': '阿里'},
+                         {'company': '美团'}], strategy='whole', scope='j')
+    misc = call(MISC, {})
+    runner = ScriptedRunner(agent_result({'created': '2026-01-01'}))
+    def validator(data):
+        return (count_issues({'jobs': 2}, data, soft={'jobs'})
+                + ([FakeIssue('created')] if not data.get('created') else []))
+    data, issues, rounds = await correct(
+        runner, execution(over, misc), validator=validator,
+        payload='p', scheduler=scheduler())
+    assert [c['scope'] for c in runner.calls] == ['材料']  # misc rerun only
+    assert data.get('created') == '2026-01-01'
+    assert [(i.path, i.report_only) for i in issues] == [('jobs', True)]
+
+
 def _needs_second_job(data):
     """One missing entry fires one correction round (FakeIssue, not
     count_issues: the generic-issue routing is what reaches the patch

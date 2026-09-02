@@ -16,7 +16,7 @@ pipelines. Given plain text and a JSON Schema, it:
    routes issues back to the failing specialists, and re-runs only them
    — asking for a JSON Patch (RFC 6902) against their previous result,
    so untouched entries cannot collapse in a rewrite. Router repairs
-   after a valid map diff the model's own answer the same way.
+   diff the model's own previous answer the same way.
 
 The full-text prefix is shared across all calls to maximize provider-side
 KV-cache hits; the router runs first and warms the cache for the fleet

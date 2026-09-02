@@ -22,6 +22,7 @@ SCHEMA = {
 UNITS = decompose(SCHEMA)
 CHUNKS = ['姓名张三', '第一段：腾讯', '第二段：阿里', '无关页脚']
 PAYLOAD = '全文\n\n---\nJSON Schema: ...'
+BAD_MAP = agent_result('0 a\n1 b.0\n2 b.1\nb: 2')  # never covers chunk 3
 
 
 def runner_ok():
@@ -91,8 +92,7 @@ async def test_invalid_map_gets_one_repair_with_feedback():
 
 
 async def test_still_invalid_after_repairs_raises():
-    bad = agent_result('0 a\n1 b.0\n2 b.1\nb: 2')  # never covers chunk 3
-    runner = ScriptedRunner(*[bad] * 5)
+    runner = ScriptedRunner(*[BAD_MAP] * 5)
     with pytest.raises(RouterError):
         await route(runner, payload=PAYLOAD, units=UNITS, chunks=CHUNKS)
 
@@ -103,7 +103,15 @@ async def test_overlap_between_segments_is_repaired():
         agent_result('0 a\n1 b.0\n2-3 -\nb: 1'),
     )
     await route(runner, payload=PAYLOAD, units=UNITS, chunks=CHUNKS)
-    assert 'overlaps or breaks order' in runner.calls[1]['feedback'][0].message
+    assert 'overlaps after chunk' in runner.calls[1]['feedback'][0].message
+
+
+async def test_out_of_order_map_lines_are_accepted():
+    # line order carries no meaning — ranges are explicit; a diff
+    # reply's "+" insert lands at its own editing position
+    routing = await route_with('0 a\n2 b.1\n1 b.0\n3 -\nb: 2')
+    assert [(g.unit.path, g.item, g.chunk_ids) for g in routing.groups
+            if g.unit.kind == 'array'] == [('jobs', 0, [1]), ('jobs', 1, [2])]
 
 
 async def test_bare_array_code_is_coerced_to_whole_item_zero():
@@ -863,3 +871,52 @@ async def test_partial_adoption_skips_the_fallback_round():
     jobs = [a for a in routing.raw['assignments'] if a['unit'] == 'jobs']
     assert jobs[0]['chunks'] == list(range(1, 15))
     assert jobs[1]['chunks'] == list(range(15, 19))
+
+
+async def test_a_repair_round_diffs_against_the_previous_answer():
+    # every repair is a diff against the model's own last map text —
+    # hint or invalid alike: the patch applies to that raw text and the
+    # reconstruction validates fresh
+    runner = ScriptedRunner(
+        agent_result('0 a\n1 b.0\n2-3 -\nb: 2'),  # b.1 unmapped
+        agent_result('-2-3 -\n+2 b.1\n+3 -'),
+    )
+    routing = await route(runner, payload=PAYLOAD, units=UNITS, chunks=CHUNKS)
+    assert len(runner.calls) == 2
+    assert 'unified diff' in runner.calls[1]['feedback'][0].message
+    assert [g.item for g in routing.groups if g.unit.kind == 'array'] == [0, 1]
+
+
+async def test_an_empty_repair_reply_keeps_the_errors():
+    # an empty reply declines the diff: the base — still invalid —
+    # stands, the same errors come back, and the loop stays bounded
+    runner = ScriptedRunner(BAD_MAP, agent_result(''), BAD_MAP, BAD_MAP, BAD_MAP)
+    with pytest.raises(RouterError):
+        await route(runner, payload=PAYLOAD, units=UNITS, chunks=CHUNKS)
+    assert len(runner.calls) == 5
+
+
+async def test_a_missed_diff_quote_cannot_duplicate_a_line():
+    # "-x/+x" rewrites of a line the base no longer holds (a missed
+    # quote) must stay no-ops — a duplicated count line is how a whole
+    # repair chain used to die ("b declared twice")
+    runner = ScriptedRunner(
+        agent_result('0 a\n1 b.0\nb: 1'),  # chunks 2-3 uncovered
+        agent_result('-9 z\n+b: 1\n+2-3 -'),
+    )
+    routing = await route(runner, payload=PAYLOAD, units=UNITS, chunks=CHUNKS)
+    assert len(runner.calls) == 2  # no "b declared twice" repair chain
+    assert [g.item for g in routing.groups if g.unit.kind == 'array'] == [0]
+
+
+async def test_a_still_invalid_diff_keeps_its_base_map():
+    # a diff reply that does not fix the errors must not become the next
+    # round's base — patching a patch loses the map. The next repair
+    # diffs against the last map text, where quoting the stray '+4 -'
+    # line finds nothing to drop and the error stands
+    junk_diff, hopeless = agent_result('+4 -'), agent_result('-4 -')
+    runner = ScriptedRunner(BAD_MAP, junk_diff, hopeless, hopeless, hopeless)
+    with pytest.raises(RouterError):
+        await route(runner, payload=PAYLOAD, units=UNITS, chunks=CHUNKS)
+    assert len(runner.calls) == 5
+    assert 'not covered' in runner.calls[4]['feedback'][0].message

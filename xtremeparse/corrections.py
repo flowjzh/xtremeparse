@@ -1,6 +1,8 @@
 """Correction loop: whole-data validation, issue routing, bounded re-runs.
 
-The injected validator defines severity — whatever it feeds is retried.
+The injected validator defines severity — whatever it feeds is retried;
+an issue carrying ``report_only`` (a disputed declaration the host wants
+visible) rides out with the data instead: never routed, never progress.
 Issues route back to the specialist call that owns their path (per-item
 calls only when the item index is derivable), and re-runs carry the call's
 conversation history plus the routed feedback. A re-run with a previous
@@ -94,11 +96,14 @@ async def correct(runner: AgentRunner, execution: Execution, *, validator: Valid
     issues = list(validator(data) or [])
     rounds, seen, full_form = [], None, set()
     for _ in range(max_rounds):
-        paths = {i.path for i in issues}
-        if not issues or paths == seen:
+        # report-only issues carry no repair: they drive neither the
+        # no-progress check nor routing, and ride out with the data
+        actionable = [i for i in issues if not getattr(i, 'report_only', False)]
+        paths = {i.path for i in actionable}
+        if not paths or paths == seen:
             break
         seen = paths
-        routed = _route(calls, issues)
+        routed = _route(calls, actionable)
         if not routed:
             break
         rounds.extend(Round(call.unit.path, call.item, [i.path for i in feedback])
@@ -139,28 +144,32 @@ def _patching(call: Call, full_form: set) -> bool:
 
 
 def _route(calls: list, issues: list) -> list:
-    """Map issues to owning calls. Longest unit path wins; per-item calls
-    match only their item; $misc is the fallback for unmatched paths.
-    Count shortfalls route to the SHORT calls only — a call that
-    returned its full slot count holds no missing instance, and re-running
-    one under "return every instance" feedback hazards its healthy
-    result for nothing (measured: a full batch re-emitted fewer entries
-    and the merge replaced them)."""
+    """Map issues to owning calls. Longest unit path wins; per-item
+    calls match only their item; $misc is the fallback for unmatched
+    paths. Count issues route by direction: shortfalls to the SHORT
+    calls only (a call that returned its full slot count holds no
+    missing instance, and re-running one under "return every instance"
+    feedback hazards its healthy result for nothing — measured: a full
+    batch re-emitted fewer entries and the merge replaced them);
+    over-counts to the OVER-FULL calls, whose slices hold the
+    duplicates."""
     grouped = {}
     for issue in issues:
-        owners = (_short_calls(calls, issue) if isinstance(issue, _CountIssue)
+        owners = (_count_calls(calls, issue) if isinstance(issue, _CountIssue)
                   else [_owner(calls, issue.path)])
         for call in filter(None, owners):
             grouped.setdefault(id(call), (call, []))[1].append(issue)
     return list(grouped.values())
 
 
-def _short_calls(calls: list, issue) -> list:
-    """The unit's calls still short of their slots — a full call holds
-    no missing instance. Whole-array calls owe the unit's declared
-    count (the issue's ``expected``); batches and singles owe their own
-    ``slots``. A whole call short by a sliver (≤SLIVER%) is not retried."""
+def _count_calls(calls: list, issue) -> list:
+    """The unit's calls owning the mismatch (see _route for the why):
+    what a call owes is its own ``slots`` (a batch or a single), while a
+    whole-array call owes the unit's declared count (the issue's
+    ``expected``); shortfalls go to calls short of that, over-counts to
+    calls past it."""
     unit = issue.path.partition('[')[0]
+    over = (issue.expected or 0) < (issue.got or 0)
     out = []
     for c in calls:
         if c.unit.path != unit or c.result is None:
@@ -170,11 +179,11 @@ def _short_calls(calls: list, issue) -> list:
         if slots is None:
             continue
         got = len(c.result.data or [])
-        if got >= slots:
-            continue
-        if c.strategy == 'whole' and (slots - got) * 100 <= slots * SLIVER:
-            continue
-        out.append(c)
+        if got > slots or (not over and got < slots
+                           and not (c.strategy == 'whole'
+                                    and (slots - got) * 100
+                                    <= slots * SLIVER)):
+            out.append(c)
     return out
 
 
@@ -230,20 +239,38 @@ class _CountIssue:
 
     path: str
     code: str = 'item_count'  # trace vocabulary only — _route keys the
-    # short-call routing on this type, never on the code
+    # count routing on this type, never on the code
     message: str = ''
     expected: int = None
     got: int = None
+    report_only: bool = False  # a disputed declaration: surfaced, never
+    # routed (an arbitration could not settle whose side is right; a
+    # forced repair can only fabricate or discard entries)
 
 
-def count_issues(counts: dict, data: dict) -> list:
+def count_mismatches(counts: dict, data: dict) -> dict:
+    """``{unit_path: (declared, actual)}`` over every count mismatch —
+    the arbitration view of count_issues: per-index shortfalls fold to
+    their unit (all of a unit's issues share the pair). Which side of a
+    mismatch is wrong is exactly what an arbitration must decide."""
+    out = {}
+    for i in count_issues(counts, data):
+        out.setdefault(i.path.partition('[')[0], (i.expected, i.got))
+    return out
+
+
+def count_issues(counts: dict, data: dict, soft=()) -> list:
     """The router's declared counts (map-validated ground truth) against
     the merged arrays. A short array means instances were collapsed or
     dropped — silent to schema validation (nothing declares minItems).
     Items concatenate in item-index order, so a short array is missing
     its tail: each missing index becomes its own issue and routes to the
     call that owns it (a batch member or a single). One that survives a
-    retry stops via the no-progress rule."""
+    retry stops via the no-progress rule. A unit in ``soft`` (an
+    arbitration disputed its count without settling it) reports
+    report-only issues — visible in the return, invisible to routing.
+    Soft bites over-counts only: a disputed shortfall keeps its mend
+    path, the repairable direction."""
     issues = []
     for path, declared in counts.items():
         actual = len(resolve_list(data, path))
@@ -255,9 +282,12 @@ def count_issues(counts: dict, data: dict) -> list:
                         'its own entry, without splitting or duplicating')
                        for i in range(actual, declared)]
         elif actual > declared:
+            soft_hit = path in soft
+            tail = ('the check could not settle the dispute, reported '
+                    'unrepaired') if soft_hit else 'merge the duplicates'
             issues.append(_CountIssue(
-                path, expected=declared, got=actual,
+                path, expected=declared, got=actual, report_only=soft_hit,
                 message=f'declared {declared} items but the array holds '
-                        f'{actual} — merge the duplicates'))
+                        f'{actual} — {tail}'))
     return issues
 

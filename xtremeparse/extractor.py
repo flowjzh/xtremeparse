@@ -7,13 +7,17 @@ the injected validator, then reports leniently.
 
 from __future__ import annotations
 
+from xtremeparse.arbitration import arbitrate_extraction
 from xtremeparse.chunking import MAX_CHARS, chunk_text, normalize_newlines
 from xtremeparse.contracts import AgentRunner, ExtractionResult, Trace, Validator
-from xtremeparse.corrections import MAX_ROUNDS, correct, count_issues
-from xtremeparse.executor import BATCH_BUDGET_CAP, execute
+from xtremeparse.corrections import (MAX_ROUNDS, correct, count_issues,
+                                     count_mismatches)
+from xtremeparse.executor import BATCH_BUDGET_CAP, execute, values_from_calls
+from xtremeparse.merge import merge
 from xtremeparse.prompting import (SPECIALIST_PLACEHOLDERS, check_placeholders,
                                    estimate_tokens, provenance, shared_payload)
-from xtremeparse.router import (RECOUNT_PLACEHOLDERS, ROUTE_PLACEHOLDERS, route)
+from xtremeparse.router import (RECOUNT_PLACEHOLDERS, ROUTE_PLACEHOLDERS,
+                                route)
 from xtremeparse.scheduling import TaskScheduler
 from xtremeparse.units import decompose
 
@@ -75,14 +79,20 @@ class Extractor:
         chunks = chunk_text(text, max_chars=self.max_chars)
         units = decompose(schema)
         routing = execution = None
+        recounts, disputed = [], set()
         if chunks and units:
-            route_task = await (self.router_scheduler or self.scheduler).start_task(
-                route(self.router_runner or self.runner, payload=payload,
-                      units=units, chunks=chunks,
+            # the router slice rides its own (stronger-index) model and
+            # quota when one is configured — every router-plane call
+            # below resolves the same fallback pair
+            runner = self.router_runner or self.runner
+            scheduler = self.router_scheduler or self.scheduler
+            tokens = estimate_tokens(payload, text)  # payload + text:
+            # router instructions re-embed the chunk listing
+            route_task = await scheduler.start_task(
+                route(runner, payload=payload, units=units, chunks=chunks,
                       instructions=self.router_instructions,
                       recount_instructions=self.recount_instructions),
-                # payload + text: router instructions re-embed the chunk listing
-                estimated_tokens=estimate_tokens(payload, text))
+                estimated_tokens=tokens)
             routing = await route_task
             budgets = {**(routing.budgets or {}), **self.output_budgets}
             execution = await execute(self.runner, routing, payload=text,
@@ -91,15 +101,52 @@ class Extractor:
                                       budgets=budgets,
                                       specialist_instructions=self.specialist_instructions,
                                       batch_cap=self.batch_cap)
-            counts = routing.raw['counts']  # declared item counts are
+            counts = dict(routing.raw['counts'])  # declared item counts are
             # map-validated ground truth — a short array is collapsed
-            # instances, invisible to schema validation; re-run it
+            # instances, invisible to schema validation; re-run it.
+            # Working copy: arbitration may revise a disputed count;
+            # raw keeps the original declaration for the trace
+            values = values_from_calls(execution.calls)
+            if mismatches := count_mismatches(counts, merge(values)):
+                # declared vs actual disagree before any correction round
+                # — arbitrate_extraction owns the why. This seam keeps
+                # only the caller-side policy: an unanchored verdict
+                # stays out of the repair loop as a report-only issue,
+                # but for over-counts alone — a shortfall keeps its
+                # declared count, the mend path stands. Every check
+                # starts before the first one returns: the calls are
+                # independent, the scheduler exists to overlap them
+                arb_tokens = estimate_tokens(payload)
+                pending = []
+                for unit_path, (declared, actual) in sorted(
+                        mismatches.items()):
+                    task = arbitrate_extraction(
+                        runner, items=values.get(unit_path) or [],
+                        actual=actual, payload=payload)
+                    # the check prompt is payload + bounded openings
+                    # (ARBITRATION_LIST_CAP), not the full document again
+                    pending.append((unit_path, declared, actual,
+                                    await scheduler.start_task(
+                                        task,
+                                        estimated_tokens=arb_tokens)))
+                for unit_path, declared, actual, arb_task in pending:
+                    revised, raw = await arb_task
+                    if revised is not None:
+                        counts[unit_path] = revised
+                    elif actual > declared:
+                        # an unsettled over-count: the declaration stays
+                        # in counts but its issues turn report-only —
+                        # visible, never routed into a destructive merge
+                        disputed.add(unit_path)
+                    recounts.append({'unit': unit_path, 'declared': declared,
+                                     'actual': actual, 'revised': revised,
+                                     'answer': raw})
             data, issues, rounds = await correct(
                 self.runner, execution, payload=text,
                 scheduler=self.scheduler, max_rounds=self.max_rounds,
                 specialist_instructions=self.specialist_instructions,
                 validator=lambda d: list(validator(d) or [])
-                + count_issues(counts, d))
+                + count_issues(counts, d, soft=disputed))
         else:  # nothing routable: skip the agent fleet entirely
             data, issues, rounds = {}, list(validator({}) or []), []
         trace = Trace(chunks=chunks,
@@ -110,5 +157,6 @@ class Extractor:
                               for c in execution.calls] if execution else [],
                       corrections=[{'unit_path': r.unit_path, 'item': r.item,
                                     'issue_paths': r.issue_paths} for r in rounds],
+                      recounts=recounts,
                       prompts=dict(self.prompts))
         return ExtractionResult(data, issues, trace)

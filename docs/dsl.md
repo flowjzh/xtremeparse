@@ -17,8 +17,11 @@ repeating (array) unit.
     <start>-<end> <dest>[,<dest>...]
     <start> <dest>            # a single chunk may omit "-<end>"
 
-- `start`/`end` are chunk ids. Lines ascend, never overlap, and together
-  cover every chunk id in `0..top` exactly once.
+- `start`/`end` are chunk ids. Lines never overlap and together cover
+  every chunk id in `0..top` exactly once; line ORDER carries no
+  meaning — the ranges are explicit, and code sorts by start before
+  validating (a diff reply's `+` insert lands at its own editing
+  position).
 - A destination is `<code>` or `<code>.<item>`:
   - `code` is a letter code from the legend the prompt carries —
     assigned by the library in unit order; `-` is reserved.
@@ -44,7 +47,11 @@ repeating (array) unit.
   several instances would fuse them.
 - A run may feed several DIFFERENT units at once, comma-joined
   (`5 x.0,y.0`) — a summary or cross-cutting unit rides the lines of the
-  unit whose text it shares, item by item.
+  unit whose text it shares, item by item. An instance whose own text
+  sits inside another unit's run rides that line too, even when its
+  unit's other instances get lines of their own (`0-1 e.0,a.0` then
+  `2 a.1`): a chunk holding two units' material is ONE line carrying
+  both codes — two lines claiming the same chunk are never legal.
 - Items of the same unit that separable chunk boundaries CAN separate
   must each get their own line — that is what fans the unit out into
   parallel per-item calls with per-item budgets. Several items share
@@ -81,7 +88,8 @@ After the map, every repeating unit gets exactly one of:
 Violations are fed back as repair errors (bounded rounds, then
 `RouterError`):
 
-- map lines parse, ascend, do not overlap, and cover `0..top` exactly
+- map lines parse, do not overlap, and cover `0..top` exactly (line
+  order is free — code sorts by start)
 - the item set each unit uses in the map equals `0..declared-1`
 - every repeating unit is declared (a missing declaration reads as 0,
   which triggers a separate fresh-conversation recount before it is
@@ -127,19 +135,20 @@ it already answered — a rewrite re-decodes everything and can collapse
 entries that were correct (measured: a retry asked for one missing
 entry returned none).
 
-Router repairs come in two kinds. Repairs of an INVALID map re-emit
-the whole answer — there is no valid base to diff against. Repairs of
-a VALID map (the fan-out hints, a recount disagreement) ask for a
-unified diff: `-` lines remove, `+` lines add, one edit per line;
-`@@` headers and context lines never touch the map, and line numbers
-are hints — the applier anchors on content, since the diff's lines are
-the model's own previous answer quoted back. The patched text then
-parses as a fresh answer, so every rule above holds of the RESULT, not
-the patch. Two fan-out hints exist, one round per routing: a run
-covering exactly as many chunks as its unit has instances is asked to
-star (one instance per chunk), and instances sharing a run far longer
-than their count are asked to separate one line per instance — either
-way an empty reply declines and keeps the shared form.
+Router repairs — hint rounds and invalid-map rounds alike — all ask
+for a unified diff against the model's own last map text: `-` lines
+remove, `+` lines add, one edit per line; `@@` headers and context
+lines never touch the map, and line numbers are hints — the applier
+anchors on content, since the diff's lines are the model's own
+previous answer quoted back. Edits cannot regress lines the model
+already fixed, a quote that misses costs nothing, and the patched
+text parses as a fresh answer, so every rule above holds of the
+RESULT, not the patch. Two fan-out hints exist, one round per
+routing: a run covering exactly as many chunks as its unit has
+instances is asked to star (one instance per chunk), and instances
+sharing a run far longer than their count are asked to separate one
+line per instance — either way an empty reply declines and keeps the
+shared form.
 Two degradations are accepted without ceremony: a reply with no diff
 markers parses as a full re-emission, and an empty reply declines the
 suggestion (the previous map stands).

@@ -33,7 +33,8 @@ class Issue(Protocol):
 
 # Validates complete extracted data, returns the issues the host considers
 # error-level. Feeding only errors is the host's severity policy: the
-# correction loop retries whatever it receives.
+# correction loop retries whatever it receives (an issue carrying
+# `report_only` is surfaced, never retried).
 Validator = Callable[[dict], Sequence[Issue]]
 
 
@@ -100,6 +101,7 @@ class Trace:
     router: Optional[dict] = None
     groups: list = field(default_factory=list)
     corrections: list = field(default_factory=list)
+    recounts: list = field(default_factory=list)
     prompts: dict = field(default_factory=dict)
 
 

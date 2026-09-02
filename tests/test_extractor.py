@@ -3,6 +3,7 @@
 from xtremeflow.scheduler import TaskScheduler
 
 from xtremeparse import Extractor, ExtractionResult
+from xtremeparse.arbitration import CHECK_DESCRIPTION
 from xtremeparse.prompting import estimate_tokens, shared_payload
 from tests.helpers import (FakeIssue, ScriptedRunner, agent_result,
                            plain_schema)
@@ -339,3 +340,67 @@ async def test_trace_records_prompt_provenance():
     ).extract(TEXT, SCHEMA, validator)
     assert overridden.trace.prompts['router'].startswith('#')
     assert overridden.trace.prompts['specialist'] == 'default'
+
+
+class OverdeclaringRunner(PipelineRunner):
+    """Router maps 3 jobs (two co-chunked) for a 2-job text; the
+    whole-array call extracts the 2 real ones; the arbitration diff
+    finds nothing missing and nothing extra — the count revises to 2."""
+
+    map_answer = '0 a\n1 -\n2 b.0\n3 b.1,b.2\n4 c\nb: 3'
+    verdict = 'missing:\n\nextra:\n'
+
+    async def run(self, **kwargs):
+        schema = plain_schema(kwargs['result_schema'])
+        if schema.get('type') == 'string':
+            if str(schema.get('description', '')).startswith(CHECK_DESCRIPTION):
+                return agent_result(self.verdict)
+            return agent_result(self.map_answer)
+        if schema.get('type') == 'array':
+            return agent_result([{'company': '腾讯'}, {'company': '阿里'}])
+        return await super().run(**kwargs)
+
+
+async def test_arbitration_revises_an_over_declared_count():
+    # declared 3, extracted 2: instead of a shortfall round forcing a
+    # third entry into existence, the diff check arbitrates the true count
+    runner = OverdeclaringRunner()
+    result = await Extractor(runner).extract(TEXT, SCHEMA, validator)
+    assert [j['company'] for j in result.data['career']['jobs']] == ['腾讯', '阿里']
+    assert result.issues == []
+    assert result.trace.corrections == []  # no fabrication round ran
+    assert result.trace.recounts == [{'unit': 'career.jobs', 'declared': 3,
+                                      'actual': 2, 'revised': 2,
+                                      'answer': 'missing:\n\nextra:\n'}]
+
+
+class UnderdeclaringRunner(OverdeclaringRunner):
+    """Router maps 1 job (whole, co-chunked) for a 2-job text; the
+    whole-array call extracts both; the arbitration verdict voids —
+    the dispute reports without a merge round."""
+
+    map_answer = '0 a\n1 -\n2-4 b\nb: 1'
+    verdict = 'missing:\n\nextra:\n编造的不存在条目'
+
+
+async def test_an_unsettled_over_count_reports_without_a_merge():
+    # declared 1, extracted 2, verdict void: no repair runs — both real
+    # entries survive and the dispute reports against the declaration
+    result = await Extractor(UnderdeclaringRunner()).extract(
+        TEXT, SCHEMA, validator)
+    assert [j['company'] for j in result.data['career']['jobs']] == \
+        ['腾讯', '阿里']
+    assert result.trace.corrections == []  # no merge round ran
+    (issue,) = [i for i in result.issues if i.path == 'career.jobs']
+    assert (issue.expected, issue.got, issue.report_only) == (1, 2, True)
+
+
+async def test_unanchored_verdict_keeps_the_shortfall_repair():
+    # a verdict with an extra quote matching no list entry is voided —
+    # the declared count stands and the correction loop repairs as before
+    class UnanchoredRunner(OverdeclaringRunner):
+        verdict = 'missing:\n\nextra:\n编造的不存在条目'
+
+    result = await Extractor(UnanchoredRunner()).extract(TEXT, SCHEMA, validator)
+    assert result.trace.recounts[-1]['revised'] is None
+    assert [i.path for i in result.issues] == ['career.jobs[2]']

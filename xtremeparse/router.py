@@ -28,11 +28,12 @@ model to star via a diff (reply empty to keep it shared; measured:
 asked, the model stars the dense lists it had mapped shared), and the
 merged form gets a fresh-conversation recount that code re-splits by.
 The declared counts make the map self-consistent: item indexes must
-run exactly 0..declared-1 and
-every declared item must receive chunks. Coverage and order hold per
-line range, uniqueness per destination; violations get bounded repairs
-with precise feedback, then RouterError — a validated map's line
-ranges are disjoint by construction.
+run exactly 0..declared-1, every declared item must receive chunks.
+Coverage and disjointness hold per line range (line order itself
+carries no meaning — ranges are explicit), uniqueness per destination;
+violations get bounded repairs with precise feedback (each repair a
+diff against the previous answer), then RouterError — a validated
+map's ranges are disjoint by construction.
 """
 
 from __future__ import annotations
@@ -42,6 +43,8 @@ from bisect import bisect_right
 from dataclasses import dataclass
 from typing import Optional
 
+from xtremeparse.arbitration import (fresh_check, norm,
+                                    sectioned, unmarked)
 from xtremeparse.contracts import AgentRunner, JSONSchema
 from xtremeparse.units import Unit, type_set, value_branches
 
@@ -167,6 +170,11 @@ Rules:
   of the unit whose text it shares, item by item:
       5 x.0,y.0
       6 x.1,y.1
+  An instance whose own text sits inside another unit's run rides that
+  line too, even when its unit's other instances get lines of their
+  own ("0-1 e.0,a.0" then "2 a.1"): a chunk holding two units'
+  material is ONE line carrying both codes — two lines claiming the
+  same chunk are never legal.
 - Items of the SAME unit that separable chunk boundaries CAN separate
   MUST each get their own line ("5-9 x.0" then "10-11 x.1"): each
   item's call then fans out on its own and its budget scales against
@@ -181,7 +189,8 @@ Rules:
   Start a new item whenever the text moves to the next instance; never
   merge distinct instances into one, and never split one instance
   across items.
-- Code {none} on its own (no item) marks chunks irrelevant to every unit.
+- Code {none} on its own (no item) marks chunks irrelevant to every
+  unit, always ranged ("42-43 {none}"), never a bare {none} line.
   A chunk that is only a label — a section heading or title introducing
   the entries around it, no instance and no field-bound text of its own —
   takes {none}, never a unit's item line.
@@ -200,11 +209,12 @@ Unit codes:
 {legend}'''
 
 
-_DIFF_REPLY = '''
-
+_DIFF_HOWTO = '''
 Reply with a unified diff against your previous map: "-" lines removed,
 "+" lines added, one edit per line — never re-emit an unchanged line.
-The full map is also accepted. An empty reply declines the suggestion.'''
+The full map is also accepted.'''
+_DIFF_REPLY = _DIFF_HOWTO + ' An empty reply declines the suggestion.'
+_DIFF_FIX = _DIFF_HOWTO + ' Fix every error named above.'
 
 
 _CHECK = '''You are rechecking part of a routing decision. Some repeating units
@@ -317,16 +327,11 @@ class _RouteIssue:
 def _listing(chunks: list[str]) -> str:
     """The numbered chunk listing both router prompts embed — one line
     per chunk: embedded newlines would inflate the listing's line count
-    and the model's index arithmetic with it."""
+    and the model's index arithmetic with it. The ' ¶ ' marker is a
+    contract, not decoration: every quote anchor inverts it (see
+    arbitration.norm), so reformatting it unanchors every model quote."""
     return '\n'.join(f'[{i}] {c.replace(chr(10), " ¶ ")}'
                      for i, c in enumerate(chunks))
-
-
-def _norm(s: str) -> str:
-    """Whitespace-collapsed text for content seeks — inverts _listing's
-    ' ¶ ' newline marker and eats the blanks layouts pad their lines
-    with, so a model quote matches the chunk it came from."""
-    return ' '.join(s.replace(' ¶ ', ' ').split())
 
 
 def _name_list(unit: Unit) -> bool:
@@ -358,8 +363,9 @@ async def route(runner: AgentRunner, *, payload: str,
                 units: list[Unit], chunks: list[str],
                 instructions: str = None,
                 recount_instructions: str = None) -> Routing:
-    """Map chunks to units via one agent call, with bounded repairs
-    feeding the validation errors back as ``feedback`` — plus one
+    """Map chunks to units via one agent call, with bounded repairs —
+    each a diff against the previous answer — feeding the validation
+    errors back as ``feedback``; plus one
     verification round when any repeating unit comes out declared 0
     (see route loop). ``payload`` is the precomputed shared prefix
     (see prompting). ``instructions``/``recount_instructions`` replace
@@ -385,9 +391,8 @@ async def route(runner: AgentRunner, *, payload: str,
     star_asked = False  # the star hint is asked once per routing
     shared_asked = False  # the shared recount likewise — independent of
     # the star hint (the conditions are mutually exclusive per unit)
-    diff_base = None  # the raw answer text a diff-replying repair round
-    # edits — set when a hint or a recount disagreement asks the model
-    # to diff instead of re-emit
+    diff_base = None  # the previous round's map text — armed once below,
+    # after every answer, so a future hint round cannot forget it
     # error lists: a repaired error that later reappears means the model
     # is rewriting fixed lines away — name it
     for _ in range(5):  # initial call + four bounded repairs
@@ -396,18 +401,20 @@ async def route(runner: AgentRunner, *, payload: str,
                                   feedback=feedback,
                                   history=last.history if last else None)
         last = result
-        if diff_base is None:
-            parsed = _parse(result.data, by_code, len(chunks))
-        elif not str(result.data or '').strip():
-            # an empty reply declines the suggestion: the base map stands
-            parsed = _parse(diff_base, by_code, len(chunks))
-        else:  # not a diff — a full re-emission parses as ever
-            parsed = (_parse_diff(result.data, diff_base, by_code,
-                                  len(chunks))
-                      or _parse(result.data, by_code, len(chunks)))
-        errors, counts, derived, segments, budgets = parsed
+        base, text = diff_base, result.data
+        if base is not None:
+            if not str(text or '').strip():
+                text = base  # an empty reply declines; the base stands
+            elif (applied := _diff_text(text, base)) is not None:
+                text = applied
+        errors, counts, derived, segments, budgets = \
+            _parse(text, by_code, len(chunks))
+        # every answer leaves a map text behind — a full re-emission is
+        # itself, a diff leaves its applied map, an empty reply the
+        # standing base — and the next round diffs against it, hint or
+        # repair alike
+        diff_base = text
         if not errors:
-            diff_base = None
             if not star_asked and (hints := _star_hints(segments, counts,
                                                         by_code)):
                 # a run covering exactly as many chunks as the unit has
@@ -420,7 +427,6 @@ async def route(runner: AgentRunner, *, payload: str,
                 # answer text, so a resplit done first would be discarded
                 # by the re-parse
                 star_asked = True
-                diff_base = last.data
                 feedback = [_RouteIssue('segments', 'route_hint',
                                         h + _DIFF_REPLY) for h in hints]
                 continue
@@ -451,7 +457,6 @@ async def route(runner: AgentRunner, *, payload: str,
                     else:
                         pending[code] = (span, declared)
                 if pending and len(pending) == len(shared):
-                    diff_base = last.data
                     feedback = [_RouteIssue(
                         'segments', 'route_hint',
                         _split_hint(code, span, declared) + _DIFF_REPLY)
@@ -475,7 +480,6 @@ async def route(runner: AgentRunner, *, payload: str,
                                      zeros, by_code, len(chunks)):
                     segments, counts, derived = merged
                 else:
-                    diff_base = last.data
                     note = (f'{", ".join(zeros)}: a separate recount of '
                             'the document disagreed with this map but '
                             'could not be merged — for each, recheck the '
@@ -515,12 +519,12 @@ async def route(runner: AgentRunner, *, payload: str,
                             'budgets': {p: ([str(v) for v in b]
                                             if isinstance(b, list) else str(b))
                                         for p, b in budgets_by_path.items()}}, by_path)
-        diff_base = None  # an invalid map has no base to diff against
         past = set().union(*history[:-1]) if len(history) > 1 else set()
         marked = [f'{e} — this error was already fixed in an earlier round; '
                   'restore that fix while addressing the others'
                   if e in past and e not in history[-1] else e for e in errors]
-        feedback = [_RouteIssue('segments', 'route_invalid', m) for m in marked]
+        feedback = [_RouteIssue('segments', 'route_invalid', m + _DIFF_FIX)
+                    for m in marked]
         history.append(errors)
     raise RouterError(f'router segment map invalid after repair: {errors}')
 
@@ -545,23 +549,9 @@ async def _recount(runner: AgentRunner, payload: str, by_code: dict,
             else f'{c} = {by_code[c].path}'
             for c, u in by_code.items() if u.kind == 'array'),
         chunks=_listing(chunks))
-    return await _fresh_recount(
+    return await fresh_check(
         runner, payload, instructions,
         'Declarations and map lines for the RECOUNT units only')
-
-
-async def _fresh_recount(runner: AgentRunner, payload: str,
-                         instructions: str, description: str) -> str:
-    """The fresh-conversation recount call, shared by both recount
-    prompts — deliberately NOT a repair round: no history (the model
-    never sees the map it would anchor on and re-emit verbatim,
-    measured) and no feedback. The discipline lives here so a future
-    "give it more context" edit cannot silently restore the anchor."""
-    result = await runner.run(instructions=instructions,
-                              result_schema={'type': 'string',
-                                             'description': description},
-                              content=payload, feedback=None)
-    return str(result.data)
 
 
 _SHARED_CHECK = '''A document's chunks are listed below. Some repeating units' instances
@@ -597,24 +587,22 @@ async def _recount_shared(runner: AgentRunner, payload: str,
         units='\n'.join(f'{code} = {by_code[code].header} RECOUNT'
                         for code in shared),
         chunks=_listing(chunks))
-    result = await _fresh_recount(
+    result = await fresh_check(
         runner, payload, instructions,
         'Per recounted unit: a count line and the instances\' opening '
         'quotes')
-    codes = set(shared)
-    sections, current = {}, None
-    for line in (l.strip() for l in str(result or '').splitlines()):
-        if not line:
-            continue
-        if (m := _COUNT.match(line)) and m.group(1) in codes:
-            current = m.group(1)
-            sections[current] = (int(m.group(2) or 0), [])
-            continue
-        if current:
-            sections[current][1].append(
-                re.sub(r'^\d+\s*[.、)]\s*', '', line).strip())
+    return _parse_shared_answer(result, shared)
+
+
+def _parse_shared_answer(result, codes: dict | set) -> dict:
+    """``{code: (count, quotes)}`` from a _SHARED_CHECK reply — a count
+    line then quote lines, per unit; units with a malformed or missing
+    section are absent, a zero count means the document truly lacks it."""
+    sections = sectioned(
+        result, lambda line: (m.group(1), int(m.group(2) or 0))
+        if (m := _COUNT.match(line)) and m.group(1) in codes else None)
     return {code: (count, [q for q in quotes if q])
-            for code, (count, quotes) in sections.items() if count}
+            for (code, count), quotes in sections.items() if count}
 
 
 def _resplit(segments: list, counts: dict, code: str, answer,
@@ -636,10 +624,10 @@ def _resplit(segments: list, counts: dict, code: str, answer,
                    if code in {d for d, _ in dests})
     if not owned:
         return None
-    norms = {c: _norm(chunks[c]) for c in owned}
+    norms = {c: norm(chunks[c]) for c in owned}
     hits = []
     for q in answer[1]:
-        n = _norm(q)
+        n = norm(q)
         hit = next((c for c in owned if c not in hits and n in norms[c]),
                    None) if n else None
         if hit is None:
@@ -660,41 +648,30 @@ def _resplit(segments: list, counts: dict, code: str, answer,
     return rebuilt, counts
 
 
-def _parse_diff(reply, base_text, by_code: dict, n: int):
-    """A unified-diff reply against the model's own previous answer:
-    the patch applies to that raw text — "-" lines drop the quoted line
-    (content-anchored: the model quotes its own answer verbatim, so a
-    wrong "@@" line number only costs a forward search), "+" inserts;
-    "@@" and context lines are ignored (unchanged material is caught by
-    the tail catch-up, and the reply is told not to re-emit it). The
-    patched text then parses as a fresh answer, so every rule holds of
-    the result, not the patch. Returns _parse's ``(errors, counts,
-    derived, segments, budgets)`` — or None when the reply is not a
-    diff at all (a full re-emission parses as a fresh answer anyway)."""
-    lines = [l for l in (s.strip() for s in str(reply).strip().splitlines())
-             if l and not l.startswith(('---', '+++'))]
-    if not any(l[0] in '+-' for l in lines):
+def _diff_text(reply, base_text) -> str | None:
+    """A unified-diff reply applied to the model's own previous map as
+    order-free line algebra: "-" lines drop every line they quote
+    (content-anchored — the model quotes its own answer, so a quote
+    that misses costs nothing), "+" lines add theirs (one the map
+    already holds is a no-op — the model rewrites "-x/+x" pairs for
+    lines it means to keep), everything else is commentary. Line order
+    carries no meaning (ranges are explicit), so no positions are
+    tracked: the result is exactly the model's listed edits — the map
+    text the round leaves behind. None when the reply is no diff at
+    all (a full re-emission replaces the base instead)."""
+    removed, added = [], []
+    for l in (s.strip() for s in str(reply).strip().splitlines()):
+        if not l or l.startswith(('---', '+++')) or l[0] not in '+-':
+            continue
+        if content := l[1:].strip():
+            (removed if l[0] == '-' else added).append(content)
+    if not removed and not added:
         return None
-    old = [l.rstrip() for l in str(base_text).strip().splitlines()]
-    out, pos = [], 0
-    for l in lines:  # edits in document order; "@@" headers are ignored
-        if l[0] == '-':
-            pos = _seek(old, out, pos, l[1:].strip()) + 1  # drops it; an
-            # unquoted "-" names a line the map never had, nothing drops
-        elif l[0] == '+':
-            out.append(l[1:].rstrip())
-    out += old[pos:]
-    return _parse('\n'.join(out), by_code, n)
-
-
-def _seek(old: list, out: list, pos: int, needle: str) -> int:
-    """Emit ``old`` lines up to the first matching ``needle`` (a diff
-    line the model quoted from its own answer) and return the new
-    position — at the end when nothing matches."""
-    while pos < len(old) and old[pos].strip() != needle:
-        out.append(old[pos])
-        pos += 1
-    return pos
+    out = [l for l in (s.strip() for s in str(base_text).strip().splitlines())
+           if l and l not in removed]
+    kept = set(out)
+    out += [a for a in dict.fromkeys(added) if a not in kept]
+    return '\n'.join(out)
 
 
 def _cover(segments: list) -> dict:
@@ -868,6 +845,7 @@ def _parse(text, by_code: dict, n: int):
         return (['output must be the count lines and segment map, nothing else'],
                 {}, {}, [], {})
     errors, counts, derived, segments, budgets = [], {}, {}, [], {}
+    seen_segments = set()
     in_map = False
     for i, line in enumerate(text.strip().splitlines()):
         line = line.strip()
@@ -906,7 +884,8 @@ def _parse(text, by_code: dict, n: int):
             hint = (' — NONE may not be comma-joined with other destinations'
                     if re.search(r',\s*-', line) else '')
             errors.append(f'line {i + 1}: {line!r} is not '
-                          f'"<start>-<end> <code>[.<item>][,...]" or "-"{hint}')
+                          f'"<start>-<end> <code>[.<item>][,...]"{hint} — '
+                          f'a bare "-" maps nothing, drop the line entirely')
             continue
         start, end = int(m.group(1)), int(m.group(2) or m.group(1))
         if start >= n or end >= n or end < start:
@@ -949,8 +928,12 @@ def _parse(text, by_code: dict, n: int):
                 destinations.append((code, int(item.split('.')[0])
                                      if unit.kind == 'array' and item else None))
         segment = (start, end, tuple(destinations))
-        if segment not in segments:  # an exact re-emitted line is redundancy
+        if segment not in seen_segments:  # an exact re-emitted line is
+            seen_segments.add(segment)    # redundancy, not an error
             segments.append(segment)
+    segments.sort(key=lambda s: s[0])  # line order carries no meaning —
+    # ranges are explicit; a diff reply's "+" insert lands at its own
+    # editing position, so out-of-order lines are normal, not an error
     errors += _map_errors(segments, counts, derived, by_code, n)
     _, star_counts = _expand_stars(segments)  # starred units read their
     # count off the chunk total — published here, once; the rewrite
@@ -1066,15 +1049,17 @@ def _expand_stars(segments: list) -> tuple:
 
 
 def _map_errors(segments, counts, derived, by_code: dict, n: int) -> list:
-    """Whole-map consistency: line-range order/overlap, declared-vs-used
+    """Whole-map consistency: line-range overlap, declared-vs-used
     items per destination, derivation sanity, and full coverage
     (reported even alongside line errors, so the model gets the
     complete picture in one repair)."""
     errors, prev_end = [], -1
     for start, end, _ in segments:
         if start <= prev_end:
-            errors.append(f'segment {start}-{end} overlaps or breaks order '
-                          f'after chunk {prev_end}')
+            errors.append(f'segment {start}-{end} overlaps after chunk '
+                          f'{prev_end} — every chunk sits on exactly '
+                          f'one line; units sharing a chunk ride '
+                          f'that line together, e.g. "5 x.0,y.0"')
         prev_end = max(prev_end, end)
     for code, source in derived.items():
         src = by_code.get(source)
@@ -1116,9 +1101,12 @@ def _map_errors(segments, counts, derived, by_code: dict, n: int) -> list:
                     f'repeating unit, declare "{code} = <source>" instead of '
                     f'a count' if not items else
                     f' — give each instance its own line where chunk boundaries '
-                    f'can separate them ("5-9 {code}.0", "10-11 {code}.1"); only '
+                    f'can separate them ("5-9 {code}.0", "10-11 {code}.1"); '
                     f'instances that share one chunk ride one line '
-                    f'("5 {code}.0,{code}.1")')
+                    f'("5 {code}.0,{code}.1"), and an instance whose text '
+                    f'sits inside another unit\'s run rides that line '
+                    f'("5 x.0,{code}.1"); or the count is wrong — declare '
+                    f'what the document holds')
             errors.append(f'{code}: declared {declared} items but the map '
                           f'uses {sorted(items)}{hint}')
     if missing := sorted(set(range(n)) - {
