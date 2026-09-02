@@ -786,3 +786,80 @@ async def test_short_shared_runs_skip_the_shared_hint():
                           chunks=LAZY_CHUNKS[:9])
     assert len(runner.calls) == 1
     assert routing.raw['counts']['jobs'] == 2
+
+
+# two array units: a dense one for the star hint, a merged one for the
+# shared recount — codes a=basic_info, b=jobs, c=projects, d=$misc
+TWO_ARRAYS = decompose({
+    'type': 'object',
+    'properties': {
+        'basic_info': SCHEMA['properties']['basic_info'],
+        'jobs': SCHEMA['properties']['jobs'],
+        'projects': {'type': 'array', 'description': '项目经历',
+                     'items': {'type': 'object', 'properties': {
+                         'name': {'type': 'string', 'description': '项目名'},
+                     }}},
+        'created': SCHEMA['properties']['created'],
+    },
+})
+
+
+async def test_star_hint_and_shared_recount_both_fire():
+    # the conditions are mutually exclusive per unit, so one document
+    # can carry both: the star diff round runs first (a resplit done
+    # before it would be discarded by the re-parse), the recount
+    # re-splits the merged unit after
+    runner = ScriptedRunner(
+        agent_result('0 a\n1-8 b.0,b.1,b.2,b.3,b.4,b.5,b.6,b.7\n9 -\n'
+                     '10-37 c.0\n38-39 -\na: 1\nb: 8\nc: 1'),
+        agent_result('-1-8 b.0,b.1,b.2,b.3,b.4,b.5,b.6,b.7\n+1-8 b*'),
+        agent_result('c: 2\nc12\nc30'))
+    routing = await route(runner, payload=PAYLOAD, units=TWO_ARRAYS,
+                          chunks=LAZY_CHUNKS)
+    assert 'c = [projects | array] 项目经历 RECOUNT' \
+        in runner.calls[2]['instructions']
+    assert len(runner.calls) == 3
+    assert [g.item for g in routing.groups if g.unit.path == 'jobs'] \
+        == list(range(8))
+    assert [g.item for g in routing.groups if g.unit.path == 'projects'] \
+        == [0, 1]
+    assert routing.raw['counts'] == {'jobs': 8, 'projects': 2}
+
+
+async def test_two_merged_units_recount_in_one_conversation():
+    runner = ScriptedRunner(
+        agent_result('0 a\n1-18 b.0\n19 -\n20-37 c.0\n38-39 -\n'
+                     'a: 1\nb: 1\nc: 1'),
+        agent_result('b: 2\nc5\nc15\nc: 2\nc25\nc35'))
+    routing = await route(runner, payload=PAYLOAD, units=TWO_ARRAYS,
+                          chunks=LAZY_CHUNKS)
+    assert 'b = [jobs | array] 工作经历 RECOUNT' \
+        in runner.calls[1]['instructions'] \
+        and 'c = [projects | array] 项目经历 RECOUNT' \
+        in runner.calls[1]['instructions']
+    assert len(runner.calls) == 2  # both fixed in the one recount
+    assert routing.raw['counts'] == {'jobs': 2, 'projects': 2}
+    jobs = [a for a in routing.raw['assignments'] if a['unit'] == 'jobs']
+    assert jobs[0]['chunks'] == list(range(1, 15))
+    assert jobs[1]['chunks'] == list(range(15, 19))
+    projs = [a for a in routing.raw['assignments'] if a['unit'] == 'projects']
+    assert projs[0]['chunks'] == list(range(20, 35))
+    assert projs[1]['chunks'] == list(range(35, 38))
+
+
+async def test_partial_adoption_skips_the_fallback_round():
+    # one unit's recount section usable, the other's not: the adopted
+    # split stands and no diff round follows — a round taken now would
+    # re-parse the pre-resplit answer text and discard the adoption;
+    # the pending unit simply stays shared
+    runner = ScriptedRunner(
+        agent_result('0 a\n1-18 b.0\n19 -\n20-37 c.0\n38-39 -\n'
+                     'a: 1\nb: 1\nc: 1'),
+        agent_result('b: 2\nc5\nc15'))
+    routing = await route(runner, payload=PAYLOAD, units=TWO_ARRAYS,
+                          chunks=LAZY_CHUNKS)
+    assert len(runner.calls) == 2
+    assert routing.raw['counts'] == {'jobs': 2, 'projects': 1}
+    jobs = [a for a in routing.raw['assignments'] if a['unit'] == 'jobs']
+    assert jobs[0]['chunks'] == list(range(1, 15))
+    assert jobs[1]['chunks'] == list(range(15, 19))

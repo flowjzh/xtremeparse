@@ -23,10 +23,12 @@ chunks) instead of enumerating every index (weak), and code never
 mistakes the run for an unsplit whole. A valid map that leaves fan-out
 on the table — a long run shared while its declared count equals the
 run's chunk total, or instances sharing one run far longer than their
-count — gets one hint round: star it, split it one line per instance,
-or reply empty to keep it shared (the model's call; measured: asked,
-the model stars the dense lists it had mapped shared). The declared counts make the
-map self-consistent: item indexes must run exactly 0..declared-1 and
+count — gets its fix in a round of its own: the star hint asks the
+model to star via a diff (reply empty to keep it shared; measured:
+asked, the model stars the dense lists it had mapped shared), and the
+merged form gets a fresh-conversation recount that code re-splits by.
+The declared counts make the map self-consistent: item indexes must
+run exactly 0..declared-1 and
 every declared item must receive chunks. Coverage and order hold per
 line range, uniqueness per destination; violations get bounded repairs
 with precise feedback, then RouterError — a validated map's line
@@ -36,6 +38,7 @@ ranges are disjoint by construction.
 from __future__ import annotations
 
 import re
+from bisect import bisect_right
 from dataclasses import dataclass
 from typing import Optional
 
@@ -319,6 +322,13 @@ def _listing(chunks: list[str]) -> str:
                      for i, c in enumerate(chunks))
 
 
+def _norm(s: str) -> str:
+    """Whitespace-collapsed text for content seeks — inverts _listing's
+    ' ¶ ' newline marker and eats the blanks layouts pad their lines
+    with, so a model quote matches the chunk it came from."""
+    return ' '.join(s.replace(' ¶ ', ' ').split())
+
+
 def _name_list(unit: Unit) -> bool:
     """The unit's items are each one string value and nothing else —
     the mechanical shape of a list of names: either the item schema is
@@ -372,7 +382,9 @@ async def route(runner: AgentRunner, *, payload: str,
                           'description': 'Segment map and count declarations '
                                          'only — no prose, no JSON.'}
     feedback, last, history, verified = None, None, [], False
-    hint_asked = False  # the fan-out hint is asked once per routing
+    star_asked = False  # the star hint is asked once per routing
+    shared_asked = False  # the shared recount likewise — independent of
+    # the star hint (the conditions are mutually exclusive per unit)
     diff_base = None  # the raw answer text a diff-replying repair round
     # edits — set when a hint or a recount disagreement asks the model
     # to diff instead of re-emit
@@ -396,47 +408,54 @@ async def route(runner: AgentRunner, *, payload: str,
         errors, counts, derived, segments, budgets = parsed
         if not errors:
             diff_base = None
-            if not hint_asked and (hints := _star_hints(segments, counts,
+            if not star_asked and (hints := _star_hints(segments, counts,
                                                         by_code)):
                 # a run covering exactly as many chunks as the unit has
                 # instances is probably an entry list left unstarred —
                 # the costliest form (one whole-material stream). Ask
                 # once: the model stars it via a diff, or stays silent
                 # (empty declines; a full re-emission is still tolerated
-                # and parses as ever)
-                hint_asked = True
+                # and parses as ever). This round must run before the
+                # shared recount: the diff applies to the model's own
+                # answer text, so a resplit done first would be discarded
+                # by the re-parse
+                star_asked = True
                 diff_base = last.data
                 feedback = [_RouteIssue('segments', 'route_hint',
                                         h + _DIFF_REPLY) for h in hints]
                 continue
-            if not hint_asked and (shared := _shared_hints(segments, counts)):
+            if not shared_asked and (shared := _shared_hints(segments, counts)):
                 # instances merged into one long run: the anchored
                 # conversation will not unmerge its own map (a repair
                 # round shown the map re-emits it, measured — and the
                 # splits it does make scatter). A fresh conversation
-                # recounts the unit — count plus each instance's opening
-                # text, the one form that survives without the map — and
-                # code anchors the quotes back to chunks and re-splits
-                # the run; adoption is code's, not the model's. An
-                # unusable recount falls back to the diff round.
-                hint_asked = True
-                code, material, declared = shared[0]
-                answer = await _recount_shared(runner, payload, code,
-                                               by_code[code], chunks)
-                if merged := _resplit(segments, counts, code, answer,
-                                      by_code, derived, chunks):
-                    segments, counts = merged
-                else:
+                # recounts every shared unit at once — count plus each
+                # instance's opening text, the one form that survives
+                # without the map — and code anchors the quotes back to
+                # chunks and re-splits each run; adoption is code's, not
+                # the model's. A unit whose recount is unusable falls
+                # back to one diff round — only when nothing was
+                # adopted, though: a diff re-parses the model's answer
+                # text, so a round taken after a partial adoption would
+                # discard the adopted splits (the pending unit then
+                # simply stays shared)
+                shared_asked = True
+                answer = await _recount_shared(runner, payload, shared,
+                                               by_code, chunks)
+                pending = {}
+                for code, (span, declared) in shared.items():
+                    if merged := _resplit(segments, counts, code,
+                                          answer.get(code),
+                                          by_code, derived, chunks):
+                        segments, counts = merged
+                    else:
+                        pending[code] = (span, declared)
+                if pending and len(pending) == len(shared):
                     diff_base = last.data
                     feedback = [_RouteIssue(
                         'segments', 'route_hint',
-                        f'{code}: this run holds {material} chunks for '
-                        f'{declared} instance(s). If the chunk boundaries '
-                        f'can separate the instances, re-emit with one line '
-                        f'per instance and a matching count ("5-9 {code}.0", '
-                        f'"10-11 {code}.1"). If the instances truly share '
-                        f'their chunks, reply with nothing.'
-                        + _DIFF_REPLY)]
+                        _split_hint(code, span, declared) + _DIFF_REPLY)
+                        for code, (span, declared) in pending.items()]
                     continue
             if not verified and (zeros := [c for c, u in by_code.items()
                                            if u.kind == 'array' and c not in derived
@@ -526,25 +545,36 @@ async def _recount(runner: AgentRunner, payload: str, by_code: dict,
             else f'{c} = {by_code[c].path}'
             for c, u in by_code.items() if u.kind == 'array'),
         chunks=_listing(chunks))
+    return await _fresh_recount(
+        runner, payload, instructions,
+        'Declarations and map lines for the RECOUNT units only')
+
+
+async def _fresh_recount(runner: AgentRunner, payload: str,
+                         instructions: str, description: str) -> str:
+    """The fresh-conversation recount call, shared by both recount
+    prompts — deliberately NOT a repair round: no history (the model
+    never sees the map it would anchor on and re-emit verbatim,
+    measured) and no feedback. The discipline lives here so a future
+    "give it more context" edit cannot silently restore the anchor."""
     result = await runner.run(instructions=instructions,
                               result_schema={'type': 'string',
-                                             'description': 'Declarations and '
-                                                            'map lines for the '
-                                                            'RECOUNT units only'},
+                                             'description': description},
                               content=payload, feedback=None)
     return str(result.data)
 
 
-_SHARED_CHECK = '''A document's chunks are listed below. One repeating unit's instances
+_SHARED_CHECK = '''A document's chunks are listed below. Some repeating units' instances
 were left merged as one; recount them.
 
-Unit: {code} = {header}
-
-Answer:
-1. a count line "{code}: <n>" — how many instances the DOCUMENT holds;
+For each unit marked RECOUNT answer:
+1. a count line "<code>: <n>" — how many instances the DOCUMENT holds;
 2. then exactly n lines, one per instance in the card's order, each
    quoting VERBATIM the opening text of that instance as it stands in
    the chunk listing — enough text to locate its chunk, no commentary.
+
+Units:
+{units}
 
 Chunks:
 
@@ -552,41 +582,39 @@ Chunks:
 '''
 
 
-async def _recount_shared(runner: AgentRunner, payload: str, code: str,
-                          unit: Unit, chunks: list[str]):
-    """Fresh-attention recount of one unit left merged into a shared
-    run — deliberately not a repair round (no history: anchoring on its
-    own map is the failure being corrected). The answer carries the
-    count and each instance's opening text: quotes anchor to chunks by
-    content, the one coordinate the model quotes reliably — index
-    arithmetic echoes the prompt's own examples instead of the chunks
-    (measured: a stable count over hallucinated indexes). Returns the
-    parsed ``(count, quotes)``, or None when malformed."""
-    instructions = _SHARED_CHECK.format(code=code, header=unit.header,
-                                        chunks=_listing(chunks))
-    result = await runner.run(instructions=instructions,
-                              result_schema={'type': 'string',
-                                             'description': 'A count line and '
-                                                            'the instances\' '
-                                                            'opening quotes'},
-                              content=payload, feedback=None)
-    count, quotes = None, []
-    for line in (l.strip() for l in str(result.data or '').splitlines()):
+async def _recount_shared(runner: AgentRunner, payload: str,
+                          shared: dict, by_code: dict, chunks: list[str]):
+    """Fresh-attention recount of the units left merged into shared
+    runs. Every shared unit is recounted in the one conversation — the
+    chunks listing, the costly part, is shared. The answer carries, per
+    unit, the count and each instance's opening text: quotes anchor to
+    chunks by content, the one coordinate the model quotes reliably —
+    index arithmetic echoes the prompt's own examples instead of the
+    chunks (measured: a stable count over hallucinated indexes).
+    Returns ``{code: (count, quotes)}``; units with a malformed or
+    missing section are absent."""
+    instructions = _SHARED_CHECK.format(
+        units='\n'.join(f'{code} = {by_code[code].header} RECOUNT'
+                        for code in shared),
+        chunks=_listing(chunks))
+    result = await _fresh_recount(
+        runner, payload, instructions,
+        'Per recounted unit: a count line and the instances\' opening '
+        'quotes')
+    codes = set(shared)
+    sections, current = {}, None
+    for line in (l.strip() for l in str(result or '').splitlines()):
         if not line:
             continue
-        if count is None:
-            if (m := _COUNT.match(line)) and m.group(1) == code:
-                count = int(m.group(2) or 0)
+        if (m := _COUNT.match(line)) and m.group(1) in codes:
+            current = m.group(1)
+            sections[current] = (int(m.group(2) or 0), [])
             continue
-        quotes.append(re.sub(r'^\d+\s*[.、)]\s*', '', line).strip())
-    quotes = [q for q in quotes if q]
-    return (count, quotes) if count else None
-
-
-def _norm(s: str) -> str:
-    """Whitespace-collapsed text for content seeks — the chunk listing
-    renders newlines as ' ¶ ' and layouts pad their lines with blanks."""
-    return ' '.join(s.replace(' ¶ ', ' ').split())
+        if current:
+            sections[current][1].append(
+                re.sub(r'^\d+\s*[.、)]\s*', '', line).strip())
+    return {code: (count, [q for q in quotes if q])
+            for code, (count, quotes) in sections.items() if count}
 
 
 def _resplit(segments: list, counts: dict, code: str, answer,
@@ -596,45 +624,38 @@ def _resplit(segments: list, counts: dict, code: str, answer,
     (content seek, whitespace-normalized) and the unit's owned chunks
     partition at those anchors — quotes are in the card's order, chunks
     in document order, so anchors dedupe and sort rather than assume
-    either direction. Other units' destinations on the same chunks are
-    preserved. Adoption is code's; any unusable piece (a quote off the
-    unit's material, two quotes on one chunk, a count disagreeing with
-    the quote total) returns None for the caller's fallback. Returns
+    either direction; a quote whose chunk is already anchored reads as
+    two instances sharing one chunk and fails the seek. Other units'
+    destinations on the same chunks are preserved. Adoption is code's;
+    any unusable piece returns None for the caller's fallback. Returns
     the rebuilt ``(segments, counts)``."""
     if not answer or not (count := answer[0]) or count != len(answer[1]):
         return None
-    owned = sorted({c for s, e, dests in segments for c in range(s, e + 1)
-                    if code in {d for d, _ in dests}})
+    cover = _cover(segments)
+    owned = sorted(c for c, dests in cover.items()
+                   if code in {d for d, _ in dests})
     if not owned:
         return None
+    norms = {c: _norm(chunks[c]) for c in owned}
     hits = []
     for q in answer[1]:
         n = _norm(q)
-        hit = next((c for c in owned if c not in hits and n in _norm(chunks[c]))
-                   if n else None, None)
+        hit = next((c for c in owned if c not in hits and n in norms[c]),
+                   None) if n else None
         if hit is None:
             return None
         hits.append(hit)
-    hits = sorted(set(hits))
-    if len(hits) != count:  # two quotes anchoring one chunk
-        return None
-    item_of = {c: 0 for c in owned}  # before the first anchor: instance 0
-    for i, h in enumerate(hits):
-        for c in owned:
-            if h <= c < (hits[i + 1] if i + 1 < len(hits) else owned[-1] + 1):
-                item_of[c] = i
-    cover = {c: dests for s, e, dests in segments for c in range(s, e + 1)}
-    rebuilt = []
-    for c in range(len(chunks)):
-        dests = tuple((d, i) for d, i in cover.get(c, ()) if d != code)
-        if c in item_of:
-            dests += ((code, item_of[c]),)
-        if rebuilt and rebuilt[-1][2] == dests:
-            rebuilt[-1] = (rebuilt[-1][0], c, dests)
-        else:
-            rebuilt.append((c, c, dests))
+    hits = sorted(hits)
+    # before the first anchor the material rides instance 0
+    item_of = {c: max(0, bisect_right(hits, c) - 1) for c in owned}
+    per_chunk = {}
+    for c, dests in cover.items():
+        stripped = tuple((d, i) for d, i in dests if d != code)
+        per_chunk[c] = (stripped + ((code, item_of[c]),)
+                        if c in item_of else stripped)
     counts = {**counts, code: count}
-    if _map_errors(rebuilt, counts, derived, by_code, len(chunks)):
+    rebuilt = _resegment(per_chunk, counts, derived, by_code, len(chunks))
+    if rebuilt is None:
         return None
     return rebuilt, counts
 
@@ -674,6 +695,31 @@ def _seek(old: list, out: list, pos: int, needle: str) -> int:
         out.append(old[pos])
         pos += 1
     return pos
+
+
+def _cover(segments: list) -> dict:
+    """Per chunk id: the destinations owning it — the expanded form both
+    adoption paths (recount splice, shared-run resplit) edit before
+    re-segmenting."""
+    return {c: dests for s, e, dests in segments for c in range(s, e + 1)}
+
+
+def _resegment(per_chunk: dict, counts: dict, derived: dict,
+               by_code: dict, n: int):
+    """The adoption tail shared by both paths that edit the expanded
+    map: a per-chunk destination map → coalesced segments (adjacent
+    equal destinations merge into one run), validated against the
+    declared counts — None when the result is not a valid map."""
+    rebuilt = []
+    for c in range(n):
+        dests = per_chunk.get(c, ())
+        if rebuilt and rebuilt[-1][2] == dests:
+            rebuilt[-1] = (rebuilt[-1][0], c, dests)
+        else:
+            rebuilt.append((c, c, dests))
+    if _map_errors(rebuilt, counts, derived, by_code, n):
+        return None
+    return rebuilt
 
 
 def _splice(segments, counts, derived, answer, zeros, by_code: dict, n: int):
@@ -741,14 +787,9 @@ def _splice(segments, counts, derived, answer, zeros, by_code: dict, n: int):
         if len(candidates) != 1:
             return None
         derived = {**derived, code: candidates[0]}
-    rebuilt = []
-    for c in range(n):  # re-segment, extending runs of equal destinations
-        dests = claimed.get(c) or cover[c]
-        if rebuilt and rebuilt[-1][2] == dests:
-            rebuilt[-1] = (rebuilt[-1][0], c, dests)
-        else:
-            rebuilt.append((c, c, dests))
-    if _map_errors(rebuilt, counts, derived, by_code, n):
+    rebuilt = _resegment({c: claimed.get(c) or cover[c] for c in range(n)},
+                         counts, derived, by_code, n)
+    if rebuilt is None:
         return None
     return rebuilt, counts, derived
 
@@ -955,7 +996,17 @@ def _star_hints(segments: list, counts: dict, by_code: dict) -> list:
     return hints
 
 
-def _shared_hints(segments: list, counts: dict) -> list:
+def _split_hint(code: str, span: int, declared: int) -> str:
+    """The shared-run hint's ask: separate one line per instance where
+    chunk boundaries can, decline by staying silent otherwise."""
+    return (f'{code}: {span} chunks carry {declared} instance(s). If the '
+            f'chunk boundaries can separate the instances, re-emit with one '
+            f'line per instance and a matching count ("5-9 {code}.0", '
+            f'"10-11 {code}.1"). If the instances truly share their chunks, '
+            f'reply with nothing.')
+
+
+def _shared_hints(segments: list, counts: dict) -> dict:
     """Array units whose instances share one long run — comma-joined
     items, or a unit declared once whose lone item spans far more
     chunks than one entry plausibly reads alone. The mirror of the
@@ -966,8 +1017,8 @@ def _shared_hints(segments: list, counts: dict) -> list:
     indistinguishable from the merged form — the recount lets the
     model confirm it; a declined suggestion costs one round.
     Already-separated maps (each instance its own line) never fire;
-    small excesses don't pay for the round. Returns ``(code, chunk
-    count, declared)`` tuples."""
+    small excesses don't pay for the round. Returns ``{code: (chunk
+    span, declared)}``."""
     shared = {}
     for start, end, dests in segments:
         if _is_star(dests) or start == end:
@@ -979,9 +1030,11 @@ def _shared_hints(segments: list, counts: dict) -> list:
         for d, n in per.items():
             if n > 1 or counts.get(d) == 1:
                 shared[d] = shared.get(d, 0) + end - start + 1
-    return [(code, chunks, counts.get(code)) for code, chunks in shared.items()
-            if chunks >= (counts.get(code) or 0) * 4
-            and chunks - (counts.get(code) or 0) >= STAR_HINT_MIN]
+    return {code: (span, declared)
+            for code, span in shared.items()
+            if (declared := counts.get(code) or 0)
+            and span >= declared * 4
+            and span - declared >= STAR_HINT_MIN}
 
 
 def _is_star(dests: tuple):
