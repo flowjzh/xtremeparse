@@ -97,6 +97,21 @@ async def test_separable_items_fan_out_even_when_small():
     assert [c.item for c in execution.calls] == [0, 1]
 
 
+async def test_ranged_blocks_and_budget_batches_wear_distinct_labels():
+    # the model's ranged block is its own call shape — labeled 'ranged',
+    # not borrowed from the strategy; the executor's own budget batching
+    # of plain items stays 'per-item'
+    ranged = Group(UNITS['career.jobs'], None, [0, 1, 2], 'a\nb', items=(0, 2))
+    plain = [Group(UNITS['career.jobs'], i, [i], 't') for i in (3, 4)]
+    execution = await execute(ProbeRunner(), routing(ranged, *plain),
+                              payload='p', scheduler=TaskScheduler(2),
+                              budgets={'career.jobs': 10})
+    assert [c.strategy for c in execution.calls] == ['ranged', 'per-item']
+    assert execution.calls[0].batch == (0, 1, 2) \
+        and execution.calls[0].budget == [10, 10, 10]
+    assert execution.calls[1].batch == (3, 4)
+
+
 async def test_cochunked_items_force_whole_and_deduplicate_material():
     # several items routed to the same chunks: one whole call, the
     # shared material extracted once — not repeated per item

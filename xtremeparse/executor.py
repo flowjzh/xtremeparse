@@ -13,15 +13,14 @@ import asyncio
 from dataclasses import dataclass
 from typing import Literal, Optional
 
-from xtremeparse.contracts import AgentRunner, AgentResult, JSONSchema
+from xtremeparse.contracts import AgentRunner, AgentResult, BATCH_BUDGET_CAP, JSONSchema
 from xtremeparse.prompting import (SPECIALIST_INSTRUCTIONS, WHOLE_ARRAY_ADDENDUM,
                                    estimate_tokens)
-from xtremeparse.router import Routing
+from xtremeparse.router import Routing, items_of
 from xtremeparse.scheduling import TaskScheduler
 from xtremeparse.units import Unit
 
-Strategy = Literal['whole', 'per-item']
-BATCH_BUDGET_CAP = 300  # accumulated budget one shared call may absorb
+Strategy = Literal['whole', 'per-item', 'ranged']
 
 
 @dataclass
@@ -83,18 +82,27 @@ async def execute(runner: AgentRunner, routing: Routing, *, payload: str,
     for unit, groups in _by_unit(routing.groups):
         strategy = _strategy(unit, groups, unit_strategy or {}) \
             if unit.kind == 'array' else None
-        if strategy == 'per-item':
-            specs = _batched(unit, _by_item(groups), budgets, batch_cap)
-        else:
-            # co-chunked items (one run holding several instances) share
-            # their material — extract it once, not once per item
-            unique = {tuple(g.chunk_ids): g for g in groups}.values()
-            specs = [(None, '\n\n'.join(g.text for g in unique),
-                      [i for g in unique for i in g.chunk_ids], None,
-                      _arranged(budgets, unit, None))]
-        for item, scope, ids, batch, budget in specs:
-            call = Call(unit, item, strategy, ids, scope, budget=budget,
-                        batch=batch)
+        # specs carry their own truthful strategy label: the model's
+        # ranged blocks (one call per ranged run, its instances one
+        # array-shaped answer), the executor's budget batches, and
+        # whole-array calls are three distinct shapes
+        specs = [('ranged', None, g.text, g.chunk_ids, tuple(items_of(g.items)),
+                  _block_budget(budgets, unit, g.items))
+                 for g in groups if g.items]
+        plain = [g for g in groups if not g.items]
+        if plain:
+            if strategy == 'per-item':
+                specs += [('per-item', *s) for s in
+                          _batched(unit, _by_item(plain), budgets, batch_cap)]
+            else:
+                # co-chunked items (one run holding several instances) share
+                # their material — extract it once, not once per item
+                unique = {tuple(g.chunk_ids): g for g in plain}.values()
+                specs += [(strategy, None, '\n\n'.join(g.text for g in unique),
+                           [i for g in unique for i in g.chunk_ids], None,
+                           _arranged(budgets, unit, None))]
+        for strat, item, scope, ids, batch, budget in specs:
+            call = Call(unit, item, strat, ids, scope, budget=budget, batch=batch)
             calls.append(call)
             tasks.append(await dispatch_specialist(
                 runner, call, payload=payload, scheduler=scheduler,
@@ -162,6 +170,18 @@ def _arranged(budgets: dict, unit: Unit, item: Optional[int]):
     if item is None:
         return values[0] if len(values) == 1 else list(values)
     return values[item] if item < len(values) else values[-1]
+
+
+def _block_budget(budgets: dict, unit: Unit, items: tuple):
+    """The ranged block's arranged budget: the unit's per-item list cut
+    to the block's own slice — one _arranged call per item, so the
+    resolution rule (a lone number repeats; a short list's last value
+    covers items beyond it) has one home. Budget presence is
+    path-level, so None-ness is all-or-nothing across the block."""
+    picked = [_arranged(budgets, unit, i) for i in range(items[0], items[1] + 1)]
+    if picked[0] is None:
+        return None
+    return picked[0] if len(picked) == 1 else picked
 
 
 def _batched(unit: Unit, item_rows, budgets: dict,

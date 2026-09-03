@@ -796,6 +796,126 @@ async def test_short_shared_runs_skip_the_shared_hint():
     assert routing.raw['counts']['jobs'] == 2
 
 
+# --- material-overflow split ask: the dense comma-joined draw whose
+# --- span ≈ declared slips both the star equality and the lazy ratio
+
+OVER_MAP = '0 a\n1-3 b.0,b.1,b.2\n4-7 b.3,b.4,b.5\n8 -\na: 1\nb: 6'
+OVER_CHUNKS = ['姓名张三'] + ['x' * 160] * 7 + ['无关页脚']  # 1120 chars of b material
+
+
+async def test_overrun_shared_run_gets_one_split_ask_then_diff_accepted():
+    # declared 6 over a 7-chunk shared run of fat chunks: beyond one
+    # call's capacity, so the router asks once — for ranged lines, one
+    # per call-sized block — and the model's block map fans the unit
+    runner = ScriptedRunner(
+        agent_result(OVER_MAP),
+        agent_result('0 a\n1-3 b.0-2\n4 -\n5-7 b.3-5\n8 -\na: 1\nb: 6'))
+    routing = await route(runner, payload=PAYLOAD, units=UNITS,
+                          chunks=OVER_CHUNKS)
+    ask = runner.calls[1]['feedback'][0]
+    assert ask.code == 'route_hint' \
+        and 'one ranged line per block' in ask.message \
+        and 'split chunks 1-7 evenly into 4 consecutive blocks' in ask.message
+    assert len(runner.calls) == 2  # asked once
+    blocks = [g for g in routing.groups if g.unit.path == 'jobs']
+    assert [g.items for g in blocks] == [(0, 2), (3, 5)]
+    assert routing.raw['counts'] == {'jobs': 6}
+    jobs = [a for a in routing.raw['assignments'] if a['unit'] == 'jobs']
+    assert [a['item'] for a in jobs] == list(range(6))
+    assert jobs[0]['chunks'] == [1, 2, 3] and jobs[5]['chunks'] == [5, 6, 7]
+
+
+async def test_ranged_run_is_the_compact_shared_form_without_overflow():
+    # a ranged run parses as one co-owned group; under the material cap
+    # nothing asks and the executor-facing shape is one shared slice
+    runner = ScriptedRunner(
+        agent_result('0 a\n1-2 b.0-1\n3 -\na: 1\nb: 2'))
+    routing = await route(runner, payload=PAYLOAD, units=UNITS,
+                          chunks=['姓名张三', '第一段：腾讯', '第二段：阿里', '无关页脚'])
+    assert len(runner.calls) == 1
+    (group,) = [g for g in routing.groups if g.unit.path == 'jobs']
+    assert group.items == (0, 1) and group.chunk_ids == [1, 2]
+    jobs = [a for a in routing.raw['assignments'] if a['unit'] == 'jobs']
+    assert [(a['item'], a['chunks']) for a in jobs] == \
+        [(0, [1, 2]), (1, [1, 2])]
+
+
+async def test_ranged_instances_cannot_repeat_across_lines():
+    runner = ScriptedRunner(
+        agent_result('0 a\n1-2 b.0-1\n3-4 b.1-2\n5 -\na: 1\nb: 3'),
+        agent_result('0 a\n1-2 b.0-1\n3-4 b.2\n5 -\na: 1\nb: 3'),
+    )
+    routing = await route(runner, payload=PAYLOAD, units=UNITS,
+                          chunks=CHUNKS + ['无关页脚', '无关页脚二'])
+    messages = ' '.join(i.message for i in runner.calls[1]['feedback'])
+    assert 'ranged twice' in messages
+    blocks = [g for g in routing.groups if g.unit.path == 'jobs']
+    assert [(g.items, g.item) for g in blocks] == [((0, 1), None), ((), 2)]
+
+
+async def test_ranged_initial_draw_splits_through_one_quotable_diff():
+    # the base prompt's greedy ranged form: the initial draw is ONE
+    # short line, the split ask's diff quotes it verbatim, and the
+    # ranged blocks land in a single round
+    runner = ScriptedRunner(
+        agent_result('0 a\n1-7 b.0-5\n8 -\na: 1\nb: 6'),
+        agent_result('-1-7 b.0-5\n+1-3 b.0-2\n+4 -\n+5-7 b.3-5'))
+    routing = await route(runner, payload=PAYLOAD, units=UNITS,
+                          chunks=OVER_CHUNKS)
+    assert 'NEVER enumerate' in runner.calls[0]['instructions']
+    ask = runner.calls[1]['feedback'][0]
+    assert 'one ranged line per block' in ask.message
+    assert len(runner.calls) == 2
+    blocks = [g for g in routing.groups if g.unit.path == 'jobs']
+    assert [g.items for g in blocks] == [(0, 2), (3, 5)]
+    assert [g.chunk_ids for g in blocks] == [[1, 2, 3], [5, 6, 7]]
+    # every round's applied map text rides the trace — the ask round's
+    # diff and the initial draw are both recoverable without re-running
+    maps = routing.raw['maps']
+    assert len(maps) == 2 and '1-7 b.0-5' in maps[0] \
+        and '1-3 b.0-2' in maps[1]
+
+
+async def test_thin_shared_run_skips_the_split_ask():
+    # same shared shape, material under SPLIT_MATERIAL_CAP: one whole
+    # call decodes it in seconds — no round
+    runner = ScriptedRunner(agent_result(OVER_MAP))
+    routing = await route(runner, payload=PAYLOAD, units=UNITS,
+                          chunks=['姓名张三'] + ['x' * 10] * 7 + ['无关页脚'])
+    assert len(runner.calls) == 1
+    jobs = [a for a in routing.raw['assignments'] if a['unit'] == 'jobs']
+    assert len(jobs) == 6  # the shared form stands
+
+
+async def test_split_ask_declined_keeps_the_shared_whole():
+    # silence is a declined suggestion — the whole call stands
+    runner = ScriptedRunner(agent_result(OVER_MAP), agent_result(''))
+    routing = await route(runner, payload=PAYLOAD, units=UNITS,
+                          chunks=OVER_CHUNKS)
+    assert len(runner.calls) == 2  # asked once, then accepted as declined
+    jobs = [a for a in routing.raw['assignments'] if a['unit'] == 'jobs']
+    assert jobs[0]['chunks'] == [1, 2, 3] and jobs[5]['chunks'] == [4, 5, 6, 7]
+
+
+async def test_split_ask_precedes_the_lazy_recount():
+    # one document carrying both shapes: the dense-fat unit gets the
+    # cheap diff ask first, the lazy merged unit the fresh recount
+    # after (the diff must apply to the model's own answer text before
+    # any adoption rewrites the map)
+    chunks = ['姓名张三'] + ['x' * 350] * 3 + [f'c{i}' for i in range(4, 40)]
+    runner = ScriptedRunner(
+        agent_result('0 a\n1-3 b.0,b.1,b.2,b.3,b.4\n4 -\n5-37 c.0\n38-39 -\n'
+                     'a: 1\nb: 5\nc: 1'),
+        agent_result(''),
+        agent_result('c: 2\nc12\nc30'))
+    routing = await route(runner, payload=PAYLOAD, units=TWO_ARRAYS,
+                          chunks=chunks)
+    assert 'one ranged line per block' in runner.calls[1]['feedback'][0].message
+    assert 'RECOUNT' in runner.calls[2]['instructions']
+    assert len(runner.calls) == 3
+    assert routing.raw['counts'] == {'jobs': 5, 'projects': 2}
+
+
 # two array units: a dense one for the star hint, a merged one for the
 # shared recount — codes a=basic_info, b=jobs, c=projects, d=$misc
 TWO_ARRAYS = decompose({

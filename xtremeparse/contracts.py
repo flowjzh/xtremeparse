@@ -14,6 +14,10 @@ from typing import Any, Callable, Optional, Protocol, Sequence, runtime_checkabl
 # hand-written schema with the same shape).
 JSONSchema = dict[str, Any]
 
+BATCH_BUDGET_CAP = 300  # accumulated arranged budget one shared call may
+# absorb: the executor's batching threshold and the router's split-ask
+# arithmetic share it (both price one call's output capacity)
+
 
 @runtime_checkable
 class Issue(Protocol):

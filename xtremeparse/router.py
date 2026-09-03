@@ -22,11 +22,15 @@ total: the model judges instance-per-chunk shape (easy, it sees the
 chunks) instead of enumerating every index (weak), and code never
 mistakes the run for an unsplit whole. A valid map that leaves fan-out
 on the table — a long run shared while its declared count equals the
-run's chunk total, or instances sharing one run far longer than their
-count — gets its fix in a round of its own: the star hint asks the
-model to star via a diff (reply empty to keep it shared; measured:
-asked, the model stars the dense lists it had mapped shared), and the
-merged form gets a fresh-conversation recount that code re-splits by.
+run's chunk total, a shared run whose mapped material overflows one
+shared call's capacity (the dense comma-joined draw, asked to split by
+a diff), or instances sharing one run far longer than their count —
+gets its fix in a round of its own: the star hint asks the model to
+star via a diff (reply empty to keep it shared; measured: asked, the
+model stars the dense lists it had mapped shared), the overflow ask
+asks for ranged lines — one per call-sized block, the count sized from
+the unit's own budget — and the merged lazy form gets a
+fresh-conversation recount that code re-splits by.
 The declared counts make the map self-consistent: item indexes must
 run exactly 0..declared-1, every declared item must receive chunks.
 Coverage and disjointness hold per line range (line order itself
@@ -45,20 +49,31 @@ from typing import Optional
 
 from xtremeparse.arbitration import (fresh_check, norm,
                                     sectioned, unmarked)
-from xtremeparse.contracts import AgentRunner, JSONSchema
+from xtremeparse.contracts import AgentRunner, BATCH_BUDGET_CAP, JSONSchema
 from xtremeparse.units import Unit, type_set, value_branches
 
 NONE = '-'
 STAR = '*'  # a starred bare run: one instance per chunk, split by code
 STAR_HINT_MIN = 5  # below this a shared whole call costs seconds — the
 # confirmation round would cost more than the split saves
+SPLIT_MATERIAL_CAP = 1000  # mapped content chars one shared call may
+# absorb before the split ask pays for itself: past ~1k chars the
+# whole-array decode (~58 tok/s measured) outlasts the extra round.
+# Deliberately ~3x BATCH_BUDGET_CAP — a unit crossing this trigger at a
+# full ratio splits into at least three blocks, so the ask is never a
+# single-block no-op
+RECOUNT_DESCRIPTION = 'Declarations and map lines for the RECOUNT units only'
+SHARED_RECOUNT_DESCRIPTION = ('Per recounted unit: a count line and the '
+                              "instances' opening quotes")
 # placeholders every prompt template must carry (host overrides are
 # validated against these; see docs/prompting.md)
 ROUTE_PLACEHOLDERS = frozenset({'top', 'none', 'legend', 'chunks'})
 RECOUNT_PLACEHOLDERS = frozenset({'legend', 'chunks'})
 _LINE = re.compile(r'^(\d+)(?:-(\d+))?\s+('
-                   r'[a-z]+\*?(?:\.\d+)?(?:\s*,\s*[a-z]+\*?(?:\.\d+)*)*'
+                   r'[a-z]+\*?(?:\.\d+(?:-\d+)?)?'
+                   r'(?:\s*,\s*[a-z]+\*?(?:\.\d+(?:-\d+)?)*)*'
                    r'|-(?:\.\d+)?)$')
+_ITEM_RANGE = re.compile(r'(\d+)-(\d+)')
 _COUNT = re.compile(r'^([a-z]+)(?::\s*(\d+))?(?:\s*=\s*([a-z]+))?(?:\s*@.*)?$')
 _BUDGET = re.compile(r'@\s*([0-9][0-9xX%,\s]*)')
 
@@ -88,9 +103,11 @@ def budget_kind(token: str) -> Optional[str]:
 
 _INSTRUCTIONS = '''You route document chunks to extraction units. Output the segment
 map: one line per contiguous run of chunks ("4-9 x.1" — start-end
-code, ".item" appended on repeating units; a bare repeating code
-("4-9 x") means several instances share the run unsplit — they are
-extracted whole; a single chunk may omit "-end"). Example codes below
+code, ".item" appended on repeating units; "4-9 x.0-8" is the ranged
+form — those chunks carry exactly instances 0-8, in chunk order; a
+bare repeating code ("4-9 x") means several instances share the run
+unsplit — they are extracted whole; a single chunk may omit "-end").
+Example codes below
 are schematic letters, not units of this document. After the map, one
 count line per repeating unit ("x: 3" plus its budget suffix)
 declaring the instances the DOCUMENT holds — every repeating unit gets
@@ -118,7 +135,7 @@ Rules:
   summarizes, so a terse summary sits well below 100%.
 - A run of entry chunks — each chunk holds exactly ONE instance of the
   unit, an entry list with one listing per chunk — MUST take the star
-  mark: "12-93 d*". Code splits the run mechanically into one item per
+  mark: "12-93 d*". The run is then split one item per chunk, in
   chunk in ascending order, and the unit's count is read off the
   run's chunk total — the count line stays, but the number is
   ignored. The unmarked bare run ("4-9 d") extracts its whole material
@@ -177,11 +194,18 @@ Rules:
   same chunk are never legal.
 - Items of the SAME unit that separable chunk boundaries CAN separate
   MUST each get their own line ("5-9 x.0" then "10-11 x.1"): each
-  item's call then fans out on its own and its budget scales against
-  its own material. Sharing one line ("3 x.0,x.1,x.2") is ONLY for a
+  item's budget then scales against its own material. Sharing one line
+  ("3 x.0,x.1,x.2") is ONLY for a
   run whose chunk boundaries cannot separate the instances — one chunk
   holding material of two or more instances; that material is then
   extracted once, whole.
+- A long run whose chunks carry one unit's instances IN ORDER — an
+  entry list reading as consecutive instances, roughly one to a chunk —
+  MUST be ONE ranged line ("12-93 x.0-84": name the exact index span
+  the chunks carry). NEVER enumerate that many indexes comma-joined
+  ("12 x.0,x.1,x.2,..." is a broken draw) and never write one line per
+  instance at that length. Short runs (a few instances) stay per-item
+  lines.
 - Every declared item receives at least one chunk. A unit sharing
   another's run may repeat one item across several lines (one instance
   spanning what another unit splits into many).
@@ -215,32 +239,29 @@ Reply with a unified diff against your previous map: "-" lines removed,
 The full map is also accepted.'''
 _DIFF_REPLY = _DIFF_HOWTO + ' An empty reply declines the suggestion.'
 _DIFF_FIX = _DIFF_HOWTO + ' Fix every error named above.'
+_DECLINE = 'reply with nothing.'  # the silent decline every fan-out ask
+# ends with — an empty reply keeps the standing map
 
 
-_CHECK = '''You are rechecking part of a routing decision. Some repeating units
-were left at zero; recount their instances in the DOCUMENT — read the
-whole chunk list; a brief mention inside an otherwise irrelevant run
-is still an instance.
+_CHECK = '''You are rechecking part of a routing decision. The repeating units
+listed at the end were left at zero; recount their instances in the
+DOCUMENT — read the whole chunk list; a brief mention inside an
+otherwise irrelevant run is still an instance.
 
-For each unit marked RECOUNT answer one line only — do not re-answer
-units not marked RECOUNT, their counts and map lines are final:
-- its source, "x = <code>", when the unit has no text of its own —
-  its items just mirror another repeating unit's, one brief line per
-  item of that unit: choose that unit's code from the list, never a
-  count, never map lines;
-- a count, "x: <n>", when the unit has its own text in the chunks —
-  then add its map lines in the routing DSL ("4 x.0", "5 x.1"), one
-  item per instance, covering exactly its material, numbered by the
-  card's declared order when the card declares one.
-0 only for a unit the document truly does not contain.
-
-Repeating units (code = unit card; RECOUNT = left at zero):
+For each unit answer one line only, <code> being that unit's code
+from the list at the end:
+- its count, "<code>: <n>", when the unit has its own text in the
+  chunks — then add its map lines in the routing DSL
+  ("4 <code>.0", "5 <code>.1"), one item per instance, covering
+  exactly its material, numbered by the card's declared order when
+  the card declares one;
+- "<code>: 0" alone when the document truly does not contain the unit.
 
 Chunks:
 
 {chunks}
 
-Unit codes:
+Units left at zero (code = unit card):
 {legend}'''
 
 
@@ -252,12 +273,35 @@ class RouterError(Exception):
 class Group:
     """One routed slice: a unit, an optional array item, and the
     deterministic concatenation of its chunks. Groups of one unit (and of
-    one item) may coalesce into a single specialist call in the executor."""
+    one item) may coalesce into a single specialist call in the executor.
+    ``items`` marks a ranged run: these chunks carry instances
+    items[0]..items[1] inseparably — the executor makes the run one
+    batched call instead of fanning its instances apart."""
 
     unit: Unit
     item: Optional[int]
     chunk_ids: list
     text: str
+    items: tuple = ()  # (first, last) instance indexes of a ranged run
+
+
+def items_of(dest):
+    """The item indexes one destination claims: a ranged run (a, b)
+    claims a..b, anything else is itself (None, an index, or STAR).
+    The one spelling of that rule — parser validation, assignment
+    expansion, executor batching and material pricing all come here."""
+    return range(dest[0], dest[1] + 1) if isinstance(dest, tuple) else (dest,)
+
+
+def _assignments(segments: list, by_code: dict) -> list:
+    """The per-instance assignment rows one map denotes: a dict per
+    (destination, item index) carrying its chunks — the shape the trace
+    publishes and ``_material`` prices."""
+    return [{'unit': by_code[code].path, 'item': i,
+             'chunks': list(range(start, end + 1))}
+            for start, end, destinations in segments
+            for code, item in destinations if code != NONE
+            for i in items_of(item)]
 
 
 @dataclass
@@ -387,10 +431,11 @@ async def route(runner: AgentRunner, *, payload: str,
     schema: JSONSchema = {'type': 'string',
                           'description': 'Segment map and count declarations '
                                          'only — no prose, no JSON.'}
-    feedback, last, history, verified = None, None, [], False
-    star_asked = False  # the star hint is asked once per routing
-    shared_asked = False  # the shared recount likewise — independent of
-    # the star hint (the conditions are mutually exclusive per unit)
+    feedback, last, history = None, None, []
+    asked = set()  # hint passes already spent — each ask fires at most
+    # once per routing, however the map shifts afterwards
+    maps = []  # every round's applied map text — chunk ids, codes and
+    # item indexes only, no document content; the eval trace keeps them
     diff_base = None  # the previous round's map text — armed once below,
     # after every answer, so a future hint round cannot forget it
     # error lists: a repaired error that later reappears means the model
@@ -414,23 +459,44 @@ async def route(runner: AgentRunner, *, payload: str,
         # standing base — and the next round diffs against it, hint or
         # repair alike
         diff_base = text
+        maps.append(text)
         if not errors:
-            if not star_asked and (hints := _star_hints(segments, counts,
-                                                        by_code)):
+            spans = _shared_spans(segments, counts)
+
+            async def star_ask():
                 # a run covering exactly as many chunks as the unit has
                 # instances is probably an entry list left unstarred —
                 # the costliest form (one whole-material stream). Ask
                 # once: the model stars it via a diff, or stays silent
                 # (empty declines; a full re-emission is still tolerated
-                # and parses as ever). This round must run before the
-                # shared recount: the diff applies to the model's own
-                # answer text, so a resplit done first would be discarded
-                # by the re-parse
-                star_asked = True
-                feedback = [_RouteIssue('segments', 'route_hint',
-                                        h + _DIFF_REPLY) for h in hints]
-                continue
-            if not shared_asked and (shared := _shared_hints(segments, counts)):
+                # and parses as ever). This pass runs before the shared
+                # recount: the diff applies to the model's own answer
+                # text, so a resplit done first would be discarded by
+                # the re-parse
+                return [_RouteIssue('segments', 'route_hint',
+                                    h + _DIFF_REPLY)
+                        for h in _star_hints(segments, counts, by_code)]
+
+            async def split_ask():
+                # a shared run holding more mapped material than one
+                # shared call may absorb — the dense draw the star
+                # equality can miss (declared 85 over 82 entry chunks).
+                # One round asks for ranged lines, one per
+                # call-sized block (the count sized from the unit's own
+                # budget); the model draws the boundaries and the split
+                # is its own validated map. The ask wants a full
+                # re-emission, NOT a diff — the replaced shared line is
+                # a several-hundred-char comma-join its quote would
+                # miss (measured). Silence keeps the shared whole
+                return [_RouteIssue(
+                    'segments', 'route_hint',
+                    _overrun_hint(code, first, last, blocks))
+                    for code, (first, last, blocks) in _overrun_hints(
+                        segments, spans, counts, chunks, by_code, budgets,
+                        derived).items()]
+
+            async def shared_ask():
+                nonlocal segments, counts
                 # instances merged into one long run: the anchored
                 # conversation will not unmerge its own map (a repair
                 # round shown the map re-emits it, measured — and the
@@ -445,7 +511,9 @@ async def route(runner: AgentRunner, *, payload: str,
                 # text, so a round taken after a partial adoption would
                 # discard the adopted splits (the pending unit then
                 # simply stays shared)
-                shared_asked = True
+                shared = _shared_hints(spans, counts)
+                if not shared:
+                    return None
                 answer = await _recount_shared(runner, payload, shared,
                                                by_code, chunks)
                 pending = {}
@@ -457,14 +525,14 @@ async def route(runner: AgentRunner, *, payload: str,
                     else:
                         pending[code] = (span, declared)
                 if pending and len(pending) == len(shared):
-                    feedback = [_RouteIssue(
+                    return [_RouteIssue(
                         'segments', 'route_hint',
                         _split_hint(code, span, declared) + _DIFF_REPLY)
                         for code, (span, declared) in pending.items()]
-                    continue
-            if not verified and (zeros := [c for c, u in by_code.items()
-                                           if u.kind == 'array' and c not in derived
-                                           and counts.get(c) == 0]):
+                return None  # a full or partial adoption stands
+
+            async def zeros_ask():
+                nonlocal segments, counts, derived
                 # a zero is never trusted on the map's own say-so: the
                 # model commits to its finished map and will not revisit
                 # NONE'd material — not in the same pass, and not in a
@@ -473,31 +541,45 @@ async def route(runner: AgentRunner, *, payload: str,
                 # fresh conversation without the map re-counts them, and
                 # code splices the answer in — the anchored conversation
                 # would re-emit its own map verbatim
-                verified = True
-                answer = await _recount(runner, payload, by_code, zeros, chunks,
+                zeros = [c for c, u in by_code.items()
+                         if u.kind == 'array' and c not in derived
+                         and counts.get(c) == 0]
+                if not zeros:
+                    return None
+                answer = await _recount(runner, payload, by_code, zeros,
+                                        chunks,
                                         instructions=recount_instructions)
                 if merged := _splice(segments, counts, derived, answer,
                                      zeros, by_code, len(chunks)):
                     segments, counts, derived = merged
-                else:
-                    note = (f'{", ".join(zeros)}: a separate recount of '
-                            'the document disagreed with this map but '
-                            'could not be merged — for each, recheck the '
-                            'chunk list yourself: give every instance '
-                            'its map lines with a matching count, or '
-                            'declare "= <source>" if it only summarizes '
-                            'another repeating unit; keep 0 only if '
-                            'truly absent')
-                    feedback = [_RouteIssue('segments', 'route_invalid',
-                                            note + _DIFF_REPLY)]
-                    history.append([note])
-                    continue
+                    return None  # the recount's adoption stands
+                note = (f'{", ".join(zeros)}: a separate recount of '
+                        'the document disagreed with this map but '
+                        'could not be merged — for each, recheck the '
+                        'chunk list yourself: give every instance '
+                        'its map lines with a matching count, or '
+                        'declare "= <source>" if it only summarizes '
+                        'another repeating unit; keep 0 only if '
+                        'truly absent')
+                history.append([note])
+                return [_RouteIssue('segments', 'route_invalid',
+                                    note + _DIFF_REPLY)]
+
+            # the hint passes, in firing order — each returns the
+            # feedback list to spend the round on, or nothing: either no
+            # hint applied, or it adopted its fix in code and the map
+            # may be final
+            fb = None
+            for name, ask in (('star', star_ask), ('split', split_ask),
+                              ('shared', shared_ask), ('zeros', zeros_ask)):
+                if name not in asked and (fb := await ask()):
+                    asked.add(name)
+                    break
+            if fb:
+                feedback = fb
+                continue
             segments, _ = _expand_stars(segments)
-            assignments = [
-                {'unit': by_code[code].path, 'item': item,
-                 'chunks': list(range(start, end + 1))}
-                for start, end, destinations in segments
-                for code, item in destinations if code != NONE]
+            assignments = _assignments(segments, by_code)
             by_unit = {}
             for a in assignments:
                 by_unit.setdefault(a['unit'], []).append(a)
@@ -518,7 +600,8 @@ async def route(runner: AgentRunner, *, payload: str,
                             'assignments': assignments,
                             'budgets': {p: ([str(v) for v in b]
                                             if isinstance(b, list) else str(b))
-                                        for p, b in budgets_by_path.items()}}, by_path)
+                                        for p, b in budgets_by_path.items()},
+                            'maps': maps}, by_path)
         past = set().union(*history[:-1]) if len(history) > 1 else set()
         marked = [f'{e} — this error was already fixed in an earlier round; '
                   'restore that fix while addressing the others'
@@ -539,19 +622,17 @@ async def _recount(runner: AgentRunner, payload: str, by_code: dict,
     the map re-emits it verbatim, measured). Returns the raw answer
     for `_splice` to fold in."""
     instructions = (instructions or _CHECK).format(
-        # the card's header line carries the unit's own description — the
-        # cue that separates a summarizing unit (answers its source) from
-        # one with its own text (answers a count); units not being
-        # recounted keep only their bare code — enough to name a
-        # derivation source, too little to invite a re-answer
-        legend='\n'.join(
-            f'{c} = {by_code[c].header} RECOUNT' if c in zeros
-            else f'{c} = {by_code[c].path}'
-            for c, u in by_code.items() if u.kind == 'array'),
+        # only the recounted units appear — the other codes' mere
+        # presence invited a full re-answer of every array (their
+        # "final" counts re-derived from the chunks, measured: 137
+        # output tokens for a one-line answer). A summarizing unit's
+        # derivation needs no source code in the legend: _splice's
+        # crossed-count adoption reads it off the misplaced claims
+        legend='\n'.join(f'{c} = {by_code[c].header} RECOUNT'
+                         for c in zeros),
         chunks=_listing(chunks))
     return await fresh_check(
-        runner, payload, instructions,
-        'Declarations and map lines for the RECOUNT units only')
+        runner, payload, instructions, RECOUNT_DESCRIPTION)
 
 
 _SHARED_CHECK = '''A document's chunks are listed below. Some repeating units' instances
@@ -588,9 +669,7 @@ async def _recount_shared(runner: AgentRunner, payload: str,
                         for code in shared),
         chunks=_listing(chunks))
     result = await fresh_check(
-        runner, payload, instructions,
-        'Per recounted unit: a count line and the instances\' opening '
-        'quotes')
+        runner, payload, instructions, SHARED_RECOUNT_DESCRIPTION)
     return _parse_shared_answer(result, shared)
 
 
@@ -783,22 +862,28 @@ def _material(assignments, chunks, derived: dict) -> dict:
     will mirror, and aligned source text pads its columns with blanks
     (tables, line-broken layouts). Co-chunked items ("2-3 b.0,b.1")
     share one run but each mirrors its own slice: the shared material
-    splits across the items. Derived units mirror their source's
-    material — their own map lines (a contradictory but tolerated
-    combo) are ignored."""
+    splits across the items. Rows sharing an identical chunk list (a
+    ranged run's instances) are one run priced once, its material split
+    evenly — not one full-chunk-list dict per instance. Derived units
+    mirror their source's material — their own map lines (a
+    contradictory but tolerated combo) are ignored."""
     base = [a for a in assignments if a['unit'] not in derived]
-    shares, lens = {}, {}
+    runs, lens = {}, {}  # (unit path, chunk tuple) → [item indexes]
     for a in base:
-        by_chunk = shares.setdefault(a['unit'], {})
-        for i in a['chunks']:
-            by_chunk[i] = by_chunk.get(i, 0) + 1
-            lens.setdefault(i, _content_len(chunks[i]))
+        runs.setdefault((a['unit'], tuple(a['chunks'])), []).append(a['item'])
+        for c in a['chunks']:
+            lens.setdefault(c, _content_len(chunks[c]))
+    claims = {}  # (unit path, chunk) → rows claiming it, across runs —
+    # a chunk two differently-bounded instances touch splits between them
+    for (unit, cs), items in runs.items():
+        for c in cs:
+            claims[unit, c] = claims.get((unit, c), 0) + len(items)
     material = {}
-    for a in base:
-        by_item = material.setdefault(a['unit'], {})
-        by_chunk = shares[a['unit']]
-        by_item[a['item']] = by_item.get(a['item'], 0) + sum(
-            lens[i] / by_chunk[i] for i in a['chunks'])
+    for (unit, cs), items in runs.items():
+        amount = sum(lens[c] / claims[unit, c] for c in cs)
+        by_item = material.setdefault(unit, {})
+        for item in items:
+            by_item[item] = by_item.get(item, 0) + amount
     for unit, source in derived.items():
         material[unit] = dict(material.get(source, {}))
     return material
@@ -921,6 +1006,21 @@ def _parse(text, by_code: dict, n: int):
                 seen.add((code, item))
                 # bare repeating code: instances unsplit, extracted whole
                 destinations.append((code, 0))
+            elif unit.kind == 'array' and (m2 := _ITEM_RANGE.fullmatch(item)):
+                if len(parts) > 1:
+                    errors.append(f'line {i + 1}: {code}.{item} takes its line '
+                                  f'alone — a ranged run never comma-joins '
+                                  f'another code')
+                    continue
+                a, b = int(m2.group(1)), int(m2.group(2))
+                if b < a:
+                    errors.append(f'line {i + 1}: {code}.{item} is unordered')
+                    continue
+                seen.add((code, item))
+                # ranged run: compact shared form — these chunks carry
+                # exactly instances a..b, inseparably (the comma-join's
+                # syntax, one destination instead of b-a+1)
+                destinations.append((code, (a, b)))
             else:
                 seen.add((code, item))
                 # item tolerated on non-array units, stripped; a dotted
@@ -958,7 +1058,10 @@ def _star_hints(segments: list, counts: dict, by_code: dict) -> list:
             continue
         for c in {d for d, _ in dests if d != NONE}:
             mine = sum(1 for d, _ in dests if d == c)
-            fanned[c] = fanned.get(c, True) and mine == 1 and start == end
+            ranged = any(isinstance(item, tuple)
+                         for d, item in dests if d == c)
+            fanned[c] = fanned.get(c, True) and (
+                ranged or (mine == 1 and start == end))
             covered[c] = covered.get(c, 0) + end - start + 1
             first.setdefault(c, (start, end))
     hints = []
@@ -974,24 +1077,67 @@ def _star_hints(segments: list, counts: dict, by_code: dict) -> list:
             f'{code}: this run covers {chunks} chunks for {declared} '
             f'instances. If every chunk holds exactly one instance, re-emit '
             f'the map with every {code} run starred ("{s}-{e} {code}*") — '
-            f'it then extracts one instance per chunk in parallel. If the '
-            f'instances share their chunks, reply with nothing.')
+            f'it then extracts one instance per chunk. If the '
+            f'instances share their chunks, {_DECLINE}')
     return hints
 
 
 def _split_hint(code: str, span: int, declared: int) -> str:
-    """The shared-run hint's ask: separate one line per instance where
-    chunk boundaries can, decline by staying silent otherwise."""
+    """The lazy shared-run fallback ask: separate one line per instance
+    where chunk boundaries can, decline by staying silent otherwise."""
     return (f'{code}: {span} chunks carry {declared} instance(s). If the '
             f'chunk boundaries can separate the instances, re-emit with one '
             f'line per instance and a matching count ("5-9 {code}.0", '
             f'"10-11 {code}.1"). If the instances truly share their chunks, '
-            f'reply with nothing.')
+            f'{_DECLINE}')
 
 
-def _shared_hints(segments: list, counts: dict) -> dict:
-    """Array units whose instances share one long run — comma-joined
-    items, or a unit declared once whose lone item spans far more
+def _overrun_hint(code: str, first: int, last: int, blocks: int) -> str:
+    """The material-overflow ask, pure geometry: split the run into
+    <blocks> even consecutive blocks, one ranged line per block. No
+    rationale — the executor's economics mean nothing to the router
+    (measured: 'parallel calls' phrasing was ignored, and an 81-line
+    per-item enumeration still validated). Silence declines."""
+    return (f'{code}: split chunks {first}-{last} evenly into {blocks} '
+            f'consecutive blocks — re-emit the map with {code} as one '
+            f'ranged line per block, each block a consecutive slice of the '
+            f'chunks carrying its consecutive instances ("5-9 {code}.0-2", '
+            f'"10-14 {code}.3-5"). Keep every other line unchanged. If the '
+            f'instances truly share their chunks inseparably, {_DECLINE}')
+
+
+def _shared_spans(segments: list, counts: dict) -> dict:
+    """Shared-form array units: ``{code: chunk span}`` — instances
+    riding shared lines (comma-joined destinations), a lone item
+    spanning the whole run, or a ranged run (compact shared syntax).
+    Starred and single-chunk runs excluded."""
+    shared = {}
+    for start, end, dests in segments:
+        if _is_star(dests) or start == end:
+            continue
+        per, ranged = {}, set()
+        for d, item in dests:
+            if d != NONE:
+                per[d] = per.get(d, 0) + 1
+                if isinstance(item, tuple):
+                    ranged.add(d)
+        for d, n in per.items():
+            if n > 1 or counts.get(d) == 1 or d in ranged:
+                shared[d] = shared.get(d, 0) + end - start + 1
+    return shared
+
+
+def _lazy_shape(span: int, declared: int) -> bool:
+    """The lazy shared shape: instances merged into one run far longer
+    than one entry plausibly reads alone. The shared recount's case —
+    and the overrun ask's exclusion, so one unit can never draw both
+    (the exclusivity is this one predicate, not parallel arithmetic)."""
+    return span >= declared * 4 and span - declared >= STAR_HINT_MIN
+
+
+def _shared_hints(spans: dict, counts: dict) -> dict:
+    """Array units left in the LAZY shared shape — instances merged into
+    one long run, a unit declared once whose lone item spans far more
     chunks than one entry plausibly reads alone. The mirror of the
     star hint: there the run holds one instance per chunk and should
     split per chunk; here several chunks per instance may still
@@ -1002,22 +1148,55 @@ def _shared_hints(segments: list, counts: dict) -> dict:
     Already-separated maps (each instance its own line) never fire;
     small excesses don't pay for the round. Returns ``{code: (chunk
     span, declared)}``."""
-    shared = {}
-    for start, end, dests in segments:
-        if _is_star(dests) or start == end:
-            continue
-        per = {}
-        for d, _ in dests:
-            if d != NONE:
-                per[d] = per.get(d, 0) + 1
-        for d, n in per.items():
-            if n > 1 or counts.get(d) == 1:
-                shared[d] = shared.get(d, 0) + end - start + 1
     return {code: (span, declared)
-            for code, span in shared.items()
+            for code, span in spans.items()
             if (declared := counts.get(code) or 0)
-            and span >= declared * 4
-            and span - declared >= STAR_HINT_MIN}
+            and _lazy_shape(span, declared)}
+
+
+def _overrun_hints(segments: list, spans: dict, counts: dict,
+                   chunks: list[str], by_code: dict, budgets: dict,
+                   derived: dict) -> dict:
+    """Array units whose shared run holds more mapped material than one
+    shared call may absorb — the dense draw (every instance riding its
+    section's range) that neither the star equality nor the lazy ratio
+    can see: span ≈ declared there, while both hints need span ==
+    declared or the lazy shape. The ask sizes the split from the
+    unit's own arrangement: total arranged budget over one call's
+    capacity gives the block count the model draws to (a unit with no
+    arrangement falls back to its material chars — the ``@`` suffix is
+    tolerated, never checked). Lazy-shaped units stay the recount's
+    (the anchored model will not unmerge those, measured). Returns
+    ``{code: (first chunk, last chunk, blocks)}``."""
+    wanted = [code for code, span in spans.items()
+              if (declared := counts.get(code) or 0) >= STAR_HINT_MIN
+              and not _lazy_shape(span, declared)]
+    if not wanted:
+        return {}
+    bounds = {}
+    for start, end, dests in segments:
+        for c in {d for d, _ in dests if d != NONE}:
+            lo, hi = bounds.get(c, (start, end))
+            bounds[c] = (min(lo, start), max(hi, end))
+    paths = {code: by_code[code].path for code in wanted}
+    material = _material([a for a in _assignments(segments, by_code)
+                          if a['unit'] in paths.values()],
+                         chunks, {by_code[d].path: by_code[s].path
+                                  for d, s in derived.items()})
+    resolved = _resolved({by_code[c].path: b for c, b in budgets.items()},
+                         material)
+    hints = {}
+    for code in wanted:
+        chars = sum(material.get(paths[code], {}).values())
+        if chars < SPLIT_MATERIAL_CAP:
+            continue
+        total = resolved.get(paths[code])
+        total = sum(total) if isinstance(total, list) else (total or 0)
+        if not total:
+            total = chars
+        if (blocks := round(total / BATCH_BUDGET_CAP)) >= 2:
+            hints[code] = (*bounds[code], blocks)
+    return hints
 
 
 def _is_star(dests: tuple):
@@ -1078,7 +1257,26 @@ def _map_errors(segments, counts, derived, by_code: dict, n: int) -> list:
     for code, unit in by_code.items():
         if unit.kind != 'array' or code in derived:
             continue
-        items = {item for _, _, dests in segments for c, item in dests if c == code}
+        items, ranged_seen, ranged_warned = set(), {}, False
+        for _, _, dests in segments:
+            for c, item in dests:
+                if c != code:
+                    continue
+                if isinstance(item, tuple):
+                    for i in items_of(item):
+                        if i in ranged_seen and not ranged_warned:
+                            # one named overlap per code — a messy draw
+                            # must not flood the repair prompt with a
+                            # sentence per instance
+                            ranged_warned = True
+                            errors.append(
+                                f'{code}: instance {i} is ranged twice '
+                                f'({ranged_seen[i]} and {item}) — a ranged '
+                                f'run takes each instance once')
+                        ranged_seen.setdefault(i, item)
+                        items.add(i)
+                else:
+                    items.add(item)
         if STAR in items:  # a starred unit: its chunks ARE the instances
             if items - {STAR}:
                 errors.append(f'{code}: star and numbered destinations cannot '
@@ -1133,10 +1331,13 @@ def _groups(segments: list, by_code: dict, chunks: list[str],
                     g.chunk_ids.extend(ids)
                     g.text += '\n' + text
                     continue
-            g = Group(by_code[code], item, list(ids), text)
+            g = Group(by_code[code], None if isinstance(item, tuple) else item,
+                      list(ids), text,
+                      items=tuple(item) if isinstance(item, tuple) else ())
             last[(code, item)] = g
             groups.append(g)
     for code, source in (derived or {}).items():
-        groups += [Group(by_code[code], g.item, list(g.chunk_ids), g.text)
+        groups += [Group(by_code[code], g.item, list(g.chunk_ids), g.text,
+                         items=g.items)
                    for g in groups if g.unit is by_code[source]]
     return groups

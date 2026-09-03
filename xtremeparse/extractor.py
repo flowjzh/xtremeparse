@@ -9,10 +9,10 @@ from __future__ import annotations
 
 from xtremeparse.arbitration import arbitrate_extraction
 from xtremeparse.chunking import MAX_CHARS, chunk_text, normalize_newlines
-from xtremeparse.contracts import AgentRunner, ExtractionResult, Trace, Validator
+from xtremeparse.contracts import AgentRunner, BATCH_BUDGET_CAP, ExtractionResult, Trace, Validator
 from xtremeparse.corrections import (MAX_ROUNDS, correct, count_issues,
                                      count_mismatches)
-from xtremeparse.executor import BATCH_BUDGET_CAP, execute, values_from_calls
+from xtremeparse.executor import execute, values_from_calls
 from xtremeparse.merge import merge
 from xtremeparse.prompting import (SPECIALIST_PLACEHOLDERS, check_placeholders,
                                    estimate_tokens, provenance, shared_payload)

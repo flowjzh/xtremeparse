@@ -34,6 +34,14 @@ repeating (array) unit.
     first line.
 - A bare repeating code (`4-9 x`) means several instances share the run
   unsplit — that material is extracted once, whole.
+- A ranged run (`12-93 x.0-92`) is the compact shared form: those chunks
+  carry exactly instances 0..92, inseparably — one destination instead
+  of 93 comma-joined indexes, the run's material extracted once until a
+  split round redraws it. The base prompt makes it mandatory for long
+  entry-list runs (consecutive instances, roughly one to a chunk): the
+  initial draw stays one short line — cheap to emit and, when a split
+  round rewrites it, cheap to quote in a diff. Ranges take their line
+  alone — never comma-joined — and no instance may appear in two ranges.
 - A starred bare run (`12-93 x*`) marks an entry-style run — every chunk
   holds exactly one instance. Code splits it mechanically into one item
   per chunk in ascending order, and the unit's declared count is read
@@ -143,12 +151,17 @@ anchors on content, since the diff's lines are the model's own
 previous answer quoted back. Edits cannot regress lines the model
 already fixed, a quote that misses costs nothing, and the patched
 text parses as a fresh answer, so every rule above holds of the
-RESULT, not the patch. Two fan-out hints exist, one round per
+RESULT, not the patch. Three fan-out hints exist, one round each per
 routing: a run covering exactly as many chunks as its unit has
-instances is asked to star (one instance per chunk), and instances
-sharing a run far longer than their count are asked to separate one
-line per instance — either way an empty reply declines and keeps the
-shared form.
+instances is asked to star (one instance per chunk); a shared run
+whose mapped material exceeds one shared call's capacity (~1000
+content chars) is asked to split into ranged lines — one per
+call-sized block, the block count sized from the unit's own arranged
+budget over the executor's per-call cap, so the reply is ~10 lines
+where an instance-enumerated split would be ~85; and instances
+sharing a run far longer than their count get a fresh-conversation
+recount that code re-splits at the quoted openings.
+Any of them: an empty reply declines and keeps the shared form.
 Two degradations are accepted without ceremony: a reply with no diff
 markers parses as a full re-emission, and an empty reply declines the
 suggestion (the previous map stands).
