@@ -218,6 +218,20 @@ async def test_unspliceable_recount_falls_back_to_a_repair_round():
     assert routing.raw['counts'] == {'jobs': 1}
 
 
+async def test_recount_ranged_claim_adopts_as_the_shared_form():
+    # the recount may answer in the ranged spelling, doubled code
+    # included — the compact shared form's own syntax, not a crash
+    runner = ScriptedRunner(
+        agent_result('0-1 a\n2-3 -\nb: 0'),
+        agent_result('b: 2\n2-3 b.0-b.1'))
+    routing = await route(runner, payload=PAYLOAD, units=UNITS, chunks=CHUNKS)
+    assert len(runner.calls) == 2
+    assert routing.raw['counts'] == {'jobs': 2}
+    jobs = [a for a in routing.raw['assignments'] if a['unit'] == 'jobs']
+    assert [(a['item'], a['chunks']) for a in jobs] == \
+        [(0, [2, 3]), (1, [2, 3])]
+
+
 async def test_recount_claims_inside_one_units_items_read_as_derivation():
     # a summarizing unit answers a COUNT and maps its rows onto another
     # unit's items — the misplaced claims betray the summary relation;
@@ -672,8 +686,8 @@ OVER_CHUNKS = ['姓名张三'] + ['x' * 160] * 7 + ['无关页脚']  # 1120 char
 
 async def test_overrun_shared_run_gets_one_split_ask_then_diff_accepted():
     # declared 6 over a 7-chunk shared run of fat chunks: beyond one
-    # call's capacity, so the router asks once — for ranged lines, one
-    # per call-sized block — and the model's block map fans the unit
+    # call's capacity, so the router asks once — with the block lines
+    # computed in code — and the model's ratifying diff fans the unit
     runner = ScriptedRunner(
         agent_result(OVER_MAP),
         agent_result('0 a\n1-3 b.0-2\n4 -\n5-7 b.3-5\n8 -\na: 1\nb: 6'))
@@ -682,7 +696,7 @@ async def test_overrun_shared_run_gets_one_split_ask_then_diff_accepted():
     ask = runner.calls[1]['feedback'][0]
     assert ask.code == 'route_hint' \
         and 'one ranged line per block' in ask.message \
-        and 'split chunks 1-7 evenly into 4 consecutive blocks' in ask.message
+        and '6-7 b.4-5' in ask.message  # the last computed block line
     assert len(runner.calls) == 2  # asked once
     blocks = [g for g in routing.groups if g.unit.path == 'jobs']
     assert [g.items for g in blocks] == [(0, 2), (3, 5)]
@@ -705,6 +719,50 @@ async def test_ranged_run_is_the_compact_shared_form_without_overflow():
     jobs = [a for a in routing.raw['assignments'] if a['unit'] == 'jobs']
     assert [(a['item'], a['chunks']) for a in jobs] == \
         [(0, [1, 2]), (1, [1, 2])]
+
+
+async def test_item_range_may_repeat_the_code():
+    # the model's natural reading of the house form ("b.0-b.1") —
+    # normalized so the ranged draw survives round one instead of
+    # cascading into per-instance enumeration
+    runner = ScriptedRunner(agent_result('0 a\n1-2 b.0-b.1\n3 -\nb: 2'))
+    routing = await route(runner, payload=PAYLOAD, units=UNITS, chunks=CHUNKS)
+    assert len(runner.calls) == 1
+    (group,) = [g for g in routing.groups if g.unit.path == 'jobs']
+    assert group.items == (0, 1) and group.chunk_ids == [1, 2]
+
+
+async def test_spaced_item_range_gets_a_named_hint():
+    runner = ScriptedRunner(
+        agent_result('0 a\n1-2 b.0 - b.1\n3 -\nb: 2'),
+        agent_result('0 a\n1-2 b.0-1\n3 -\nb: 2'),
+    )
+    await route(runner, payload=PAYLOAD, units=UNITS, chunks=CHUNKS)
+    assert 'never repeats the code' in runner.calls[1]['feedback'][0].message
+
+
+async def test_single_chunk_range_may_share_its_line():
+    # a ranged claim on ONE chunk spells the co-chunked shared form —
+    # instances a..b all ride the chunk, exactly what comma-joined
+    # indexes mean; the model reaches for it wherever a small unit
+    # shares its section heading's chunk, and rejecting it sent a
+    # canary repair loop circling to exhaustion
+    runner = ScriptedRunner(
+        agent_result('0 a\n1 a.0,b.0-b.1\n2-3 -\na: 2\nb: 2'))
+    routing = await route(runner, payload=PAYLOAD, units=UNITS, chunks=CHUNKS)
+    assert len(runner.calls) == 1
+    jobs = [a for a in routing.raw['assignments'] if a['unit'] == 'jobs']
+    assert [(a['item'], a['chunks']) for a in jobs] == \
+        [(0, [1]), (1, [1])]
+
+
+async def test_multi_chunk_range_never_comma_joins():
+    runner = ScriptedRunner(
+        agent_result('0 a\n1 b.0\n2-3 b.0,b.1-2\n4 -\nb: 3'),
+        agent_result('0 a\n1 b.0\n2-3 b.1-2\n4 -\nb: 3'),
+    )
+    await route(runner, payload=PAYLOAD, units=UNITS, chunks=CHUNKS + ['无关页脚二'])
+    assert 'takes its line alone' in runner.calls[1]['feedback'][0].message
 
 
 async def test_ranged_instances_cannot_repeat_across_lines():
@@ -761,6 +819,22 @@ async def test_split_ask_declined_keeps_the_shared_whole():
                           chunks=OVER_CHUNKS)
     assert len(runner.calls) == 2  # asked once, then accepted as declined
     jobs = [a for a in routing.raw['assignments'] if a['unit'] == 'jobs']
+    assert jobs[0]['chunks'] == [1, 2, 3] and jobs[5]['chunks'] == [4, 5, 6, 7]
+
+
+async def test_botched_split_reply_declines_to_the_standing_map():
+    # a fan-out round that fails validation is worth less than the valid
+    # map it answered: decline restores the standing map instead of
+    # spending repair rounds on a redraw — silence and wreckage both
+    # decline, only a validating answer lands
+    runner = ScriptedRunner(
+        agent_result(OVER_MAP),
+        agent_result('0 a\n1-2 b.0-2\n3-4 b.1-3\n5-7 b.4-5\n8 -\na: 1\nb: 6'))
+    routing = await route(runner, payload=PAYLOAD, units=UNITS,
+                          chunks=OVER_CHUNKS)
+    assert len(runner.calls) == 2  # declined — no repair round
+    jobs = [a for a in routing.raw['assignments'] if a['unit'] == 'jobs']
+    assert [a['item'] for a in jobs] == list(range(6))
     assert jobs[0]['chunks'] == [1, 2, 3] and jobs[5]['chunks'] == [4, 5, 6, 7]
 
 

@@ -21,10 +21,13 @@ inseparably — one line the executor keeps whole until a split round
 redraws it. A valid map that leaves fan-out on the table — a shared
 run whose mapped material overflows one shared call's capacity (the
 dense draw), or instances sharing one run far longer than their
-count — gets its fix in a round of its own: the overflow ask asks for
-ranged lines — one per call-sized block, the count sized from the
-unit's own budget — and the merged lazy form gets a
-fresh-conversation recount that code re-splits at the quoted openings.
+count — gets its fix in a round of its own: the overflow ask hands
+the model the block lines to ratify — the even partition computed in
+code, one line per call-sized block, the count sized from the unit's
+own budget — and the merged lazy form gets a fresh-conversation
+recount that code re-splits at the quoted openings. A fan-out round
+is a suggestion: silence declines it, and so does an answer that
+fails validation — the standing map was valid before the ask.
 The declared counts make the map self-consistent: item indexes must
 run exactly 0..declared-1, every declared item must receive chunks.
 Coverage and disjointness hold per line range (line order itself
@@ -62,10 +65,11 @@ SHARED_RECOUNT_DESCRIPTION = ('Per recounted unit: a count line and the '
 ROUTE_PLACEHOLDERS = frozenset({'top', 'none', 'legend', 'chunks'})
 RECOUNT_PLACEHOLDERS = frozenset({'legend', 'chunks'})
 _LINE = re.compile(r'^(\d+)(?:-(\d+))?\s+('
-                   r'[a-z]+(?:\.\d+(?:-\d+)?)?'
-                   r'(?:\s*,\s*[a-z]+(?:\.\d+(?:-\d+)?)*)*'
+                   r'[a-z]+(?:\.\d+(?:-(?:[a-z]+\.)?\d+)?)?'
+                   r'(?:\s*,\s*[a-z]+(?:\.\d+(?:-(?:[a-z]+\.)?\d+)?)*)*'
                    r'|-(?:\.\d+)?)$')
 _ITEM_RANGE = re.compile(r'(\d+)-(\d+)')
+_DOUBLED = re.compile(r'(\d+)-[a-z]+\.(\d+)')
 _COUNT = re.compile(r'^([a-z]+)(?::\s*(\d+))?(?:\s*=\s*([a-z]+))?(?:\s*@.*)?$')
 _BUDGET = re.compile(r'@\s*([0-9][0-9xX%,\s]*)')
 
@@ -275,6 +279,16 @@ def items_of(dest):
     return range(dest[0], dest[1] + 1) if isinstance(dest, tuple) else (dest,)
 
 
+def _undouble(item: str) -> str:
+    """One destination's item token with a doubled-code range folded:
+    '0-d.2' is how the model naturally spells '0-2' (the right end
+    repeating the code). One tolerance, one spelling, shared by every
+    reader of the language."""
+    if dup := _DOUBLED.fullmatch(item):
+        return f'{dup[1]}-{dup[2]}'
+    return item
+
+
 def _assignments(segments: list, by_code: dict) -> list:
     """The per-instance assignment rows one map denotes: a dict per
     (destination, item index) carrying its chunks — the shape the trace
@@ -413,6 +427,139 @@ async def route(runner: AgentRunner, *, payload: str,
     schema: JSONSchema = {'type': 'string',
                           'description': 'Segment map and count declarations '
                                          'only — no prose, no JSON.'}
+
+    async def split_ask(spans):
+        # a shared run holding more mapped material than one shared
+        # call may absorb — the dense draw (span ≈ declared). One round
+        # hands the model the exact block lines to ratify: the even
+        # partition computed in code, because the model's own boundary
+        # arithmetic across a long run's junk headings is what loses
+        # rounds (measured: 2 of 5 canary trials drew an overlapping
+        # block and fell into per-instance enumeration). The ask rides
+        # the shared diff protocol, so the reply is transcription — a
+        # dozen short lines, not a re-decoded map. Silence keeps the
+        # shared whole
+        return [_RouteIssue('segments', 'route_hint',
+                            _overrun_hint(code, first, last, lines))
+                for code, (first, last, lines) in _overrun_hints(
+                    segments, spans, counts, chunks, by_code, budgets,
+                    derived).items()] or None
+
+    async def shared_ask(spans):
+        nonlocal segments, counts
+        # instances merged into one long run: the anchored
+        # conversation will not unmerge its own map (a repair
+        # round shown the map re-emits it, measured — and the
+        # splits it does make scatter). A fresh conversation
+        # recounts every shared unit at once — count plus each
+        # instance's opening text, the one form that survives
+        # without the map — and code anchors the quotes back to
+        # chunks and re-splits each run; adoption is code's, not
+        # the model's. A unit whose recount is unusable falls
+        # back to one diff round — only when nothing was
+        # adopted, though: a diff re-parses the model's answer
+        # text, so a round taken after a partial adoption would
+        # discard the adopted splits (the pending unit then
+        # simply stays shared)
+        shared = _shared_hints(spans, counts)
+        if not shared:
+            return None
+        answer = await _recount_shared(runner, payload, shared,
+                                       by_code, chunks)
+        pending = {}
+        for code, (span, declared) in shared.items():
+            if merged := _resplit(segments, counts, code,
+                                  answer.get(code),
+                                  by_code, derived, chunks):
+                segments, counts = merged
+            else:
+                pending[code] = (span, declared)
+        if pending and len(pending) == len(shared):
+            return [_RouteIssue(
+                'segments', 'route_hint',
+                _split_hint(code, span, declared) + _DIFF_REPLY)
+                for code, (span, declared) in pending.items()]
+        return None  # a full or partial adoption stands
+
+    async def zeros_ask(spans):
+        nonlocal segments, counts, derived
+        # a zero is never trusted on the map's own say-so: the
+        # model commits to its finished map and will not revisit
+        # NONE'd material — not in the same pass, and not in a
+        # feedback round that shows it that map (measured: brief
+        # sections and summary units rubber-stamped as 0). A
+        # fresh conversation without the map re-counts them, and
+        # code splices the answer in — the anchored conversation
+        # would re-emit its own map verbatim. Its disagreement is
+        # resolved, never declined: a botched fix keeps the repair
+        # loop, because the alternative is trusting the suspect zero
+        zeros = [c for c, u in by_code.items()
+                 if u.kind == 'array' and c not in derived
+                 and counts.get(c) == 0]
+        if not zeros:
+            return None
+        answer = await _recount(runner, payload, by_code, zeros,
+                                chunks,
+                                instructions=recount_instructions)
+        if merged := _splice(segments, counts, derived, answer,
+                             zeros, by_code, len(chunks)):
+            segments, counts, derived = merged
+            return None  # the recount's adoption stands
+        note = (f'{", ".join(zeros)}: a separate recount of '
+                'the document disagreed with this map but '
+                'could not be merged — for each, recheck the '
+                'chunk list yourself: give every instance '
+                'its map lines with a matching count, or '
+                'declare "= <source>" if it only summarizes '
+                'another repeating unit; keep 0 only if '
+                'truly absent')
+        history.append([note])
+        return [_RouteIssue('segments', 'route_invalid',
+                            note + _DIFF_REPLY)]
+
+    async def hint_pass():
+        """The hint passes in firing order — each ask returns the
+        feedback list to spend a round on, tagged with whether that
+        round is a suggestion (a fan-out ask: silence or wreckage both
+        keep the standing map) or a resolution (zeros: its fix keeps
+        the repair loop). The flag lives here, beside the ask table —
+        a fourth ask cannot forget to classify itself. Returns None
+        when no hint applied or one adopted its fix in code and the
+        map may be final."""
+        spans = _shared_spans(segments, counts)
+        for name, ask, declinable in (('split', split_ask, True),
+                                      ('shared', shared_ask, True),
+                                      ('zeros', zeros_ask, False)):
+            if name not in asked and (fb := await ask(spans)):
+                asked.add(name)
+                return declinable, fb
+        return None
+
+    def finalize():
+        assignments = _assignments(segments, by_code)
+        by_unit = {}
+        for a in assignments:
+            by_unit.setdefault(a['unit'], []).append(a)
+        assignments += [{'unit': by_code[d].path, 'item': a['item'],
+                         'chunks': a['chunks']}
+                        for d, s in derived.items()
+                        for a in by_unit.get(by_code[s].path, [])]
+        budgets_by_path = {by_code[c].path: b for c, b in budgets.items()}
+        by_path = _resolved(
+            budgets_by_path,
+            _material(assignments, chunks,
+                      {by_code[d].path: by_code[s].path
+                       for d, s in derived.items()}) if budgets_by_path else {})
+        return Routing(_groups(segments, by_code, chunks, derived),
+                       {'counts': {by_code[c].path: k for c, k in counts.items()}
+                                  | {by_code[d].path: counts[s]
+                                     for d, s in derived.items()},
+                        'assignments': assignments,
+                        'budgets': {p: ([str(v) for v in b]
+                                        if isinstance(b, list) else str(b))
+                                    for p, b in budgets_by_path.items()},
+                        'maps': maps}, by_path)
+
     feedback, last, history = None, None, []
     asked = set()  # hint passes already spent — each ask fires at most
     # once per routing, however the map shifts afterwards
@@ -420,6 +567,10 @@ async def route(runner: AgentRunner, *, payload: str,
     # item indexes only, no document content; the eval trace keeps them
     diff_base = None  # the previous round's map text — armed once below,
     # after every answer, so a future hint round cannot forget it
+    valid = None  # the last valid round: parsed state plus the map text,
+    # because the diff base must agree with what code holds
+    suggestion = None  # whether the outstanding feedback is a
+    # suggestion round (declinable) or a resolution (repairable)
     # error lists: a repaired error that later reappears means the model
     # is rewriting fixed lines away — name it
     for _ in range(5):  # initial call + four bounded repairs
@@ -442,139 +593,30 @@ async def route(runner: AgentRunner, *, payload: str,
         # repair alike
         diff_base = text
         maps.append(text)
+        if errors and not suggestion:
+            past = set().union(*history[:-1]) if len(history) > 1 else set()
+            marked = [f'{e} — this error was already fixed in an earlier '
+                      'round; restore that fix while addressing the others'
+                      if e in past and e not in history[-1] else e
+                      for e in errors]
+            feedback = [_RouteIssue('segments', 'route_invalid', m + _DIFF_FIX)
+                        for m in marked]
+            history.append(errors)
+            continue
         if not errors:
-            spans = _shared_spans(segments, counts)
-
-            async def split_ask():
-                # a shared run holding more mapped material than one
-                # shared call may absorb — the dense draw (span ≈
-                # declared). One round asks for ranged lines, one per
-                # call-sized block (the count sized from the unit's own
-                # budget); the model draws the boundaries and the split
-                # is its own validated map. The ask wants a full
-                # re-emission, NOT a diff — the replaced shared line is
-                # a several-hundred-char run its quote would miss
-                # (measured). Silence keeps the shared whole
-                return [_RouteIssue(
-                    'segments', 'route_hint',
-                    _overrun_hint(code, first, last, blocks))
-                    for code, (first, last, blocks) in _overrun_hints(
-                        segments, spans, counts, chunks, by_code, budgets,
-                        derived).items()]
-
-            async def shared_ask():
-                nonlocal segments, counts
-                # instances merged into one long run: the anchored
-                # conversation will not unmerge its own map (a repair
-                # round shown the map re-emits it, measured — and the
-                # splits it does make scatter). A fresh conversation
-                # recounts every shared unit at once — count plus each
-                # instance's opening text, the one form that survives
-                # without the map — and code anchors the quotes back to
-                # chunks and re-splits each run; adoption is code's, not
-                # the model's. A unit whose recount is unusable falls
-                # back to one diff round — only when nothing was
-                # adopted, though: a diff re-parses the model's answer
-                # text, so a round taken after a partial adoption would
-                # discard the adopted splits (the pending unit then
-                # simply stays shared)
-                shared = _shared_hints(spans, counts)
-                if not shared:
-                    return None
-                answer = await _recount_shared(runner, payload, shared,
-                                               by_code, chunks)
-                pending = {}
-                for code, (span, declared) in shared.items():
-                    if merged := _resplit(segments, counts, code,
-                                          answer.get(code),
-                                          by_code, derived, chunks):
-                        segments, counts = merged
-                    else:
-                        pending[code] = (span, declared)
-                if pending and len(pending) == len(shared):
-                    return [_RouteIssue(
-                        'segments', 'route_hint',
-                        _split_hint(code, span, declared) + _DIFF_REPLY)
-                        for code, (span, declared) in pending.items()]
-                return None  # a full or partial adoption stands
-
-            async def zeros_ask():
-                nonlocal segments, counts, derived
-                # a zero is never trusted on the map's own say-so: the
-                # model commits to its finished map and will not revisit
-                # NONE'd material — not in the same pass, and not in a
-                # feedback round that shows it that map (measured: brief
-                # sections and summary units rubber-stamped as 0). A
-                # fresh conversation without the map re-counts them, and
-                # code splices the answer in — the anchored conversation
-                # would re-emit its own map verbatim
-                zeros = [c for c, u in by_code.items()
-                         if u.kind == 'array' and c not in derived
-                         and counts.get(c) == 0]
-                if not zeros:
-                    return None
-                answer = await _recount(runner, payload, by_code, zeros,
-                                        chunks,
-                                        instructions=recount_instructions)
-                if merged := _splice(segments, counts, derived, answer,
-                                     zeros, by_code, len(chunks)):
-                    segments, counts, derived = merged
-                    return None  # the recount's adoption stands
-                note = (f'{", ".join(zeros)}: a separate recount of '
-                        'the document disagreed with this map but '
-                        'could not be merged — for each, recheck the '
-                        'chunk list yourself: give every instance '
-                        'its map lines with a matching count, or '
-                        'declare "= <source>" if it only summarizes '
-                        'another repeating unit; keep 0 only if '
-                        'truly absent')
-                history.append([note])
-                return [_RouteIssue('segments', 'route_invalid',
-                                    note + _DIFF_REPLY)]
-
-            # the hint passes, in firing order — each returns the
-            # feedback list to spend the round on, or nothing: either no
-            # hint applied, or it adopted its fix in code and the map
-            # may be final
-            fb = None
-            for name, ask in (('split', split_ask), ('shared', shared_ask),
-                              ('zeros', zeros_ask)):
-                if name not in asked and (fb := await ask()):
-                    asked.add(name)
-                    break
-            if fb:
-                feedback = fb
-                continue
-            assignments = _assignments(segments, by_code)
-            by_unit = {}
-            for a in assignments:
-                by_unit.setdefault(a['unit'], []).append(a)
-            assignments += [{'unit': by_code[d].path, 'item': a['item'],
-                             'chunks': a['chunks']}
-                            for d, s in derived.items()
-                            for a in by_unit.get(by_code[s].path, [])]
-            budgets_by_path = {by_code[c].path: b for c, b in budgets.items()}
-            by_path = _resolved(
-                budgets_by_path,
-                _material(assignments, chunks,
-                          {by_code[d].path: by_code[s].path
-                           for d, s in derived.items()}) if budgets_by_path else {})
-            return Routing(_groups(segments, by_code, chunks, derived),
-                           {'counts': {by_code[c].path: k for c, k in counts.items()}
-                                      | {by_code[d].path: counts[s]
-                                         for d, s in derived.items()},
-                            'assignments': assignments,
-                            'budgets': {p: ([str(v) for v in b]
-                                            if isinstance(b, list) else str(b))
-                                        for p, b in budgets_by_path.items()},
-                            'maps': maps}, by_path)
-        past = set().union(*history[:-1]) if len(history) > 1 else set()
-        marked = [f'{e} — this error was already fixed in an earlier round; '
-                  'restore that fix while addressing the others'
-                  if e in past and e not in history[-1] else e for e in errors]
-        feedback = [_RouteIssue('segments', 'route_invalid', m + _DIFF_FIX)
-                    for m in marked]
-        history.append(errors)
+            valid = (segments, counts, derived, budgets, text)
+        else:
+            # a fan-out round whose reply failed validation declines:
+            # the standing map was valid before the ask, so a botched
+            # redraw is worth less than it — restore it, the diff base
+            # with it (a later hint's diff must anchor on the map code
+            # actually holds), spend no model round on the wreckage,
+            # and let the remaining asks run
+            segments, counts, derived, budgets, diff_base = valid
+        if hint_fb := await hint_pass():
+            suggestion, feedback = hint_fb
+            continue
+        return finalize()
     raise RouterError(f'router segment map invalid after repair: {errors}')
 
 
@@ -786,11 +828,22 @@ def _splice(segments, counts, derived, answer, zeros, by_code: dict, n: int):
                 continue  # a line this recount does not own
             if not item:
                 return None  # itemless claim for a recounted unit
-            index = int(item.split('.')[0])
-            if (code, index) in seen:
-                return None
-            seen.add((code, index))
-            dests.append((code, index))
+            item = _undouble(item)
+            if m3 := _ITEM_RANGE.fullmatch(item):
+                a, b = int(m3[1]), int(m3[2])
+                if b < a:
+                    return None  # unordered — the same rejection _parse names
+                # a ranged claim is the compact shared form's own
+                # syntax: the claimed chunks carry instances a..b
+                # inseparably, one destination per index
+                index = items_of((a, b))
+            else:
+                index = [int(item.split('.')[0])]
+            for i in index:
+                if (code, i) in seen:
+                    return None
+                seen.add((code, i))
+                dests.append((code, i))
         if not dests:
             continue  # noise about units this recount does not own
         if end >= n or end < start:
@@ -932,7 +985,10 @@ def _parse(text, by_code: dict, n: int):
         in_map = True
         if not (m := _LINE.match(line)):
             hint = (' — NONE may not be comma-joined with other destinations'
-                    if re.search(r',\s*-', line) else '')
+                    if re.search(r',\s*-', line) else
+                    ' — write the item range as "5-9 d.0-2": the second '
+                    'index never repeats the code'
+                    if re.search(r'[a-z]+\.\d+\s*-\s*[a-z]+\.\d+', line) else '')
             errors.append(f'line {i + 1}: {line!r} is not '
                           f'"<start>-<end> <code>[.<item>][,...]"{hint} — '
                           f'a bare "-" maps nothing, drop the line entirely')
@@ -946,6 +1002,7 @@ def _parse(text, by_code: dict, n: int):
         parts = m.group(3).split(',')
         for d in (t.strip() for t in parts):
             code, _, item = d.partition('.')
+            item = _undouble(item)
             unit = by_code.get(code)
             if code == NONE and item:
                 errors.append(f'line {i + 1}: {NONE} takes no item index')
@@ -960,14 +1017,32 @@ def _parse(text, by_code: dict, n: int):
                 # bare repeating code: instances unsplit, extracted whole
                 destinations.append((code, 0))
             elif unit.kind == 'array' and (m2 := _ITEM_RANGE.fullmatch(item)):
-                if len(parts) > 1:
+                a, b = int(m2.group(1)), int(m2.group(2))
+                if b < a:
+                    errors.append(f'line {i + 1}: {code}.{item} is unordered')
+                    continue
+                if len(parts) > 1 and start < end:
                     errors.append(f'line {i + 1}: {code}.{item} takes its line '
                                   f'alone — a ranged run never comma-joins '
                                   f'another code')
                     continue
-                a, b = int(m2.group(1)), int(m2.group(2))
-                if b < a:
-                    errors.append(f'line {i + 1}: {code}.{item} is unordered')
+                if len(parts) > 1:
+                    # a ranged claim sharing ONE chunk with another unit's
+                    # item is the co-chunked shared form spelled compactly
+                    # — instances a..b all ride the chunk, exactly what
+                    # comma-joined indexes mean — expanded here. The
+                    # model reaches for this shape persistently wherever
+                    # a small unit shares its section heading's chunk;
+                    # rejecting it sent repairs circling (measured: a
+                    # canary repair loop cycled delete-unit → false zero
+                    # → recount → overlap and exhausted the budget)
+                    ks = items_of((a, b))
+                    if any((code, str(k)) in seen for k in ks):
+                        errors.append(f'line {i + 1}: destination {d!r} '
+                                      f'appears twice')
+                        continue
+                    seen.update((code, str(k)) for k in ks)
+                    destinations += [(code, k) for k in ks]
                     continue
                 seen.add((code, item))
                 # ranged run: compact shared form — these chunks carry
@@ -994,18 +1069,45 @@ def _parse(text, by_code: dict, n: int):
     return errors, counts, derived, [] if errors else segments, budgets
 
 
-def _overrun_hint(code: str, first: int, last: int, blocks: int) -> str:
-    """The material-overflow ask, pure geometry: split the run into
-    <blocks> even consecutive blocks, one ranged line per block. No
-    rationale — the executor's economics mean nothing to the router
-    (measured: 'parallel calls' phrasing was ignored, and an 81-line
-    per-item enumeration still validated). Silence declines."""
-    return (f'{code}: split chunks {first}-{last} evenly into {blocks} '
-            f'consecutive blocks — re-emit the map with {code} as one '
-            f'ranged line per block, each block a consecutive slice of the '
-            f'chunks carrying its consecutive instances ("5-9 {code}.0-2", '
-            f'"10-14 {code}.3-5"). Keep every other line unchanged. If the '
-            f'instances truly share their chunks inseparably, {_DECLINE}')
+def _block_lines(code: str, first: int, last: int, declared: int,
+                 blocks: int) -> str:
+    """The even partition the split ask hands the model to transcribe:
+    chunks and instance indexes cut by the same cumulative rule, so the
+    lines cover the run's chunks and the declared items exactly — the
+    map they patch in validates by construction. Computing the
+    boundaries here is the point: the model's own even split of a long
+    run fumbled the junk headings between entries (measured: 2 of 5
+    canary trials drew an overlapping block, then recovered by
+    enumerating every instance). Never more blocks than instances or
+    chunks — either way a block would come out empty."""
+    blocks = min(blocks, declared, last - first + 1)
+    span = last - first + 1
+    lines = []
+    for j in range(blocks):
+        lo = first + j * span // blocks
+        end = min(first + (j + 1) * span // blocks - 1, last)
+        i0 = j * declared // blocks
+        i1 = min((j + 1) * declared // blocks - 1, declared - 1)
+        lines.append(f'{lo}-{end} {code}.{i0}' if i0 == i1
+                     else f'{lo}-{end} {code}.{i0}-{i1}')
+    return '\n'.join(lines)
+
+
+def _overrun_hint(code: str, first: int, last: int, lines: str) -> str:
+    """The material-overflow ask, pure geometry: replace the run with
+    the ranged block lines computed in code, as a diff against
+    the standing map — the replaced line is the short ranged form its
+    quote cannot miss (the several-hundred-char comma-join that once
+    made diffs unreliable is gone; the base prompt demands the ranged
+    form instead). The model ratifies or declines — reading the chunks,
+    it knows what code cannot: whether a block boundary would cut an
+    entry in half. No rationale — the executor's economics mean nothing
+    to the router (measured: 'parallel calls' phrasing was ignored).
+    Silence declines."""
+    return (f'{code}: rewrite its line(s) into these blocks — one ranged '
+            f'line per block, exactly as written:\n{lines}\n'
+            f'If the instances truly share their chunks inseparably, '
+            f'{_DECLINE}') + _DIFF_REPLY
 
 
 def _shared_spans(segments: list, counts: dict) -> dict:
@@ -1073,11 +1175,12 @@ def _overrun_hints(segments: list, spans: dict, counts: dict,
     declared, while the lazy shape needs span >= declared * 4. The ask
     sizes the split from the unit's own arrangement: total arranged
     budget over one call's capacity gives the block count the model
-    draws to (a unit with no arrangement falls back to its material
-    chars — the ``@`` suffix is tolerated, never checked). Lazy-shaped
-    units stay the recount's (the anchored model will not unmerge
-    those, measured). Returns ``{code: (first chunk, last chunk,
-    blocks)}``."""
+    ratifies (a unit with no arrangement falls back to its material
+    chars — the ``@`` suffix is tolerated, never checked). The block
+    lines are computed here; the model only confirms or declines.
+    Lazy-shaped units stay the recount's (the anchored model will not
+    unmerge those, measured). Returns ``{code: (first chunk, last
+    chunk, block lines)}``."""
     wanted = [code for code, span in spans.items()
               if (declared := counts.get(code) or 0) >= HINT_MIN
               and not _lazy_shape(span, declared)]
@@ -1105,7 +1208,10 @@ def _overrun_hints(segments: list, spans: dict, counts: dict,
         if not total:
             total = chars
         if (blocks := round(total / BATCH_BUDGET_CAP)) >= 2:
-            hints[code] = (*bounds[code], blocks)
+            first, last = bounds[code]
+            hints[code] = (first, last,
+                           _block_lines(code, first, last, counts[code],
+                                        blocks))
     return hints
 
 

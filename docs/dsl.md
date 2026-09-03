@@ -41,7 +41,12 @@ repeating (array) unit.
   entry-list runs (consecutive instances, roughly one to a chunk): the
   initial draw stays one short line — cheap to emit and, when a split
   round rewrites it, cheap to quote in a diff. Ranges take their line
-  alone — never comma-joined — and no instance may appear in two ranges.
+  alone — never comma-joined — unless the range shares a SINGLE chunk
+  with another unit's item (`5 x.0,y.0-y.2`): one chunk holding
+  instances a..b is the co-chunked shared form spelled compactly, and
+  the parser spells it back out. A multi-chunk range never comma-joins
+  — the other unit's item would ride every block. No instance may
+  appear in two ranges.
 - A run may feed several DIFFERENT units at once, comma-joined
   (`5 x.0,y.0`) — a summary or cross-cutting unit rides the lines of the
   unit whose text it shares, item by item. An instance whose own text
@@ -95,7 +100,8 @@ Violations are fed back as repair errors (bounded rounds, then
 
 Tolerated noise: counts on non-array units are ignored; an exact
 duplicate map line collapses; a dotted tail on an item (`2.0`) keeps its
-leading index.
+leading index; an item range that repeats the code on its right end
+(`5-9 d.0-d.2`) normalizes to `d.0-2`.
 
 ## Budgets
 
@@ -125,41 +131,11 @@ on the output. Overruns are accepted — a retry would cost a full
 extra decode. A host's `output_budgets={'path': n | [n, ...]}`
 overrides the router's declarations per path.
 
-## Repairs
+## Repair rounds
 
-Two loops re-contact the model, and both ask for a diff against what
-it already answered — a rewrite re-decodes everything and can collapse
-entries that were correct (measured: a retry asked for one missing
-entry returned none).
-
-Router repairs — hint rounds and invalid-map rounds alike — all ask
-for a unified diff against the model's own last map text: `-` lines
-remove, `+` lines add, one edit per line; `@@` headers and context
-lines never touch the map, and line numbers are hints — the applier
-anchors on content, since the diff's lines are the model's own
-previous answer quoted back. Edits cannot regress lines the model
-already fixed, a quote that misses costs nothing, and the patched
-text parses as a fresh answer, so every rule above holds of the
-RESULT, not the patch. Two fan-out rounds exist, one round each per
-routing: a shared run whose mapped material exceeds one shared call's
-capacity (~1000 content chars) is asked to split into ranged lines —
-one per call-sized block, the block count sized from the unit's own
-arranged budget over the executor's per-call cap, so the reply is ~10
-lines where an instance-enumerated split would be ~85; and instances
-sharing a run far longer than their count get a fresh-conversation
-recount that code re-splits at the quoted openings.
-Any of them: an empty reply declines and keeps the shared form.
-Two degradations are accepted without ceremony: a reply with no diff
-markers parses as a full re-emission, and an empty reply declines the
-suggestion (the previous map stands).
-
-Executor corrections ask for a JSON Patch (RFC 6902) against the
-call's previous result: an array of `{op, path, value}` operations,
-`add` (with `"/<index>"`, `-` appending), `remove`, `replace` (plus
-`move`, `copy`, `test`). Two tolerances, both observed in the wild: a
-pointer may be rooted at the unit path (`/jobs/2` for a bare `/2`),
-and a reply that is not a patch at all applies as the full corrected
-value — the pre-patch semantics, so a draw that ignores the protocol
-degrades gracefully. A patch that fails to apply keeps the previous
-result and the next round re-asks in full; an empty operation list is
-a no-op, never a wipe.
+Violations come back as bounded repair rounds, and a reply decodes in
+this same language: whatever text the round leaves behind — a diff
+applied, a full re-emission — parses as a fresh answer, so every rule
+above holds of the RESULT, not the patch. The loops themselves — what
+fires them, what they ask, when they decline — are library machinery,
+not grammar: [repairs.md](repairs.md).

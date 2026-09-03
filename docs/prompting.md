@@ -80,7 +80,7 @@ prompt produced them.
 - The diff protocol — a correction round with a previous result asks
   for a JSON Patch (RFC 6902) against it, and every router repair asks
   for a unified diff against the previous answer (see
-  [dsl.md](dsl.md) §Repairs).
+  [repairs.md](repairs.md)).
   Hosts shape what is retried via the validator's issues, never the
   reply contract.
 - The shared payload prefix (`content`) — byte-identical across every
