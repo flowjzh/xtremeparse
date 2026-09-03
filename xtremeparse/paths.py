@@ -12,6 +12,15 @@ import re
 _INDEX = re.compile(r'(\w+)\[(\d+)\]')
 
 
+def split_index(part: str):
+    """A ``key[n]`` path segment split — ``(key, index)``, None when the
+    segment carries no bracket index. The one grammar for the bracket
+    notation (resolve reads by it, merge grafts by it)."""
+    if m := _INDEX.fullmatch(part):
+        return m[1], int(m[2])
+    return None
+
+
 def resolve(data: dict, path: str):
     """Dotted-path lookup into nested dicts, with ``key[n]`` hops into
     lists (the bracket notation corrections already uses for item

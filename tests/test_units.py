@@ -100,16 +100,60 @@ def test_toplevel_array_is_an_array_unit():
     assert 'per item' not in units[0].card
 
 
+NESTED = {'type': 'object', 'properties': {
+    'work': {'type': 'array', 'items': {'type': 'object', 'properties': {
+        'company': {'type': 'string'},
+        'roles': {'type': 'array', 'items': {'type': 'object', 'properties': {
+            'title': {'type': 'string'},
+        }}},
+    }}},
+}}
+
+
+def test_array_under_array_lifts_to_its_own_unit():
+    units = decompose(NESTED)
+    assert [(u.path, u.parent) for u in units] == [
+        ('work', None),
+        ('work.roles', 'work'),
+    ]
+
+
+def test_lifted_field_is_stripped_from_the_parent_item_schema():
+    parent = decompose(NESTED)[0]
+    assert 'roles' not in parent.sub_schema['properties']
+
+
+def test_nested_unit_card_names_the_parent_path():
+    child = decompose(NESTED)[1]
+    assert '[work.roles | array]' in child.card
+    assert child.field == 'roles'
+
+
+def test_required_naming_a_lifted_child_is_filtered_from_parent():
+    schema = {'type': 'object', 'properties': {
+        'work': {'type': 'array',
+                 'items': {'type': 'object', 'required': ['company', 'roles'],
+                           'properties': {
+                               'company': {'type': 'string'},
+                               'roles': {'type': 'array',
+                                         'items': {'type': 'object'}},
+                           }}},
+    }}
+    assert decompose(schema)[0].sub_schema['required'] == ['company']
+
+
 def test_deeper_nesting_stays_inside_parent_sub_schema():
     schema = {'type': 'object', 'properties': {
         'work': {'type': 'array', 'items': {'type': 'object', 'properties': {
             'company': {'type': 'string'},
-            'projects': {'type': 'array', 'items': {'type': 'object'}},
+            'roles': {'type': 'array', 'items': {'type': 'object', 'properties': {
+                'projects': {'type': 'array', 'items': {'type': 'object'}},
+            }}},
         }}},
     }}
     units = decompose(schema)
-    assert [u.path for u in units] == ['work']  # inner array not promoted
-    assert 'projects' in units[0].sub_schema['properties']
+    assert [u.path for u in units] == ['work', 'work.roles']  # one lift only
+    assert 'projects' in units[1].sub_schema['properties']
 
 
 def test_object_with_arrays_and_scalars_produces_both_units():

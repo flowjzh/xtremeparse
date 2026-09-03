@@ -37,6 +37,8 @@ class Call:
     budget: Optional[int | list] = None  # the call's arranged estimate: one
     # number, or the per-item list a batch/whole-array call carries
     batch: tuple = ()  # item indexes when small items share this call
+    parent: Optional[int] = None  # the parent instance a lifted
+    # sub-array's call extracts under (None for top-level units)
 
     @property
     def array_shaped(self) -> bool:
@@ -61,6 +63,22 @@ class Call:
             return len(self.batch)
         return 1 if self.item is not None else None
 
+    @property
+    def value_path(self) -> str:
+        """The merged-data path the call's result fills — the unit path,
+        or the parent instance's field a lifted sub-array fills."""
+        return values_key(self.unit, self.parent)
+
+
+def values_key(unit: Unit, parent: Optional[int]) -> str:
+    """The one spelling of a call's merged-data address: the unit path,
+    or ``parent[n].field`` for a lifted sub-array under one parent
+    instance (values_from_calls keys by it, corrections routes by it,
+    the extractor flattens declared counts into it)."""
+    if parent is None:
+        return unit.path
+    return f'{unit.parent}[{parent}].{unit.field}'
+
 
 @dataclass
 class Execution:
@@ -80,33 +98,43 @@ async def execute(runner: AgentRunner, routing: Routing, *, payload: str,
     the full document schema's bytes are never re-sent here."""
     calls, tasks = [], []
     for unit, groups in _by_unit(routing.groups):
-        strategy = _strategy(unit, groups, unit_strategy or {}) \
-            if unit.kind == 'array' else None
-        # specs carry their own truthful strategy label: the model's
-        # ranged blocks (one call per ranged run, its instances one
-        # array-shaped answer), the executor's budget batches, and
-        # whole-array calls are three distinct shapes
-        specs = [('ranged', None, g.text, g.chunk_ids, tuple(items_of(g.items)),
-                  _block_budget(budgets, unit, g.items))
-                 for g in groups if g.items]
-        plain = [g for g in groups if not g.items]
-        if plain:
-            if strategy == 'per-item':
-                specs += [('per-item', *s) for s in
-                          _batched(unit, _by_item(plain), budgets, batch_cap)]
-            else:
-                # co-chunked items (one run holding several instances) share
-                # their material — extract it once, not once per item
-                unique = {tuple(g.chunk_ids): g for g in plain}.values()
-                specs += [(strategy, None, '\n\n'.join(g.text for g in unique),
-                           [i for g in unique for i in g.chunk_ids], None,
-                           _arranged(budgets, unit, None))]
-        for strat, item, scope, ids, batch, budget in specs:
-            call = Call(unit, item, strat, ids, scope, budget=budget, batch=batch)
-            calls.append(call)
-            tasks.append(await dispatch_specialist(
-                runner, call, payload=payload, scheduler=scheduler,
-                specialist_instructions=specialist_instructions))
+        # a lifted sub-array fans out per parent instance: each parent's
+        # sub-entries are one array's worth of material, strategy and
+        # batching scoped to it — one parent's whole never carries
+        # another's entries. Top-level units partition to one None-keyed
+        # part, the same loop
+        for parent, rows in _by_parent(groups):
+            strategy = _strategy(unit, rows, unit_strategy or {}) \
+                if unit.kind == 'array' else None
+            # specs carry their own truthful strategy label: the model's
+            # ranged blocks (one call per ranged run, its instances one
+            # array-shaped answer), the executor's budget batches, and
+            # whole-array calls are three distinct shapes
+            specs = [('ranged', None, g.text, g.chunk_ids,
+                      tuple(items_of(g.items)),
+                      _block_budget(budgets, unit, g.items))
+                     for g in rows if g.items]
+            plain = [g for g in rows if not g.items]
+            if plain:
+                if strategy == 'per-item':
+                    specs += [('per-item', *s) for s in
+                              _batched(unit, _by_item(plain), budgets,
+                                       batch_cap)]
+                else:
+                    # co-chunked items (one run holding several instances) share
+                    # their material — extract it once, not once per item
+                    unique = {tuple(g.chunk_ids): g for g in plain}.values()
+                    specs += [(strategy, None,
+                               '\n\n'.join(g.text for g in unique),
+                               [i for g in unique for i in g.chunk_ids], None,
+                               _arranged(budgets, unit, None))]
+            for strat, item, scope, ids, batch, budget in specs:
+                call = Call(unit, item, strat, ids, scope, budget=budget,
+                            batch=batch, parent=parent)
+                calls.append(call)
+                tasks.append(await dispatch_specialist(
+                    runner, call, payload=payload, scheduler=scheduler,
+                    specialist_instructions=specialist_instructions))
     for call, result in zip(calls, await asyncio.gather(*tasks)):
         call.result = result
     return Execution(values_from_calls(calls), calls)
@@ -114,19 +142,22 @@ async def execute(runner: AgentRunner, routing: Routing, *, payload: str,
 
 def values_from_calls(calls: list) -> dict:
     """Per-unit values from call results; None data stays absent and
-    per-item results concatenate in item-index order."""
+    per-item results concatenate in item-index order. A lifted
+    sub-array's values key by the parent instance they fill — merge
+    grafts the bracket form into the parent's items."""
     values = {}
     for call in calls:
         data = call.result.data if call.result else None
         if data is None:
             continue
+        path = call.value_path
         if call.batch:
-            values.setdefault(call.unit.path, []).extend(
+            values.setdefault(path, []).extend(
                 data if isinstance(data, list) else [data])
         elif call.strategy == 'per-item':
-            values.setdefault(call.unit.path, []).append(data)
+            values.setdefault(path, []).append(data)
         else:
-            values[call.unit.path] = data
+            values[path] = data
     return values
 
 
@@ -248,6 +279,15 @@ def _by_unit(groups) -> list:
     for g in groups:
         by_path.setdefault(g.unit.path, []).append(g)
     return [(rows[0].unit, rows) for rows in by_path.values()]
+
+
+def _by_parent(groups) -> list:
+    """One lifted sub-array's groups partitioned by the parent instance
+    they extract under, in parent order."""
+    by = {}
+    for g in groups:
+        by.setdefault(g.parent, []).append(g)
+    return sorted(by.items())
 
 
 def _by_item(groups) -> list:

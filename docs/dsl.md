@@ -22,9 +22,13 @@ repeating (array) unit.
   meaning — the ranges are explicit, and code sorts by start before
   validating (a diff reply's `+` insert lands at its own editing
   position).
-- A destination is `<code>` or `<code>.<item>`:
+- A destination is `<code>`, `<code>.<item>`, or a chain through a
+  lifted sub-array:
   - `code` is a letter code from the legend the prompt carries —
-    assigned by the library in unit order; `-` is reserved.
+    assigned by the library in unit order; `-` is reserved. A legend
+    line whose path is dotted (`<code> = [parent.field | array]`) is a
+    unit nested inside another repeating unit's instances — it has no
+    address of its own and is only reached through the chain below.
   - `.item` on a repeating unit is the instance's index, numbered across
     the WHOLE document in the order the map meets the instances — unless
     the unit's card declares a numbering order (e.g. reverse
@@ -32,6 +36,23 @@ repeating (array) unit.
     lines then carry the card-ranked indexes, so a document listing the
     instances in the opposite direction puts the largest index on its
     first line.
+  - A chain `<code>.<item>.<sub-code>.<sub-item>` addresses one
+    sub-entry of a nested unit under one parent instance
+    (`3-15 c.0.d.0` — parent instance 0's first sub-entry). A parent's
+    plain line plus a count line maps no sub-entries — only chain
+    lines do; every chain line also feeds the parent instance the
+    chunks it covers, so those chunks take no separate parent line.
+    The sub-item follows the
+    same numbering rules as an item; the doubled range spelling
+    (`c.0.d.0-d.2`) normalizes like the flat form. A nested unit is
+    never written bare (`d.0`, `d: 2`) — validation names the chain
+    instead; a bare `d: 0` is tolerated as the silence it restates.
+    A chain line drawn inside the parent instance's own run
+    becomes the fine partition of that run: the parent's line stays
+    the one carrying the coverage, and each sub-entry keeps its own
+    slice as its own extraction scope (the executor fans them out
+    separately); a chain line no parent run contains covers those
+    chunks for the parent itself.
 - A bare repeating code (`4-9 x`) means several instances share the run
   unsplit — that material is extracted once, whole.
 - A ranged run (`12-93 x.0-92`) is the compact shared form: those chunks
@@ -71,9 +92,18 @@ After the map, every repeating unit gets exactly one of:
     x: <count> [@<budget>[,<budget>...]]
     x = <source> [@<budget>]
 
+and a nested unit gets one per parent instance that holds sub-entries:
+
+    x.<item>.<y>: <count> [@<budget>]
+
 - `x: <count>` — the document holds `<count>` instances of the unit.
   Item indexes used in the map must run exactly `0..count-1` with no
   gaps, and every declared item must receive at least one chunk.
+- `x.<item>.<y>: <count>` — parent instance `<item>` holds `<count>`
+  sub-entries of the nested unit `y`; its sub-item indexes in the map
+  must run exactly `0..count-1`. A parent holding no sub-entries
+  declares nothing. The budget suffix is unit-level: one entry covers
+  the sub-items under every parent.
 - `x = <source>` — the unit has no text of its own; its items mirror
   `<source>`'s, a directly mapped repeating unit. Such a unit takes NO
   map lines.
@@ -92,16 +122,32 @@ Violations are fed back as repair errors (bounded rounds, then
 
 - map lines parse, do not overlap, and cover `0..top` exactly (line
   order is free — code sorts by start)
-- the item set each unit uses in the map equals `0..declared-1`
+- the item set each unit uses in the map equals `0..declared-1` — and,
+  per parent instance, the sub-item set of each nested unit equals
+  `0..declared-1` under that parent; a chain's parent instance must
+  exist under the parent unit's declared count
 - every repeating unit is declared (a missing declaration reads as 0,
   which triggers a separate fresh-conversation recount before it is
-  trusted)
+  trusted); every parent instance claiming a nested unit's sub-entries
+  declares their count
 - a derivation's `source` is itself a directly mapped repeating unit
 
-Tolerated noise: counts on non-array units are ignored; an exact
-duplicate map line collapses; a dotted tail on an item (`2.0`) keeps its
-leading index; an item range that repeats the code on its right end
-(`5-9 d.0-d.2`) normalizes to `d.0-2`.
+Tolerated noise: counts on non-array units are ignored; two map lines
+claiming the SAME chunk range union their destinations into one line —
+the model lines a parent's run and its sub-entries' chains up as
+separate same-range lines, and one chunk set is one line's semantics;
+a repeated destination on one line is idempotent, never an error; an
+exact duplicate map line collapses; per-sub-entry declarations
+(`c.0.d.0: 1`, the model's mirror of item counting) are tolerated and
+fold — the highest numbered sub-entry is the parent's count when no
+explicit `c.0.d: <n>` stands; a dotted tail on an item keeps
+its leading index — a dotted tail that spells a nested unit (its code
+or its field name, `c.0.sub_experiences.0`) reads as the chain, and a
+bare numeric tail (`c.0.0`) does too when the schema gives the unit
+exactly one sub-array, the tail then numbering that sub-array's
+entries; anything else dotted folds to the leading index, the flat
+reading; an item range that repeats the code on its right end
+(`5-9 d.0-d.2`) normalizes to `d.0-2`, the chain form included.
 
 ## Budgets
 

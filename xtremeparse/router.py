@@ -2,12 +2,15 @@
 
 Output is a compact segment DSL — the map first (``<start>-<end>
 <code>[.<item>][,...]``, one line per contiguous run of chunks, units
-compressed to letter codes, ``-`` for irrelevant chunks), then a count
+compressed to letter codes, ``-`` for irrelevant chunks; a lifted
+sub-array is addressed through its parent instance,
+``<code>.<item>.<sub-code>.<sub-item>``), then a count
 declaration per repeating unit after it (``<code>: <items>``,
 optionally suffixed with a per-item output estimate — ``@<n>`` an
 absolute cap, ``@<n>%`` a ratio of the item's mapped material, or
 ``@<n>x<m>`` an average keyword length times a keyword count — that
-the executor treats as an arrangement). The map enumerates: the model
+the executor treats as an arrangement), and per parent instance for a
+lifted sub-array (``c.0.d: 2``). The map enumerates: the model
 numbers a repeating unit's instances as it meets them, so the count is
 derived from the map rather than committed up front — a count-first
 declaration made the model report one fewer instance (counting is a
@@ -51,6 +54,12 @@ from xtremeparse.units import Unit, type_set, value_branches
 NONE = '-'
 HINT_MIN = 5  # below this a shared whole call costs seconds — the
 # round would cost more than the split saves
+RESHARE_LOAD = 8  # the recount's load bar, in chunks per instance, for
+# every shared shape: a decomposed line (one destination per instance)
+# and a declared-once lone item alike re-split only above this many
+# chunks per instance — below it the recount is pure decode-shaving,
+# confirmed and never adopted (a 2-instance band, a 6-chunk single —
+# measured)
 SPLIT_MATERIAL_CAP = 1000  # mapped content chars one shared call may
 # absorb before the split ask pays for itself: past ~1k chars the
 # whole-array decode (~58 tok/s measured) outlasts the extra round.
@@ -64,13 +73,22 @@ SHARED_RECOUNT_DESCRIPTION = ('Per recounted unit: a count line and the '
 # validated against these; see docs/prompting.md)
 ROUTE_PLACEHOLDERS = frozenset({'top', 'none', 'legend', 'chunks'})
 RECOUNT_PLACEHOLDERS = frozenset({'legend', 'chunks'})
-_LINE = re.compile(r'^(\d+)(?:-(\d+))?\s+('
-                   r'[a-z]+(?:\.\d+(?:-(?:[a-z]+\.)?\d+)?)?'
-                   r'(?:\s*,\s*[a-z]+(?:\.\d+(?:-(?:[a-z]+\.)?\d+)?)*)*'
+_DEST = (r'[a-z]+(?:\.\d+)*(?:\.[a-z_]+(?:\.\d+)*)?'
+         r'(?:-(?:[a-z]+\.)?\d+)?')
+_LINE = re.compile(rf'^(\d+)(?:-(\d+))?\s+({_DEST}(?:\s*,\s*{_DEST})*'
                    r'|-(?:\.\d+)?)$')
 _ITEM_RANGE = re.compile(r'(\d+)-(\d+)')
 _DOUBLED = re.compile(r'(\d+)-[a-z]+\.(\d+)')
-_COUNT = re.compile(r'^([a-z]+)(?::\s*(\d+))?(?:\s*=\s*([a-z]+))?(?:\s*@.*)?$')
+_SUBITEM = re.compile(r'(\d+)(?:\.\d+)*(?:-(\d+))?')
+# one destination's post-code tail: parent item, then an optional chain
+# through a lifted sub-array — its code or field-name spelling, then the
+# sub-item ('0.d.0', '0.sub_experiences.0-2', 'd.0', '0.0', '')
+_REST = re.compile(r'(\d+(?:-(?:[a-z]+\.)?\d+)?)?'
+                   r'(?:\.([a-z_]+|\d+)'
+                   r'(?:\.(\d+(?:-(?:[a-z]+\.)?\d+)?))?)?')
+_CHAIN = re.compile(r'([a-z]+)\.(\d+)\.([a-z_]+)(?:\.(\d+))?')
+_COUNT = re.compile(r'^([a-z]+(?:\.\d+\.[a-z_]+)?(?:\.\d+)?)'
+                    r'(?::\s*(\d+))?(?:\s*=\s*([a-z]+))?(?:\s*@.*)?$')
 _BUDGET = re.compile(r'@\s*([0-9][0-9xX%,\s]*)')
 
 
@@ -178,6 +196,23 @@ Rules:
   own ("0-1 e.0,a.0" then "2 a.1"): a chunk holding two units'
   material is ONE line carrying both codes — two lines claiming the
   same chunk are never legal.
+- A unit whose legend line shows another unit's path ("<code> =
+  [parent.field | array]") nests inside that unit's instances. Its
+  sub-entries never ride a parent's plain line — each gets its own
+  chain line THROUGH the parent instance
+  ("<parent>.<item>.<code>.<sub>", e.g. "3-15 c.0.d.0" — parent
+  instance 0's first sub-entry), one line per sub-entry where chunk
+  boundaries allow. A parent line plus a count line maps no
+  sub-entries: only chain lines do. Every chain line also feeds its
+  parent instance the chunks it covers, so those chunks take no
+  separate parent line:
+      12-14 c.0
+      15-20 c.0.d.0
+      21-26 c.0.d.1
+      c.0.d: 2
+  After the map, each parent instance holding sub-entries declares
+  their count ("c.0.d: 2", budget suffix as for any unit); a parent
+  holding none declares nothing.
 - Items of the SAME unit that separable chunk boundaries CAN separate
   MUST each get their own line ("5-9 x.0" then "10-11 x.1"): each
   item's budget then scales against its own material. Sharing one line
@@ -186,11 +221,14 @@ Rules:
   holding material of two or more instances; that material is then
   extracted once, whole.
 - A long run whose chunks carry one unit's instances IN ORDER — an
-  entry list reading as consecutive instances, roughly one to a chunk —
-  MUST be ONE ranged line ("12-93 x.0-84": name the exact index span
-  the chunks carry). NEVER enumerate that many indexes comma-joined
-  ("12 x.0,x.1,x.2,..." is a broken draw) and never write one line per
-  instance at that length. Short runs (a few instances) stay per-item
+  entry list too dense for chunk boundaries to separate (roughly one
+  instance to a chunk) — MUST be ONE ranged line ("12-93 x.0-84": name
+  the exact index span the chunks carry). NEVER enumerate that many
+  indexes comma-joined ("12 x.0,x.1,x.2,..." is a broken draw). One
+  unit, one shape: when chunk boundaries CAN separate the instances,
+  each takes its own line and no ranged line may cover them — drawing
+  the ranged form and per-instance lines for the same instances
+  overlaps and is invalid. Short runs (a few instances) stay per-item
   lines.
 - Every declared item receives at least one chunk. A unit sharing
   another's run may repeat one item across several lines (one instance
@@ -205,7 +243,9 @@ Rules:
   the entries around it, no instance and no field-bound text of its own —
   takes {none}, never a unit's item line.
 - Before answering, verify: every repeating unit has a declaration line
-  (its count "x: <n>" or its source "x = y"), the map covers 0..{top}
+  (its count "x: <n>" or its source "x = y") and every parent instance
+  holding a nested unit's sub-entries declares its count ("x.0.y: <n>"),
+  the map covers 0..{top}
   exactly once in ascending non-overlapping lines, item indexes of
   each unit run 0..used-1 with no gaps, every count line matches
   the map, and a unit whose card declares an instance order numbers
@@ -222,7 +262,9 @@ Unit codes:
 _DIFF_HOWTO = '''
 Reply with a unified diff against your previous map: "-" lines removed,
 "+" lines added, one edit per line — never re-emit an unchanged line.
-The full map is also accepted.'''
+The full map is also accepted; a partial fragment is not — a reply
+without "-" or "+" lines replaces the whole map, so every line left
+out is lost.'''
 _DIFF_REPLY = _DIFF_HOWTO + ' An empty reply declines the suggestion.'
 _DIFF_FIX = _DIFF_HOWTO + ' Fix every error named above.'
 _DECLINE = 'reply with nothing.'  # the silent decline every fan-out ask
@@ -262,13 +304,16 @@ class Group:
     one item) may coalesce into a single specialist call in the executor.
     ``items`` marks a ranged run: these chunks carry instances
     items[0]..items[1] inseparably — the executor makes the run one
-    batched call instead of fanning its instances apart."""
+    batched call instead of fanning its instances apart. ``parent`` is
+    the parent instance a lifted sub-array's group extracts under
+    (None for top-level units)."""
 
     unit: Unit
     item: Optional[int]
     chunk_ids: list
     text: str
     items: tuple = ()  # (first, last) instance indexes of a ranged run
+    parent: Optional[int] = None
 
 
 def items_of(dest):
@@ -289,15 +334,69 @@ def _undouble(item: str) -> str:
     return item
 
 
+def _flatten(item: str) -> str:
+    """One destination's item token with sub-numbering flattened: the
+    schema's instances are flat, but the model sub-numbers entries the
+    document nests (one employer, two roles) — 'c.0.1' claims instance
+    0, its parent. Rejection sent a canary repair loop circling to
+    exhaustion: the model never abandons the spelling. The parser's
+    chain reading takes the schema-aware cases first; this fold stays
+    for the recount splice, where no schema shape can disambiguate."""
+    if m := _SUBITEM.fullmatch(item):
+        return '-'.join(p for p in m.groups() if p)
+    return item
+
+
+def _fold(item: str, unit: Unit):
+    """The flat reading of a dotted item token on ``unit``'s line: the
+    leading index keeps the claim, further tails drop — the schema's
+    instances are flat. None when the token claims nothing (itemless,
+    or a non-array unit whose item is stripped)."""
+    if unit.kind != 'array' or not item or not item[0].isdigit():
+        return None
+    return int(item.split('.')[0])
+
+
+def _nested_unit(mid: str, unit: Unit, by_code: dict):
+    """The code of the lifted sub-array a chain's middle token names
+    under ``unit`` — by code or by field-name spelling; None when the
+    token names no sub-array of this unit."""
+    for c, u in by_code.items():
+        if u.parent == unit.path and (c == mid or u.field == mid):
+            return c
+    return None
+
+
+def _parent_code(unit: Unit, by_code: dict) -> str:
+    """The code of the array unit a lifted sub-array hangs under."""
+    return next((c for c, u in by_code.items() if u.path == unit.parent),
+                unit.parent)
+
+
+def _rides(code: str, unit: Unit, by_code: dict) -> str:
+    """The named error for a nested unit addressed without its parent —
+    the one spelling of the chain reminder."""
+    return (f'{code} rides its parent — write '
+            f'{_parent_code(unit, by_code)}.<item>.{code}.<sub-item>')
+
+
 def _assignments(segments: list, by_code: dict) -> list:
     """The per-instance assignment rows one map denotes: a dict per
     (destination, item index) carrying its chunks — the shape the trace
-    publishes and ``_material`` prices."""
-    return [{'unit': by_code[code].path, 'item': i,
-             'chunks': list(range(start, end + 1))}
-            for start, end, destinations in segments
-            for code, item in destinations if code != NONE
-            for i in items_of(item)]
+    publishes and ``_material`` prices. A chain destination also names
+    the parent instance it hangs under."""
+    rows = []
+    for start, end, destinations in segments:
+        for dest in destinations:
+            if dest[0] == NONE:
+                continue
+            for i in items_of(dest[1]):
+                row = {'unit': by_code[dest[0]].path, 'item': i,
+                       'chunks': list(range(start, end + 1))}
+                if dest[2] is not None:
+                    row['parent'] = dest[2]
+                rows.append(row)
+    return rows
 
 
 @dataclass
@@ -407,11 +506,13 @@ async def route(runner: AgentRunner, *, payload: str,
     each a diff against the previous answer — feeding the validation
     errors back as ``feedback``; plus one
     verification round when any repeating unit comes out declared 0
-    (see route loop). ``payload`` is the precomputed shared prefix
-    (see prompting). ``instructions``/``recount_instructions`` replace
-    the default prompt templates; they must carry their placeholders
-    (ROUTE_PLACEHOLDERS / RECOUNT_PLACEHOLDERS — the Extractor
-    validates host overrides at construction)."""
+    (see route loop). A replayed map — the same text twice — passes
+    its declared-vs-used mismatches through: the extraction's count
+    arbitration owns the number. ``payload`` is the precomputed shared
+    prefix (see prompting). ``instructions``/``recount_instructions``
+    replace the default prompt templates; they must carry their
+    placeholders (ROUTE_PLACEHOLDERS / RECOUNT_PLACEHOLDERS — the
+    Extractor validates host overrides at construction)."""
     by_code = _codes(units)
     instructions = (instructions or _INSTRUCTIONS).format(
         top=len(chunks) - 1, none=NONE,
@@ -445,8 +546,8 @@ async def route(runner: AgentRunner, *, payload: str,
                     segments, spans, counts, chunks, by_code, budgets,
                     derived).items()] or None
 
-    async def shared_ask(spans):
-        nonlocal segments, counts
+    async def shared_ask(recount_spans):
+        nonlocal segments, counts, nested
         # instances merged into one long run: the anchored
         # conversation will not unmerge its own map (a repair
         # round shown the map re-emits it, measured — and the
@@ -461,14 +562,14 @@ async def route(runner: AgentRunner, *, payload: str,
         # text, so a round taken after a partial adoption would
         # discard the adopted splits (the pending unit then
         # simply stays shared)
-        shared = _shared_hints(spans, counts)
+        shared = _shared_hints(recount_spans, counts)
         if not shared:
             return None
         answer = await _recount_shared(runner, payload, shared,
                                        by_code, chunks)
         pending = {}
         for code, (span, declared) in shared.items():
-            if merged := _resplit(segments, counts, code,
+            if merged := _resplit(segments, counts, nested, code,
                                   answer.get(code),
                                   by_code, derived, chunks):
                 segments, counts = merged
@@ -482,7 +583,7 @@ async def route(runner: AgentRunner, *, payload: str,
         return None  # a full or partial adoption stands
 
     async def zeros_ask(spans):
-        nonlocal segments, counts, derived
+        nonlocal segments, counts, nested, derived
         # a zero is never trusted on the map's own say-so: the
         # model commits to its finished map and will not revisit
         # NONE'd material — not in the same pass, and not in a
@@ -501,9 +602,9 @@ async def route(runner: AgentRunner, *, payload: str,
         answer = await _recount(runner, payload, by_code, zeros,
                                 chunks,
                                 instructions=recount_instructions)
-        if merged := _splice(segments, counts, derived, answer,
+        if merged := _splice(segments, counts, nested, derived, answer,
                              zeros, by_code, len(chunks)):
-            segments, counts, derived = merged
+            segments, counts, nested, derived = merged
             return None  # the recount's adoption stands
         note = (f'{", ".join(zeros)}: a separate recount of '
                 'the document disagreed with this map but '
@@ -526,11 +627,12 @@ async def route(runner: AgentRunner, *, payload: str,
         a fourth ask cannot forget to classify itself. Returns None
         when no hint applied or one adopted its fix in code and the
         map may be final."""
-        spans = _shared_spans(segments, counts)
-        for name, ask, declinable in (('split', split_ask, True),
-                                      ('shared', shared_ask, True),
-                                      ('zeros', zeros_ask, False)):
-            if name not in asked and (fb := await ask(spans)):
+        spans, merged = _shared_spans(segments, counts)
+        for name, ask, arg, declinable in (
+                ('split', split_ask, spans, True),
+                ('shared', shared_ask, merged, True),
+                ('zeros', zeros_ask, spans, False)):
+            if name not in asked and (fb := await ask(arg)):
                 asked.add(name)
                 return declinable, fb
         return None
@@ -550,10 +652,14 @@ async def route(runner: AgentRunner, *, payload: str,
             _material(assignments, chunks,
                       {by_code[d].path: by_code[s].path
                        for d, s in derived.items()}) if budgets_by_path else {})
+        nested_counts = {}
+        for (cc, p), k in nested.items():
+            nested_counts.setdefault(by_code[cc].path, {})[p] = k
         return Routing(_groups(segments, by_code, chunks, derived),
                        {'counts': {by_code[c].path: k for c, k in counts.items()}
                                   | {by_code[d].path: counts[s]
                                      for d, s in derived.items()},
+                        'nested_counts': nested_counts,
                         'assignments': assignments,
                         'budgets': {p: ([str(v) for v in b]
                                         if isinstance(b, list) else str(b))
@@ -573,6 +679,10 @@ async def route(runner: AgentRunner, *, payload: str,
     # suggestion round (declinable) or a resolution (repairable)
     # error lists: a repaired error that later reappears means the model
     # is rewriting fixed lines away — name it
+    stuck_text = None  # the previous repair round's applied map text —
+    # two identical rounds in a row are a replay, not a repair
+    lenient = set()  # unit codes whose declared-vs-used mismatch passed
+    # through after a replay (the count arbitration owns the number)
     for _ in range(5):  # initial call + four bounded repairs
         result = await runner.run(instructions='' if last else instructions,
                                   result_schema=schema, content=payload,
@@ -585,7 +695,7 @@ async def route(runner: AgentRunner, *, payload: str,
                 text = base  # an empty reply declines; the base stands
             elif (applied := _diff_text(text, base)) is not None:
                 text = applied
-        errors, counts, derived, segments, budgets = \
+        errors, counts, nested, derived, segments, budgets = \
             _parse(text, by_code, len(chunks))
         # every answer leaves a map text behind — a full re-emission is
         # itself, a diff leaves its applied map, an empty reply the
@@ -594,6 +704,23 @@ async def route(runner: AgentRunner, *, payload: str,
         diff_base = text
         maps.append(text)
         if errors and not suggestion:
+            if text == stuck_text:
+                # the model replayed its map verbatim (measured: a count
+                # it cannot localize comes back as a no-op diff until
+                # the budget burns — every line re-quoted as -x/+x).
+                # Re-asking cannot move it; downgrade the declared-vs-
+                # used mismatches to a pass-through and let the
+                # extraction's count arbitration own the number — the
+                # router owns chunk allocation, and a 200 with a
+                # settled count beats a 500
+                lenient |= _passable(errors)
+            stuck_text = text
+            if lenient:
+                errors, counts, nested, derived, segments, budgets = \
+                    _parse(text, by_code, len(chunks), lenient)
+        if not errors:
+            valid = (segments, counts, nested, derived, budgets, text)
+        elif not suggestion:
             past = set().union(*history[:-1]) if len(history) > 1 else set()
             marked = [f'{e} — this error was already fixed in an earlier '
                       'round; restore that fix while addressing the others'
@@ -603,8 +730,6 @@ async def route(runner: AgentRunner, *, payload: str,
                         for m in marked]
             history.append(errors)
             continue
-        if not errors:
-            valid = (segments, counts, derived, budgets, text)
         else:
             # a fan-out round whose reply failed validation declines:
             # the standing map was valid before the ask, so a botched
@@ -612,7 +737,7 @@ async def route(runner: AgentRunner, *, payload: str,
             # with it (a later hint's diff must anchor on the map code
             # actually holds), spend no model round on the wreckage,
             # and let the remaining asks run
-            segments, counts, derived, budgets, diff_base = valid
+            segments, counts, nested, derived, budgets, diff_base = valid
         if hint_fb := await hint_pass():
             suggestion, feedback = hint_fb
             continue
@@ -692,7 +817,7 @@ def _parse_shared_answer(result, codes: dict | set) -> dict:
             for (code, count), quotes in sections.items() if count}
 
 
-def _resplit(segments: list, counts: dict, code: str, answer,
+def _resplit(segments: list, counts: dict, nested: dict, code: str, answer,
              by_code: dict, derived: dict, chunks: list[str]):
     """Replace a merged unit's map lines with per-instance lines built
     from a fresh recount: each quoted opening anchors to its chunk
@@ -708,7 +833,7 @@ def _resplit(segments: list, counts: dict, code: str, answer,
         return None
     cover = _cover(segments)
     owned = sorted(c for c, dests in cover.items()
-                   if code in {d for d, _ in dests})
+                   if code in {dd[0] for dd in dests})
     if not owned:
         return None
     norms = {c: norm(chunks[c]) for c in owned}
@@ -725,11 +850,12 @@ def _resplit(segments: list, counts: dict, code: str, answer,
     item_of = {c: max(0, bisect_right(hits, c) - 1) for c in owned}
     per_chunk = {}
     for c, dests in cover.items():
-        stripped = tuple((d, i) for d, i in dests if d != code)
-        per_chunk[c] = (stripped + ((code, item_of[c]),)
+        stripped = tuple(dd for dd in dests if dd[0] != code)
+        per_chunk[c] = (stripped + ((code, item_of[c], None),)
                         if c in item_of else stripped)
     counts = {**counts, code: count}
-    rebuilt = _resegment(per_chunk, counts, derived, by_code, len(chunks))
+    rebuilt = _resegment(per_chunk, counts, nested, derived, by_code,
+                         len(chunks))
     if rebuilt is None:
         return None
     return rebuilt, counts
@@ -758,21 +884,50 @@ def _diff_text(reply, base_text) -> str | None:
            if l and l not in removed]
     kept = set(out)
     out += [a for a in dict.fromkeys(added) if a not in kept]
+    # a reply that rewrites every map line as "-x/+x" pairs leaves the
+    # count declarations as the only surviving base lines — appending
+    # the additions behind them built a counts-first text the parser
+    # then blamed the model for. The grammar's order is the applier's
+    # invariant: map lines first, everything after.
+    out.sort(key=lambda l: 0 if _LINE.match(l) else 1)
     return '\n'.join(out)
+
+
+def _pure_chain(dests: tuple) -> bool:
+    """A segment of nothing but chain destinations — the settled form of
+    a chain line nested in its parent's run."""
+    return bool(dests) and all(dd[2] is not None for dd in dests)
 
 
 def _cover(segments: list) -> dict:
     """Per chunk id: the destinations owning it — the expanded form both
     adoption paths (recount splice, shared-run resplit) edit before
-    re-segmenting."""
-    return {c: dests for s, e, dests in segments for c in range(s, e + 1)}
+    re-segmenting. A pure-chain segment nesting in a parent run keeps
+    the parent's destinations underneath it: containment is segment
+    geometry, which the per-chunk form cannot express, and dropping the
+    parent would leave the chains riding no run — the rebuild would
+    reject the very map it started from, and a zeros recount that
+    merely CONFIRMED its zeros would burn a repair round on nothing
+    (measured: every confirm on a chain map did). The round-trip is
+    not shape-stable — a hosted parent run comes back as the chains'
+    own slices with the parent riding each — but coverage is identical
+    and the group layer re-coalesces adjacency."""
+    plain, chains = {}, {}
+    for s, e, dests in segments:
+        into = chains if _pure_chain(dests) else plain
+        for c in range(s, e + 1):
+            into[c] = dests
+    return {c: plain.get(c, ()) + chains.get(c, ())
+            for c in chains.keys() | plain.keys()}
 
 
-def _resegment(per_chunk: dict, counts: dict, derived: dict,
+def _resegment(per_chunk: dict, counts: dict, nested: dict, derived: dict,
                by_code: dict, n: int):
     """The adoption tail shared by both paths that edit the expanded
     map: a per-chunk destination map → coalesced segments (adjacent
-    equal destinations merge into one run), validated against the
+    equal destinations merge into one run; the result is a disjoint
+    partition, so containment needs no re-settling — ``_cover`` already
+    carried the parents beneath the chains), validated against the
     declared counts — None when the result is not a valid map."""
     rebuilt = []
     for c in range(n):
@@ -781,12 +936,13 @@ def _resegment(per_chunk: dict, counts: dict, derived: dict,
             rebuilt[-1] = (rebuilt[-1][0], c, dests)
         else:
             rebuilt.append((c, c, dests))
-    if _map_errors(rebuilt, counts, derived, by_code, n):
+    if _map_errors(rebuilt, counts, nested, derived, by_code, n):
         return None
     return rebuilt
 
 
-def _splice(segments, counts, derived, answer, zeros, by_code: dict, n: int):
+def _splice(segments, counts, nested, derived, answer, zeros, by_code: dict,
+            n: int):
     """Fold a recount answer into a validated routing — the adoption is
     code's, not the model's: a repair round shown the map re-emits it
     verbatim (measured), so nothing is asked of the anchored
@@ -796,8 +952,8 @@ def _splice(segments, counts, derived, answer, zeros, by_code: dict, n: int):
     one other repeating unit shares that count, the derivation is
     adopted (its mirroring beats the model's line placement); anything
     else is unusable (caller falls back to a repair round). Returns the
-    merged ``(segments, counts, derived)`` or None."""
-    cover = {c: dests for s, e, dests in segments for c in range(s, e + 1)}
+    merged ``(segments, counts, nested, derived)`` or None."""
+    cover = _cover(segments)
     claimed, crossed, seen = {}, set(), set()
     for line in str(answer).strip().splitlines():
         if m := _COUNT.match(line.strip()):
@@ -829,6 +985,7 @@ def _splice(segments, counts, derived, answer, zeros, by_code: dict, n: int):
             if not item:
                 return None  # itemless claim for a recounted unit
             item = _undouble(item)
+            item = _flatten(item)
             if m3 := _ITEM_RANGE.fullmatch(item):
                 a, b = int(m3[1]), int(m3[2])
                 if b < a:
@@ -838,18 +995,18 @@ def _splice(segments, counts, derived, answer, zeros, by_code: dict, n: int):
                 # inseparably, one destination per index
                 index = items_of((a, b))
             else:
-                index = [int(item.split('.')[0])]
+                index = [int(item)]
             for i in index:
                 if (code, i) in seen:
                     return None
                 seen.add((code, i))
-                dests.append((code, i))
+                dests.append((code, i, None))
         if not dests:
             continue  # noise about units this recount does not own
         if end >= n or end < start:
             return None
         for c in range(start, end + 1):
-            if cover[c] == ((NONE, None),):
+            if cover[c] == ((NONE, None, None),):
                 claimed[c] = tuple(dests)
             else:
                 crossed.update(d[0] for d in dests)
@@ -863,10 +1020,10 @@ def _splice(segments, counts, derived, answer, zeros, by_code: dict, n: int):
             return None
         derived = {**derived, code: candidates[0]}
     rebuilt = _resegment({c: claimed.get(c) or cover[c] for c in range(n)},
-                         counts, derived, by_code, n)
+                         counts, nested, derived, by_code, n)
     if rebuilt is None:
         return None
-    return rebuilt, counts, derived
+    return rebuilt, counts, nested, derived
 
 
 def _content_len(chunk: str) -> int:
@@ -937,18 +1094,36 @@ def _codes(units: list) -> dict:
     return codes
 
 
-def _parse(text, by_code: dict, n: int):
+def _declared_budget(line: str):
+    """The ``@`` suffix's parsed entries, or None — tolerated, never
+    checked; the one read shared by the top-level and chain count
+    branches."""
+    if b := _BUDGET.search(line):
+        values = [v for v in (_budget(t) for t in
+                              re.split(r'[,\s]+', b.group(1).strip())) if v]
+        if values:
+            return values[0] if len(values) == 1 else values
+    return None
+
+
+def _parse(text, by_code: dict, n: int, lenient: set | None = None):
     """Validate count declarations plus a segment map. Returns (errors,
-    counts, derived, segments, budgets); segments are ``(start, end,
-    destinations)`` with destinations a tuple of ``(code, item|None)``,
-    derived a ``{code: source}`` map of summarizing units, budgets a
-    ``{code: Budget}`` map of the (tolerated, never checked) ``@``
-    declarations."""
+    counts, nested, derived, segments, budgets); segments are ``(start,
+    end, destinations)`` with destinations a uniform ``(code,
+    item|None, parent|None)`` — the third element names the parent
+    instance of a chain through a lifted sub-array — derived a
+    ``{code: source}`` map
+    of summarizing units, counts a ``{code: int}`` map of top-level
+    declarations, nested a ``{(sub-code, parent index): int}`` map of
+    the per-parent ones, budgets a ``{code: Budget}`` map of the
+    (tolerated, never checked) ``@`` declarations. ``lenient`` names
+    codes whose declared-vs-used mismatch is passed through unsaid —
+    a replayed map's count arbitration owns the number."""
     if not isinstance(text, str) or not text.strip():
         return (['output must be the count lines and segment map, nothing else'],
-                {}, {}, [], {})
-    errors, counts, derived, segments, budgets = [], {}, {}, [], {}
-    seen_segments = set()
+                {}, {}, {}, [], {})
+    errors, counts, nested, derived, segments, budgets = [], {}, {}, {}, [], {}
+    sub_decls = {}
     in_map = False
     for i, line in enumerate(text.strip().splitlines()):
         line = line.strip()
@@ -960,9 +1135,54 @@ def _parse(text, by_code: dict, n: int):
                               f'follow the map')
                 continue
             code, declared, source = m.group(1), m.group(2), m.group(3)
+            if chain := _CHAIN.fullmatch(code):
+                punit, sunit = by_code.get(chain[1]), by_code.get(chain[3])
+                if sunit is None or punit is None \
+                        or sunit.parent != punit.path:
+                    errors.append(f'line {i + 1}: {code!r} is not a nested '
+                                  f'unit chain — {chain[3]!r} must be the '
+                                  f'unit the legend nests under {chain[1]}')
+                elif chain[4] is not None:
+                    # a per-sub-entry declaration — the model's natural
+                    # mirror of item counting; tolerated, and folded: the
+                    # highest declared sub-entry numbers the parent's
+                    # count when no explicit one stands (a budget suffix
+                    # on it is ignored — pricing is the parent
+                    # declaration's business)
+                    if source is not None:
+                        errors.append(f'line {i + 1}: {code} takes a '
+                                      f'count, no source')
+                    else:
+                        sub_decls.setdefault((chain[3], int(chain[2])), {})[
+                            int(chain[4])] = int(declared or 0)
+                elif (chain[3], int(chain[2])) in nested:
+                    errors.append(f'line {i + 1}: {code} declared twice')
+                elif source is not None:
+                    errors.append(f'line {i + 1}: {code} counts per parent — '
+                                  f'declare a count ("{code}: <n>"), no '
+                                  f'source')
+                elif declared is None:
+                    errors.append(f'line {i + 1}: {code} must declare a '
+                                  f'count ("{code}: <n>")')
+                else:
+                    nested[(chain[3], int(chain[2]))] = int(declared)
+                if chain[4] is None and sunit is not None and punit is not None \
+                        and (b := _declared_budget(line)):
+                    # the sub-array's arrangement is unit-level: one
+                    # entry covers its sub-items under every parent
+                    budgets[chain[3]] = b
+                continue
             unit = by_code.get(code)
             if unit is None:
                 errors.append(f'line {i + 1}: unknown unit code {code!r}')
+            elif unit.parent is not None and declared == '0':
+                pass  # a nested unit's bare zero says what silence says —
+                # noise, ignored (the prompt's declaration example pulls
+                # models into writing it; measured on live draws)
+            elif unit.parent is not None:
+                errors.append(f'line {i + 1}: {code} counts per parent — '
+                              f'declare "{_parent_code(unit, by_code)}.'
+                              f'<item>.{code}: <n>", no count of its own')
             elif unit.kind != 'array':
                 pass  # a count on a non-repeating unit is noise, ignored
             elif code in counts or code in derived:
@@ -976,11 +1196,8 @@ def _parse(text, by_code: dict, n: int):
                 derived[code] = source  # a number beside "= <source>" is ignored
             else:
                 counts[code] = int(declared)
-            if unit is not None and (b := _BUDGET.search(line)):
-                if values := [v for v in (_budget(t) for t in
-                                          re.split(r'[,\s]+', b.group(1).strip()))
-                              if v]:
-                    budgets[code] = values[0] if len(values) == 1 else values
+            if unit is not None and (b := _declared_budget(line)):
+                budgets[code] = b
             continue
         in_map = True
         if not (m := _LINE.match(line)):
@@ -988,10 +1205,14 @@ def _parse(text, by_code: dict, n: int):
                     if re.search(r',\s*-', line) else
                     ' — write the item range as "5-9 d.0-2": the second '
                     'index never repeats the code'
-                    if re.search(r'[a-z]+\.\d+\s*-\s*[a-z]+\.\d+', line) else '')
+                    if re.search(r'[a-z]+\.\d+\s*-\s*[a-z]+\.\d+', line) else
+                    ' — write "c.0": the item is the code\'s first index, '
+                    'further dotted tails are dropped'
+                    if re.search(r'[a-z]+\.\d+\.\d+', line) else '')
+            tail = (' — a bare "-" maps nothing, drop the line entirely'
+                    if re.search(r'(?:^|[\s,])-(?:$|[\s,])', line) else '')
             errors.append(f'line {i + 1}: {line!r} is not '
-                          f'"<start>-<end> <code>[.<item>][,...]"{hint} — '
-                          f'a bare "-" maps nothing, drop the line entirely')
+                          f'"<start>-<end> <code>[.<item>][,...]"{hint}{tail}')
             continue
         start, end = int(m.group(1)), int(m.group(2) or m.group(1))
         if start >= n or end >= n or end < start:
@@ -1001,72 +1222,261 @@ def _parse(text, by_code: dict, n: int):
         destinations, seen = [], set()
         parts = m.group(3).split(',')
         for d in (t.strip() for t in parts):
-            code, _, item = d.partition('.')
-            item = _undouble(item)
+            code, _, rest = d.partition('.')
             unit = by_code.get(code)
-            if code == NONE and item:
+            if code == NONE and rest:
                 errors.append(f'line {i + 1}: {NONE} takes no item index')
             elif code == NONE:
-                destinations.append((NONE, None))
+                destinations.append((NONE, None, None))
             elif unit is None:
                 errors.append(f'line {i + 1}: unknown unit code {code!r}')
-            elif (code, item) in seen:
-                errors.append(f'line {i + 1}: destination {d!r} appears twice')
-            elif unit.kind == 'array' and item == '':
-                seen.add((code, item))
-                # bare repeating code: instances unsplit, extracted whole
-                destinations.append((code, 0))
-            elif unit.kind == 'array' and (m2 := _ITEM_RANGE.fullmatch(item)):
-                a, b = int(m2.group(1)), int(m2.group(2))
-                if b < a:
-                    errors.append(f'line {i + 1}: {code}.{item} is unordered')
-                    continue
-                if len(parts) > 1 and start < end:
-                    errors.append(f'line {i + 1}: {code}.{item} takes its line '
-                                  f'alone — a ranged run never comma-joins '
-                                  f'another code')
-                    continue
-                if len(parts) > 1:
-                    # a ranged claim sharing ONE chunk with another unit's
-                    # item is the co-chunked shared form spelled compactly
-                    # — instances a..b all ride the chunk, exactly what
-                    # comma-joined indexes mean — expanded here. The
-                    # model reaches for this shape persistently wherever
-                    # a small unit shares its section heading's chunk;
-                    # rejecting it sent repairs circling (measured: a
-                    # canary repair loop cycled delete-unit → false zero
-                    # → recount → overlap and exhausted the budget)
-                    ks = items_of((a, b))
-                    if any((code, str(k)) in seen for k in ks):
-                        errors.append(f'line {i + 1}: destination {d!r} '
-                                      f'appears twice')
-                        continue
-                    seen.update((code, str(k)) for k in ks)
-                    destinations += [(code, k) for k in ks]
-                    continue
-                seen.add((code, item))
-                # ranged run: compact shared form — these chunks carry
-                # exactly instances a..b, inseparably (the comma-join's
-                # syntax, one destination instead of b-a+1)
-                destinations.append((code, (a, b)))
+            elif unit.parent is not None:
+                # a lifted sub-array has no address of its own: its items
+                # are per-parent, only the chain reaches them — spelled
+                # directly or folded from a comma-joined parent
+                out, err = _attach_chain(destinations, d, code, rest,
+                                         unit, by_code)
+                if err:
+                    errors.append(f'line {i + 1}: {err}')
             else:
-                seen.add((code, item))
-                # item tolerated on non-array units, stripped; a dotted
-                # tail ("2.0") keeps its leading index
-                destinations.append((code, int(item.split('.')[0])
-                                     if unit.kind == 'array' and item else None))
-        segment = (start, end, tuple(destinations))
-        if segment not in seen_segments:  # an exact re-emitted line is
-            seen_segments.add(segment)    # redundancy, not an error
-            segments.append(segment)
+                out, err = _destination(d, code, rest, unit, by_code, seen,
+                                        len(parts) > 1, start, end)
+                if err:
+                    errors.append(f'line {i + 1}: {err}')
+                else:
+                    destinations += out
+        if (seg := _merge_line(segments, start, end,
+                               tuple(destinations))) is not None:
+            segments.append(seg)
+    for (scode, pidx), subs in sub_decls.items():
+        # the fold: per-sub-entry declarations stand in for the parent's
+        # count when the model didn't write one — map-first, the highest
+        # numbered sub-entry is what the document holds
+        if (scode, pidx) not in nested:
+            nested[(scode, pidx)] = max(subs) + 1
     segments.sort(key=lambda s: s[0])  # line order carries no meaning —
     # ranges are explicit; a diff reply's "+" insert lands at its own
     # editing position, so out-of-order lines are normal, not an error
-    errors += _map_errors(segments, counts, derived, by_code, n)
+    _settle_chains(segments, by_code)
+    errors += _map_errors(segments, counts, nested, derived, by_code, n,
+                          lenient)
     # exact duplicates collapse — one repeated destination must not
     # flood the repair feedback with the same message
     errors = list(dict.fromkeys(errors))
-    return errors, counts, derived, [] if errors else segments, budgets
+    return errors, counts, nested, derived, [] if errors else segments, budgets
+
+
+def _chain_parents(dests: tuple, by_code: dict) -> set:
+    """The parent destinations a line's chain destinations hang under —
+    {(parent-code, parent-instance)}; empty when the line has none."""
+    return {(_parent_code(by_code[dd[0]], by_code), dd[2])
+            for dd in dests if dd[2] is not None}
+
+
+def _hosted_chain(start: int, end: int, parents: set, candidates) -> bool:
+    """The one home of the chain-hosting rule: whether some candidate
+    segment spans [start, end] and carries every parent destination in
+    ``parents`` among its plain destinations."""
+    return any(s <= start and end <= e
+               and parents <= {(x[0], x[1]) for x in ds if x[2] is None}
+               for s, e, ds in candidates)
+
+
+def _settle_chains(segments: list, by_code: dict) -> None:
+    """A chain-borne line — nothing but chains and their implicit parent
+    destinations — that nests in a run of the parent's own line drops
+    the implicit parents: the fine partition stands, each sub-entry
+    keeping its slice as its own segment (the executor fans them out
+    separately; a kept implicit parent would re-extract the run the
+    host line already covers). One no run contains stays as it is —
+    covering, the parent's coverage there, exactly what the prompt
+    promises."""
+
+    def implicit_only(ds):
+        chains = [dd for dd in ds if dd[2] is not None]
+        parents = _chain_parents(ds, by_code)
+        return bool(chains) and all(
+            dd[2] is not None or (dd[0], dd[1]) in parents for dd in ds)
+
+    bases = [(s, e, ds) for s, e, ds in segments if not implicit_only(ds)]
+    for k, (s, e, ds) in enumerate(segments):
+        if not implicit_only(ds):
+            continue
+        if _hosted_chain(s, e, _chain_parents(ds, by_code), bases):
+            segments[k] = (s, e, tuple(dd for dd in ds
+                                       if dd[2] is not None))
+
+
+def _merge_line(segments: list, start: int, end: int, dests: tuple):
+    """One parsed line folded into the map — None when an existing line
+    absorbed it. Same-range repeats union their destinations (an exact
+    re-emission is plain redundancy): the model lines a parent's run
+    and its chains up as separate same-range lines, and one chunk set
+    is one line's semantics — rejecting that sent the repair loop
+    oscillating to exhaustion (measured). Lines at DIFFERENT ranges
+    stay apart: a chain line nesting in its parent's run is legal on
+    its own (the fine partition fans the sub-entries out separately,
+    merging it would collapse them into one whole call), anything else
+    overlapping is an overlap error."""
+
+    for k, (s, e, ds) in enumerate(segments):
+        if (s, e) == (start, end):
+            if ds != dests:
+                theirs = () if ds == ((NONE, None, None),) else ds
+                mine = () if dests == ((NONE, None, None),) else dests
+                segments[k] = (s, e, theirs + tuple(
+                    dd for dd in mine if dd not in theirs))
+            return None
+    return start, end, dests
+
+
+def _destination(d, code, rest, unit, by_code, seen, multi, start, end):
+    """One destination token parsed against the schema — ``(destinations,
+    error)``. Top-level destinations are ``(code, item)``; a chain
+    through a lifted sub-array adds ``(sub-code, sub-item, parent)`` to
+    the same line, the parent instance riding with its sub-entry. Two
+    spellings normalize to the chain — the field name
+    ('c.0.sub_experiences.0') and, when the unit holds exactly one
+    sub-array, the bare numeric tail ('c.0.0': the schema's shape says
+    what the tail numbers). Anything else dotted folds to the leading
+    index, the flat reading. ``seen`` accumulates this line's
+    destinations for duplicate detection."""
+    if not (m := _REST.fullmatch(rest)):
+        return [(code, _fold(rest, unit), None)], None
+    item = _undouble(m.group(1)) if m.group(1) else m.group(1)
+    mid, sub = m.group(2), m.group(3)
+    if mid is None:
+        return _plain(d, code, item, unit, seen, multi, start, end)
+    dotted = f'{item}.{mid}' + (f'.{sub}' if sub else '')
+    if mid.isdigit():
+        # the bare numeric tail: a sub-entry of the unit's one lifted
+        # sub-array when the schema shapes it so, else the flat fold
+        children = [c for c, u in by_code.items() if u.parent == unit.path]
+        if (sub is None and unit.kind == 'array' and item and item.isdigit()
+                and len(children) == 1):
+            parent_dest = [] if (code, item) in seen \
+                else [(code, int(item), None)]
+            if (children[0], mid, item) in seen:
+                return parent_dest, None  # re-claimed: idempotent
+            seen.add((children[0], mid, item))
+            seen.add((code, item))
+            return [*parent_dest,
+                    (children[0], int(mid), int(item))], None
+        return [(code, _fold(dotted, unit), None)], None
+    sub_code = _nested_unit(mid, unit, by_code)
+    if sub_code is None:
+        if any(u.parent is not None and (c == mid or u.field == mid)
+               for c, u in by_code.items()):
+            return [], (f'{mid} does not nest under {code} — chain through '
+                        f'the unit it really hangs under')
+        return [(code, _fold(dotted, unit), None)], None
+    if item is None:
+        return [], _rides(sub_code, by_code[sub_code], by_code)
+    if not item.isdigit():
+        return [], (f'{code}.{item}.{sub_code}: the chain numbers one '
+                    f'parent instance — no range on the parent index')
+    if sub is None:
+        return [], (f'{code}.{item}.{sub_code} needs its sub-item — write '
+                    f'{code}.{item}.{sub_code}.<sub-item>')
+    parent = int(item)
+    if m2 := _ITEM_RANGE.fullmatch(_undouble(sub)):
+        a, b = int(m2.group(1)), int(m2.group(2))
+        if b < a:
+            return [], f'{d!r} is unordered'
+        if multi and start < end:
+            return [], (f'{code}.{item}.{sub_code}.{sub} takes its line '
+                        f'alone — a ranged run never comma-joins another code')
+        # a second chain of the same parent on one line rides the
+        # parent destination already claimed — the co-chunked shared
+        # form ('c.0.d.0,c.0.d.1') is exactly that spelling; a
+        # re-claimed destination is idempotent, never an error
+        ks = [k for k in items_of((a, b))
+              if (sub_code, str(k), item) not in seen]
+        seen.update((sub_code, str(k), item) for k in ks)
+        parent_dest = [] if (code, item) in seen \
+            else [(code, parent, None)]
+        seen.add((code, item))
+        return [*parent_dest, *[(sub_code, k, parent) for k in ks]], None
+    parent_dest = [] if (code, item) in seen else [(code, parent, None)]
+    seen.add((code, item))
+    if (sub_code, sub, item) in seen:
+        return parent_dest, None  # re-claimed: idempotent
+    seen.add((sub_code, sub, item))
+    return [*parent_dest, (sub_code, int(sub), parent)], None
+
+
+def _attach_chain(destinations, d, code, rest, unit, by_code):
+    """A bare nested-unit destination ('c.0,d.0-3' — the model
+    comma-joins a parent instance and its ranged sub-entries) folds
+    into the parent destination the line already claims: one more
+    spelling of the chain, measured on a live draw. Unambiguous
+    only — several parent instances on the line keep the named error."""
+    parents = [dd for dd in destinations
+               if dd[2] is None and isinstance(dd[1], int)
+               and by_code[dd[0]].path == unit.parent]
+    if len(parents) != 1:
+        return [], _rides(code, unit, by_code)
+    parent = parents[0][1]
+    if m2 := _ITEM_RANGE.fullmatch(_undouble(rest)):
+        a, b = int(m2.group(1)), int(m2.group(2))
+        if b < a:
+            return [], f'{d!r} is unordered'
+        destinations.extend((code, k, parent)
+                            for k in items_of((a, b))
+                            if (code, k, parent) not in destinations)
+        return [], None
+    if not rest.isdigit():
+        return [], _rides(code, unit, by_code)
+    if (code, int(rest), parent) not in destinations:
+        destinations.append((code, int(rest), parent))
+    return [], None
+
+
+def _plain(d, code, item, unit, seen, multi, start, end):
+    """The no-chain destinations — itemless whole, plain item, ranged:
+    the grammar before chains. A re-claimed destination is idempotent,
+    never an error: the model repeats a parent instance when its chains
+    share the line ('c.0.d.0,c.0'), and a repair round over a duplicate
+    that claims nothing new is a wasted round."""
+    if item is None:
+        if unit.kind == 'array':
+            # bare repeating code: instances unsplit, extracted whole
+            if (code, '') in seen:
+                return [], None
+            seen.add((code, ''))
+            return [(code, 0, None)], None
+        return [(code, None, None)], None
+    if unit.kind == 'array' and (m2 := _ITEM_RANGE.fullmatch(item)):
+        a, b = int(m2.group(1)), int(m2.group(2))
+        if b < a:
+            return [], f'{d!r} is unordered'
+        if multi and start < end:
+            return [], (f'{code}.{item} takes its line alone — a ranged '
+                        f'run never comma-joins another code')
+        if multi:
+            # a ranged claim sharing ONE chunk with another unit's item is
+            # the co-chunked shared form spelled compactly — instances
+            # a..b all ride the chunk, exactly what comma-joined indexes
+            # mean — expanded here. The model reaches for this shape
+            # persistently wherever a small unit shares its section
+            # heading's chunk; rejecting it sent repairs circling
+            # (measured: a canary repair loop cycled delete-unit → false
+            # zero → recount → overlap and exhausted the budget)
+            ks = [k for k in items_of((a, b))
+                  if (code, str(k)) not in seen]
+            seen.update((code, str(k)) for k in ks)
+            return [(code, k, None) for k in ks], None
+        if (code, item) in seen:
+            return [], None
+        seen.add((code, item))
+        # ranged run: compact shared form — these chunks carry exactly
+        # instances a..b, inseparably (the comma-join's syntax, one
+        # destination instead of b-a+1)
+        return [(code, (a, b), None)], None
+    if (code, item) in seen:
+        return [], None
+    seen.add((code, item))
+    return [(code, _fold(item, unit), None)], None
 
 
 def _block_lines(code: str, first: int, last: int, declared: int,
@@ -1110,25 +1520,42 @@ def _overrun_hint(code: str, first: int, last: int, lines: str) -> str:
             f'{_DECLINE}') + _DIFF_REPLY
 
 
-def _shared_spans(segments: list, counts: dict) -> dict:
-    """Shared-form array units: ``{code: chunk span}`` — instances
-    riding shared lines (comma-joined destinations), a lone item
-    spanning the whole run, or a ranged run (compact shared syntax).
-    Single-chunk runs excluded."""
-    shared = {}
+def _shared_spans(segments: list, counts: dict) -> tuple:
+    """Shared-form array units — ``({code: chunk span}, {code: span})``.
+    The first maps every unit riding shared lines (comma-joined
+    destinations, a lone item spanning the whole run, or a ranged run —
+    the material-overflow ask's candidate pool). The second is the
+    subset whose recount is worth a round: a ranged run is the
+    whole-run-decode case, always in; a line already carrying one
+    destination per instance is decomposed, its recount pure
+    decode-shaving, in only past RESHARE_LOAD chunks per instance —
+    a unit declared once obeys the same arithmetic (a lone item over a
+    handful of chunks reads as one long entry as plausibly as a merge;
+    measured: its recount confirmed every time and never adopted).
+    Single-chunk runs excluded. A unit riding a line that carries a
+    chain (a lifted sub-array's destination) is excluded with them —
+    redrawing that line would swallow the chain, and the recount sees
+    none of the sub-entries."""
+    chained = {dd[0] for _, _, dests in segments
+               if any(x[2] is not None for x in dests)
+               for dd in dests if dd[2] is None}
+    shared, merged = {}, {}
     for start, end, dests in segments:
         if start == end:
             continue
+        span = end - start + 1
         per, ranged = {}, set()
-        for d, item in dests:
-            if d != NONE:
-                per[d] = per.get(d, 0) + 1
-                if isinstance(item, tuple):
-                    ranged.add(d)
+        for dd in dests:
+            if dd[0] != NONE and dd[2] is None and dd[0] not in chained:
+                per[dd[0]] = per.get(dd[0], 0) + 1
+                if isinstance(dd[1], tuple):
+                    ranged.add(dd[0])
         for d, n in per.items():
-            if n > 1 or counts.get(d) == 1 or d in ranged:
-                shared[d] = shared.get(d, 0) + end - start + 1
-    return shared
+            if counts.get(d) == 1 or d in ranged or n > 1:
+                shared[d] = shared.get(d, 0) + span
+                if d in ranged or span >= n * RESHARE_LOAD:
+                    merged[d] = merged.get(d, 0) + span
+    return shared, merged
 
 
 def _lazy_shape(span: int, declared: int) -> bool:
@@ -1142,7 +1569,9 @@ def _lazy_shape(span: int, declared: int) -> bool:
 def _shared_hints(spans: dict, counts: dict) -> dict:
     """Array units left in the LAZY shared shape — instances merged into
     one long run, a unit declared once whose lone item spans far more
-    chunks than one entry plausibly reads alone. Several chunks per
+    chunks than one entry plausibly reads alone (the recount-worthy
+    subset of ``_shared_spans``; already-decomposed thin lines are
+    filtered there). Several chunks per
     instance may still separate at chunk boundaries (measured lazy
     draw: a whole section mapped as one shared item). A genuinely huge
     single entry is indistinguishable from the merged form — the
@@ -1188,7 +1617,7 @@ def _overrun_hints(segments: list, spans: dict, counts: dict,
         return {}
     bounds = {}
     for start, end, dests in segments:
-        for c in {d for d, _ in dests if d != NONE}:
+        for c in {dd[0] for dd in dests if dd[2] is None and dd[0] != NONE}:
             lo, hi = bounds.get(c, (start, end))
             bounds[c] = (min(lo, start), max(hi, end))
     paths = {code: by_code[code].path for code in wanted}
@@ -1215,19 +1644,68 @@ def _overrun_hints(segments: list, spans: dict, counts: dict,
     return hints
 
 
-def _map_errors(segments, counts, derived, by_code: dict, n: int) -> list:
+_PASSABLE = re.compile(r'^([a-z]+): declared \d+ items ')
+
+
+def _passable(errors: list) -> set:
+    """Codes whose declared-vs-used mismatch a replayed map may pass
+    through — top-level, per-parent, and assigns-none alike. The
+    extraction's count arbitration owns the number (it settles
+    declared-vs-actual by diffing entry openings); the router owns
+    chunk allocation."""
+    return {m[1] for e in errors if (m := _PASSABLE.match(e))}
+
+
+def _map_errors(segments, counts, nested, derived, by_code: dict,
+                n: int, lenient: set | None = None) -> list:
     """Whole-map consistency: line-range overlap, declared-vs-used
-    items per destination, derivation sanity, and full coverage
-    (reported even alongside line errors, so the model gets the
-    complete picture in one repair)."""
-    errors, prev_end = [], -1
-    for start, end, _ in segments:
+    items per destination — top level and, per parent instance, lifted
+    sub-arrays — derivation sanity, and full coverage (reported even
+    alongside line errors, so the model gets the complete picture in
+    one repair). A pure chain line claims no coverage of its own: it
+    must sit inside a line that carries its parent destination, where
+    it reads as the fine partition of that run — each sub-entry keeps
+    its own slice and fans out on its own; overlapping it with anything
+    else is an error."""
+    covering, chains = [], []
+    for seg in segments:
+        if _pure_chain(seg[2]):
+            chains.append(seg)
+        else:
+            covering.append(seg)
+    errors, prev_end, prev_dests = [], -1, ()
+    for start, end, dests in covering:
         if start <= prev_end:
+            if start == end == prev_end:
+                shared = sorted(
+                    {dd[0] for dd in dests} & {dd[0] for dd in prev_dests}
+                    & {c for c, u in by_code.items()
+                       if u.kind == 'array' and u.parent is None})
+                tail = (f'two {shared[0]} instances on one chunk ride one '
+                        f'line, e.g. "{prev_end} {shared[0]}.0,{shared[0]}.1"'
+                        if shared else
+                        'units sharing a chunk ride that line together, '
+                        'e.g. "5 x.0,y.0"')
+            else:
+                # a multi-chunk overlap is two claims on the same
+                # material — the ride hints would point the wrong way
+                tail = ('draw each chunk on exactly one line — shorten or '
+                        'drop whichever line covers material another line '
+                        'already carries')
             errors.append(f'segment {start}-{end} overlaps after chunk '
-                          f'{prev_end} — every chunk sits on exactly '
-                          f'one line; units sharing a chunk ride '
-                          f'that line together, e.g. "5 x.0,y.0"')
-        prev_end = max(prev_end, end)
+                          f'{prev_end} — every chunk sits on exactly one '
+                          f'line; {tail}')
+        if end > prev_end:
+            prev_end, prev_dests = end, dests
+    for start, end, dests in chains:
+        if not _hosted_chain(start, end, _chain_parents(dests, by_code),
+                             covering):
+            pcode = _parent_code(by_code[dests[0][0]], by_code)
+            errors.append(
+                f'{dests[0][0]}: chain line {start}-{end} rides no run of '
+                f'its parent — draw {pcode}.<item>\'s own line over the '
+                f'chain lines, or put the chains on the parent\'s line '
+                f'("{start}-{end} {pcode}.<item>.{dests[0][0]}.<sub>")')
     for code, source in derived.items():
         src = by_code.get(source)
         if src is None:
@@ -1245,11 +1723,16 @@ def _map_errors(segments, counts, derived, by_code: dict, n: int) -> list:
     for code, unit in by_code.items():
         if unit.kind != 'array' or code in derived:
             continue
+        if unit.parent is not None:
+            errors += _nested_errors(code, unit, segments, counts, nested,
+                                     by_code, lenient)
+            continue
         items, ranged_seen, ranged_warned = set(), {}, False
         for _, _, dests in segments:
-            for c, item in dests:
-                if c != code:
+            for dd in dests:
+                if dd[0] != code:
                     continue
+                item = dd[1]
                 if isinstance(item, tuple):
                     for i in items_of(item):
                         if i in ranged_seen and not ranged_warned:
@@ -1275,7 +1758,7 @@ def _map_errors(segments, counts, derived, by_code: dict, n: int) -> list:
                 # because every zero is re-examined by the recount pass
                 counts[code] = 0
             continue
-        if items != set(range(declared)):
+        if items != set(range(declared)) and code not in (lenient or ()):
             hint = (f' — attach its items to the lines of the unit whose text it '
                     f'shares, e.g. "5 x.0,{code}.0"; declare 0 if the document '
                     f'holds none; or, when it merely summarizes another '
@@ -1296,28 +1779,90 @@ def _map_errors(segments, counts, derived, by_code: dict, n: int) -> list:
     return errors
 
 
+def _nested_errors(code: str, unit: Unit, segments, counts, nested,
+                   by_code: dict, lenient: set | None = None) -> list:
+    """Per-parent consistency for one lifted sub-array: the chain's
+    parent instance must exist under the parent unit's declared count,
+    and every parent naming a count sees its sub-items 0..n-1 — the
+    declared-vs-used contract one level down. A parent holding no
+    sub-entries declares nothing, so a missing declaration is only an
+    error where the map already claims sub-entries."""
+    pcode = next(c for c, u in by_code.items() if u.path == unit.parent)
+    used = {}
+    for _, _, dests in segments:
+        for dd in dests:
+            if dd[0] == code:
+                for i in items_of(dd[1]):
+                    used.setdefault(dd[2], set()).add(i)
+    declared = {p: v for (c, p), v in nested.items() if c == code}
+    errors = []
+    for p in sorted(used.keys() | declared.keys()):
+        chain = f'{pcode}.{p}.{code}'
+        if code in (lenient or ()) and p in declared:
+            continue  # passed through after a replay — the count
+            # arbitration owns it (used-but-undeclared still blocks:
+            # with no declaration there is nothing to arbitrate)
+        if p in used and p in declared:
+            if used[p] != set(range(declared[p])):
+                errors.append(
+                    f'{code}: declared {declared[p]} items under {pcode}.{p} '
+                    f'but the map uses {sorted(used[p])} — give each '
+                    f'sub-entry its own line where chunk boundaries can '
+                    f'separate them ("5-9 {chain}.0", "10-11 {chain}.1"); '
+                    f'instances that share one chunk ride one line '
+                    f'("5 {chain}.0,{chain}.1"); or the count is wrong — '
+                    f'declare what the document holds')
+        elif p in used:
+            errors.append(
+                f'{code}: sub-entries used under {pcode}.{p} but their '
+                f'count is undeclared — declare "{chain}: <n>"')
+        else:
+            # single remedy, stated once: the declaration stands (it was
+            # the map that skipped the sub-entries) — offering "drop the
+            # declaration" here read as an equal branch and the model
+            # took it after drawing the chains, then got whipsawed by
+            # this same check one round later (measured)
+            errors.append(
+                f'{code}: declared {declared[p]} items under {pcode}.{p} '
+                f'but the map assigns none — add the chain lines '
+                f'("{chain}.0") as "+" diff lines, everything else stays; '
+                f'keep the declaration: it is correct when the document '
+                f'holds the sub-entries the lines should cover')
+    if isinstance(have := counts.get(pcode), int):
+        for p in sorted(p for p in used if p >= have):
+            errors.append(
+                f'{code}: chained under {pcode}.{p} but {pcode} declares '
+                f'{have} items — the parent instance does not exist')
+    return errors
+
+
 def _groups(segments: list, by_code: dict, chunks: list[str],
             derived: dict = None) -> list:
     """Validated line ranges are disjoint by construction; each
     destination gets its own group, chunk-adjacent same-destination
     pieces coalesce (a shared unit's items may interleave with the
-    detailed unit's). Derived units mirror their source's groups."""
+    detailed unit's; a parent instance's chunks coalesce across the
+    chain lines that ride them). Derived units mirror their source's
+    groups."""
     groups, last = [], {}
     for start, end, destinations in segments:
         ids, text = list(range(start, end + 1)), '\n'.join(
             chunks[i] for i in range(start, end + 1))
-        for code, item in destinations:
-            if code == NONE:
+        for dest in destinations:
+            if dest[0] == NONE:
                 continue
-            if g := last.get((code, item)):
+            key = (dest[0], dest[1], dest[2])
+            if g := last.get(key):
                 if g.chunk_ids[-1] == start - 1:  # adjacent piece, same destination
                     g.chunk_ids.extend(ids)
                     g.text += '\n' + text
                     continue
-            g = Group(by_code[code], None if isinstance(item, tuple) else item,
+            g = Group(by_code[dest[0]],
+                      None if isinstance(dest[1], tuple) else dest[1],
                       list(ids), text,
-                      items=tuple(item) if isinstance(item, tuple) else ())
-            last[(code, item)] = g
+                      items=tuple(dest[1]) if isinstance(dest[1], tuple) else (),
+                      parent=key[2])
+            last[key] = g
             groups.append(g)
     for code, source in (derived or {}).items():
         groups += [Group(by_code[code], g.item, list(g.chunk_ids), g.text,

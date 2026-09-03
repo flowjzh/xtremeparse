@@ -326,3 +326,59 @@ async def test_a_failing_patch_keeps_the_result_then_reasks_in_full():
     # re-asked in full (no patch schema, no protocol directive)
     assert not runner.calls[1]['result_schema'].get('anyOf')
     assert 'RFC 6902' not in runner.calls[1]['feedback'][0].message
+
+
+# --- nested arrays: per-parent counts route into the lifted sub-array's calls ---
+
+NESTED_UNITS = {u.path: u for u in decompose({
+    'type': 'object',
+    'properties': {
+        'career': {'type': 'object', 'properties': {
+            'jobs': {'type': 'array', 'description': '工作经历',
+                     'items': {'type': 'object', 'properties': {
+                         'company': {'type': 'string', 'description': '公司'},
+                         'roles': {'type': 'array', 'description': '任职经历',
+                                   'items': {'type': 'object', 'properties': {
+                                       'title': {'type': 'string', 'description': '职位'},
+                                   }}},
+                     }}},
+        }},
+    },
+})}
+
+
+def test_count_issues_reconcile_a_lifted_sub_array_per_parent():
+    data = {'career': {'jobs': [
+        {'company': '甲', 'roles': [{'title': '工程师'}]},
+        {'company': '乙'}]}}
+    issues = count_issues({'career.jobs': 2, 'career.jobs[0].roles': 2}, data)
+    assert [(i.path, i.expected, i.got) for i in issues] == \
+        [('career.jobs[0].roles[1]', 2, 1)]
+
+
+async def test_nested_shortfall_reruns_the_short_whole_call():
+    runner = ScriptedRunner(agent_result([{'title': '工程师'}, {'title': '经理'}]))
+    calls = [Call(NESTED_UNITS['career.jobs.roles'], None, 'whole', [1], 'r0',
+                  agent_result([{'title': '工程师'}]), parent=0)]
+    _, issues, rounds = await correct(
+        runner, Execution({}, calls),
+        validator=lambda d: count_issues({'career.jobs[0].roles': 2}, d),
+        payload='p', scheduler=scheduler())
+    assert issues == []
+    assert [(r.unit_path, r.item) for r in rounds] == [('career.jobs.roles', None)]
+
+
+async def test_nested_field_issue_reruns_only_that_sub_entry():
+    runner = ScriptedRunner(agent_result({'title': '经理修复'}))
+    calls = [
+        Call(NESTED_UNITS['career.jobs.roles'], 0, 'per-item', [1], 'r0',
+             agent_result({'title': '工程师'}), parent=0),
+        Call(NESTED_UNITS['career.jobs.roles'], 1, 'per-item', [2], 'r1',
+             agent_result({'title': ''}), parent=0),
+    ]
+    _, _, rounds = await correct(
+        runner, Execution({}, calls),
+        validator=lambda d: [FakeIssue('career.jobs[0].roles[1].title')],
+        payload='p', scheduler=scheduler())
+    assert runner.calls[0]['scope'] == 'r1'
+    assert [(r.unit_path, r.item) for r in rounds] == [('career.jobs.roles', 1)]

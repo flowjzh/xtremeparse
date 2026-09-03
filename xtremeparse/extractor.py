@@ -12,7 +12,7 @@ from xtremeparse.chunking import MAX_CHARS, chunk_text, normalize_newlines
 from xtremeparse.contracts import AgentRunner, BATCH_BUDGET_CAP, ExtractionResult, Trace, Validator
 from xtremeparse.corrections import (MAX_ROUNDS, correct, count_issues,
                                      count_mismatches)
-from xtremeparse.executor import execute, values_from_calls
+from xtremeparse.executor import execute, values_from_calls, values_key
 from xtremeparse.merge import merge
 from xtremeparse.prompting import (SPECIALIST_PLACEHOLDERS, check_placeholders,
                                    estimate_tokens, provenance, shared_payload)
@@ -105,7 +105,16 @@ class Extractor:
             # map-validated ground truth — a short array is collapsed
             # instances, invisible to schema validation; re-run it.
             # Working copy: arbitration may revise a disputed count;
-            # raw keeps the original declaration for the trace
+            # raw keeps the original declaration for the trace.
+            # Lifted sub-arrays declare per parent — flattened to the
+            # bracket scope each count reconciles against, the same
+            # counts map with one level of addressing baked into the keys
+            by_path = {u.path: u for u in units}
+            for path, per_parent in (routing.raw.get('nested_counts')
+                                     or {}).items():
+                unit = by_path[path]
+                counts.update({values_key(unit, i): n
+                               for i, n in per_parent.items()})
             values = values_from_calls(execution.calls)
             if mismatches := count_mismatches(counts, merge(values)):
                 # declared vs actual disagree before any correction round
@@ -152,6 +161,7 @@ class Extractor:
         trace = Trace(chunks=chunks,
                       router=routing.raw if routing else None,
                       groups=[{'unit': c.unit.path, 'kind': c.unit.kind, 'item': c.item,
+                               'parent': c.parent,
                                'strategy': c.strategy, 'chunk_ids': c.chunk_ids,
                                'budget': c.budget, 'batch': c.batch or None}
                               for c in execution.calls] if execution else [],

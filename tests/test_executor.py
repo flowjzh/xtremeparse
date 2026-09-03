@@ -317,3 +317,62 @@ async def test_array_shaped_calls_carry_the_no_merge_addendum():
                       scheduler=TaskScheduler(8))
         assert all(('never merge' in c['instructions']) == expect_addendum
                    for c in probe.calls)
+
+
+# --- nested arrays: a lifted sub-array fans out per parent and grafts ---
+
+NESTED_SCHEMA = {
+    'type': 'object',
+    'properties': {
+        'basic_info': {'type': 'object', 'description': '基本信息', 'properties': {
+            'name': {'type': 'string', 'description': '姓名'},
+        }},
+        'career': {'type': 'object', 'properties': {
+            'jobs': {'type': 'array', 'description': '工作经历',
+                     'items': {'type': 'object', 'properties': {
+                         'company': {'type': 'string', 'description': '公司'},
+                         'roles': {'type': 'array', 'description': '任职经历',
+                                   'items': {'type': 'object', 'properties': {
+                                       'title': {'type': 'string', 'description': '职位'},
+                                   }}},
+                     }}},
+        }},
+        'created': {'type': 'string', 'description': '创建时间'},
+    },
+}
+NESTED_UNITS = {u.path: u for u in decompose(NESTED_SCHEMA)}
+
+
+def nested_group(path, item=None, text='x', ids=(0,), parent=None, items=()):
+    return Group(NESTED_UNITS[path], item, list(ids), text, items=items,
+                 parent=parent)
+
+
+async def test_lifted_sub_array_fans_out_per_parent_and_grafts():
+    routing_ = routing(
+        group('basic_info', text='姓名张三'),
+        group('career.jobs', item=0, text='公司甲', ids=(1, 2)),
+        group('career.jobs', item=1, text='公司乙', ids=(3,)),
+        nested_group('career.jobs.roles', item=0, text='工程师', ids=(1,), parent=0),
+        nested_group('career.jobs.roles', item=1, text='经理', ids=(2,), parent=0),
+    )
+    execution = await execute(ProbeRunner(), routing_, payload='p',
+                              scheduler=TaskScheduler(8))
+    assert execution.values['career.jobs[0].roles'] == [
+        {'title': '工程师'}, {'title': '经理'}]
+    data = merge(execution.values)
+    assert data['career']['jobs'][0]['roles'] == [
+        {'title': '工程师'}, {'title': '经理'}]
+    assert data['career']['jobs'][0]['company'] == '公司甲'
+    assert data['career']['jobs'][1] == {'company': '公司乙'}
+
+
+async def test_merge_grafts_a_lifted_sub_array_in_either_arrival_order():
+    parent_first = merge({'career.jobs': [{'company': '公司甲'}, {'company': '公司乙'}],
+                          'career.jobs[0].roles': [{'title': '工程师'}]})
+    child_first = merge({'career.jobs[0].roles': [{'title': '工程师'}],
+                         'career.jobs': [{'company': '公司甲'}, {'company': '公司乙'}]})
+    expected = {'career': {'jobs': [
+        {'company': '公司甲', 'roles': [{'title': '工程师'}]},
+        {'company': '公司乙'}]}}
+    assert parent_first == child_first == expected

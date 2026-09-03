@@ -167,8 +167,10 @@ def _count_calls(calls: list, issue) -> list:
     what a call owes is its own ``slots`` (a batch or a single), while a
     whole-array call owes the unit's declared count (the issue's
     ``expected``); shortfalls go to calls short of that, over-counts to
-    calls past it."""
-    unit = issue.path.partition('[')[0]
+    calls past it. The issue path's bracket indexes (an item, or a
+    lifted sub-array's parent scope) name the position, never the
+    unit — stripped before matching."""
+    unit = re.sub(r'\[\d+\]', '', issue.path)
     over = (issue.expected or 0) < (issue.got or 0)
     out = []
     for c in calls:
@@ -188,16 +190,23 @@ def _count_calls(calls: list, issue) -> list:
 
 
 def _owner(calls: list, path: str):
-    covering = [c for c in calls if c.unit.path != MISC and _under(path, c.unit.path)]
+    covering = [c for c in calls
+                if c.unit.path != MISC and _under(path, c.value_path)]
     exact = [c for c in covering if c.item is None and not c.batch
-             or c.item is not None and _under(path, f'{c.unit.path}[{c.item}]')
-             or c.batch and (_item_index(path, c.unit.path) or -1) in c.batch]
+             or c.item is not None
+             and _under(path, f'{c.value_path}[{c.item}]')
+             or c.batch and (_item_index(path, c.value_path) or -1)
+             in c.batch]
     pool = exact or [c for c in calls if c.unit.path == MISC]
     return max(pool, key=lambda c: len(c.unit.path), default=None)
 
 
-def _item_index(path: str, unit_path: str):
-    m = re.fullmatch(rf'{re.escape(unit_path)}\[(\d+)\](\..*)?', path)
+def _item_index(path: str, scope: str):
+    """The item index an issue path names inside one call's scope —
+    ``unit[2].x`` → 2 for a whole-array call's scope, a lifted
+    sub-array's scope included (the bracket spelling matches
+    literally)."""
+    m = re.fullmatch(rf'{re.escape(scope)}\[(\d+)\](\..*)?', path)
     return int(m.group(1)) if m else None
 
 
@@ -261,7 +270,9 @@ def count_mismatches(counts: dict, data: dict) -> dict:
 
 def count_issues(counts: dict, data: dict, soft=()) -> list:
     """The router's declared counts (map-validated ground truth) against
-    the merged arrays. A short array means instances were collapsed or
+    the merged arrays. A key may carry a lifted sub-array's bracket
+    scope (``parent[0].field``) — resolve reads it like any path. A
+    short array means instances were collapsed or
     dropped — silent to schema validation (nothing declares minItems).
     Items concatenate in item-index order, so a short array is missing
     its tail: each missing index becomes its own issue and routes to the

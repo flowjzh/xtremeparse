@@ -24,6 +24,14 @@ Two degradations are accepted without ceremony: a reply with no diff
 markers parses as a full re-emission, and an empty reply declines the
 suggestion (the previous map stands).
 
+A replay — the same applied map text twice in a row — ends the
+repairs for count mismatches: re-asking cannot move a number the
+model already could not localize (measured: every line re-quoted as
+-x/+x until the budget burned), so the declared-vs-used error passes
+through and the extraction's count arbitration owns the number. Only
+mismatches pass; a replayed map with any other error (coverage,
+syntax, an undeclared unit) still burns the budget.
+
 ## Fan-out suggestions
 
 Two suggestion rounds exist, one round each per routing — the map was
@@ -44,7 +52,13 @@ valid before they fire, so they are asks, not repairs:
   opening quotes, the one form that survives without the map — and
   code re-splits the run at the quoted openings; adoption is code's,
   not the model's. A recount that comes back unusable falls back to
-  one diff round.
+  one diff round. A line that already carries one destination per
+  instance is decomposed — its recount could only shave decode, so it
+  fires only past a load bar, and a unit declared once obeys the same
+  arithmetic (a lone item over a handful of chunks reads as one long
+  entry as plausibly as a merge: recounted, confirmed, and never
+  adopted while thin — the recount is for the merge, not the
+  spelling).
 
 A fan-out round is a suggestion: an empty reply declines it, and so
 does an answer that fails validation — the standing map was valid
@@ -59,7 +73,11 @@ zero units, and code splices the answer in — the anchored model would
 re-emit its own map verbatim. Unlike the fan-out rounds this
 disagreement must be resolved, not declined: a fix attempt that fails
 validation keeps the repair loop, because the alternative is trusting
-the suspect zero.
+the suspect zero. A confirming answer costs no round: the splice
+re-segments through the per-chunk cover, which keeps a parent's
+destinations beneath the chain chunks nesting in its run, so even the
+covering form (parent line drawn over its chains) round-trips the
+adoption and the zero is accepted as counted.
 
 ## Executor corrections
 
