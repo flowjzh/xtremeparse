@@ -42,17 +42,6 @@ repeating (array) unit.
   initial draw stays one short line — cheap to emit and, when a split
   round rewrites it, cheap to quote in a diff. Ranges take their line
   alone — never comma-joined — and no instance may appear in two ranges.
-- A starred bare run (`12-93 x*`) marks an entry-style run — every chunk
-  holds exactly one instance. Code splits it mechanically into one item
-  per chunk in ascending order, and the unit's declared count is read
-  off the run's chunk total (the count line stays, the number is
-  ignored). Within one unit star and numbered destinations cannot mix,
-  and a star takes its line alone — never comma-joined. This is the
-  fan-out form for long enumerations: writing 80 indexes is where the
-  model's counting breaks, judging "one entry per chunk" is not. The
-  mark presumes the chunker's entry-run guarantee (`_pack_entries`
-  keeps runs of parallel entries unmerged) — starred chunks holding
-  several instances would fuse them.
 - A run may feed several DIFFERENT units at once, comma-joined
   (`5 x.0,y.0`) — a summary or cross-cutting unit rides the lines of the
   unit whose text it shares, item by item. An instance whose own text
@@ -151,14 +140,12 @@ anchors on content, since the diff's lines are the model's own
 previous answer quoted back. Edits cannot regress lines the model
 already fixed, a quote that misses costs nothing, and the patched
 text parses as a fresh answer, so every rule above holds of the
-RESULT, not the patch. Three fan-out hints exist, one round each per
-routing: a run covering exactly as many chunks as its unit has
-instances is asked to star (one instance per chunk); a shared run
-whose mapped material exceeds one shared call's capacity (~1000
-content chars) is asked to split into ranged lines — one per
-call-sized block, the block count sized from the unit's own arranged
-budget over the executor's per-call cap, so the reply is ~10 lines
-where an instance-enumerated split would be ~85; and instances
+RESULT, not the patch. Two fan-out rounds exist, one round each per
+routing: a shared run whose mapped material exceeds one shared call's
+capacity (~1000 content chars) is asked to split into ranged lines —
+one per call-sized block, the block count sized from the unit's own
+arranged budget over the executor's per-call cap, so the reply is ~10
+lines where an instance-enumerated split would be ~85; and instances
 sharing a run far longer than their count get a fresh-conversation
 recount that code re-splits at the quoted openings.
 Any of them: an empty reply declines and keeps the shared form.

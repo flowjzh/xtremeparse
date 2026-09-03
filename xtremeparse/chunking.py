@@ -108,7 +108,7 @@ def _heal(pieces: list[str]) -> list[str]:
     """Re-join fragments a sentence end inside a bracket cut off — an
     unclosed '(' means the clause continues in the next piece
     ('某公司(CHA.' | ' US)；'), whose entry mark would otherwise give
-    the fragment its own chunk and, under a starred run, its own item
+    the fragment its own chunk and, in an entry run, its own item
     with a nonsense budget."""
     out = []
     for piece in pieces:

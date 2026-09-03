@@ -15,22 +15,16 @@ weak operation) and then obey its own wrong number, silently dropping
 the section's tail entry. A run may feed several units at once
 (comma-joined codes) — a summary or cross-cutting unit reading the
 same text a detailed unit extracts; exclusive partitioning broke on
-exactly that shape. A starred bare run (``12-93 d*``) marks an
-entry-style run — every chunk holds exactly one instance — and code
-splits it one item per chunk, ascending, its count read off the chunk
-total: the model judges instance-per-chunk shape (easy, it sees the
-chunks) instead of enumerating every index (weak), and code never
-mistakes the run for an unsplit whole. A valid map that leaves fan-out
-on the table — a long run shared while its declared count equals the
-run's chunk total, a shared run whose mapped material overflows one
-shared call's capacity (the dense comma-joined draw, asked to split by
-a diff), or instances sharing one run far longer than their count —
-gets its fix in a round of its own: the star hint asks the model to
-star via a diff (reply empty to keep it shared; measured: asked, the
-model stars the dense lists it had mapped shared), the overflow ask
-asks for ranged lines — one per call-sized block, the count sized from
-the unit's own budget — and the merged lazy form gets a
-fresh-conversation recount that code re-splits by.
+exactly that shape. A ranged run (``12-93 x.0-81``) is the compact
+shared form: those chunks carry exactly instances 0..81,
+inseparably — one line the executor keeps whole until a split round
+redraws it. A valid map that leaves fan-out on the table — a shared
+run whose mapped material overflows one shared call's capacity (the
+dense draw), or instances sharing one run far longer than their
+count — gets its fix in a round of its own: the overflow ask asks for
+ranged lines — one per call-sized block, the count sized from the
+unit's own budget — and the merged lazy form gets a
+fresh-conversation recount that code re-splits at the quoted openings.
 The declared counts make the map self-consistent: item indexes must
 run exactly 0..declared-1, every declared item must receive chunks.
 Coverage and disjointness hold per line range (line order itself
@@ -47,15 +41,13 @@ from bisect import bisect_right
 from dataclasses import dataclass
 from typing import Optional
 
-from xtremeparse.arbitration import (fresh_check, norm,
-                                    sectioned, unmarked)
+from xtremeparse.arbitration import fresh_check, norm, sectioned
 from xtremeparse.contracts import AgentRunner, BATCH_BUDGET_CAP, JSONSchema
 from xtremeparse.units import Unit, type_set, value_branches
 
 NONE = '-'
-STAR = '*'  # a starred bare run: one instance per chunk, split by code
-STAR_HINT_MIN = 5  # below this a shared whole call costs seconds — the
-# confirmation round would cost more than the split saves
+HINT_MIN = 5  # below this a shared whole call costs seconds — the
+# round would cost more than the split saves
 SPLIT_MATERIAL_CAP = 1000  # mapped content chars one shared call may
 # absorb before the split ask pays for itself: past ~1k chars the
 # whole-array decode (~58 tok/s measured) outlasts the extra round.
@@ -70,8 +62,8 @@ SHARED_RECOUNT_DESCRIPTION = ('Per recounted unit: a count line and the '
 ROUTE_PLACEHOLDERS = frozenset({'top', 'none', 'legend', 'chunks'})
 RECOUNT_PLACEHOLDERS = frozenset({'legend', 'chunks'})
 _LINE = re.compile(r'^(\d+)(?:-(\d+))?\s+('
-                   r'[a-z]+\*?(?:\.\d+(?:-\d+)?)?'
-                   r'(?:\s*,\s*[a-z]+\*?(?:\.\d+(?:-\d+)?)*)*'
+                   r'[a-z]+(?:\.\d+(?:-\d+)?)?'
+                   r'(?:\s*,\s*[a-z]+(?:\.\d+(?:-\d+)?)*)*'
                    r'|-(?:\.\d+)?)$')
 _ITEM_RANGE = re.compile(r'(\d+)-(\d+)')
 _COUNT = re.compile(r'^([a-z]+)(?::\s*(\d+))?(?:\s*=\s*([a-z]+))?(?:\s*@.*)?$')
@@ -133,16 +125,6 @@ Rules:
   material, but its budget is its own: set it for the lines the
   summary will emit — a ratio scales against the source material it
   summarizes, so a terse summary sits well below 100%.
-- A run of entry chunks — each chunk holds exactly ONE instance of the
-  unit, an entry list with one listing per chunk — MUST take the star
-  mark: "12-93 d*". The run is then split one item per chunk, in
-  chunk in ascending order, and the unit's count is read off the
-  run's chunk total — the count line stays, but the number is
-  ignored. The unmarked bare run ("4-9 d") extracts its whole material
-  in ONE stream, whatever the run's length — reserve it for instances
-  that truly share their chunks and cannot be listed per chunk. Within
-  one unit, star and numbered destinations cannot mix, and a star
-  takes its line alone — never comma-joined with another code.
 - A declaration line ends with an output-budget suffix — one entry per
   item in item-index order ("x: 3 @100%,80%,50%", or "x: 3 @100%" when
   items share one): an estimate of the characters the item's extracted
@@ -287,7 +269,7 @@ class Group:
 
 def items_of(dest):
     """The item indexes one destination claims: a ranged run (a, b)
-    claims a..b, anything else is itself (None, an index, or STAR).
+    claims a..b, anything else is itself (None or an index).
     The one spelling of that rule — parser validation, assignment
     expansion, executor batching and material pricing all come here."""
     return range(dest[0], dest[1] + 1) if isinstance(dest, tuple) else (dest,)
@@ -463,31 +445,16 @@ async def route(runner: AgentRunner, *, payload: str,
         if not errors:
             spans = _shared_spans(segments, counts)
 
-            async def star_ask():
-                # a run covering exactly as many chunks as the unit has
-                # instances is probably an entry list left unstarred —
-                # the costliest form (one whole-material stream). Ask
-                # once: the model stars it via a diff, or stays silent
-                # (empty declines; a full re-emission is still tolerated
-                # and parses as ever). This pass runs before the shared
-                # recount: the diff applies to the model's own answer
-                # text, so a resplit done first would be discarded by
-                # the re-parse
-                return [_RouteIssue('segments', 'route_hint',
-                                    h + _DIFF_REPLY)
-                        for h in _star_hints(segments, counts, by_code)]
-
             async def split_ask():
                 # a shared run holding more mapped material than one
-                # shared call may absorb — the dense draw the star
-                # equality can miss (declared 85 over 82 entry chunks).
-                # One round asks for ranged lines, one per
+                # shared call may absorb — the dense draw (span ≈
+                # declared). One round asks for ranged lines, one per
                 # call-sized block (the count sized from the unit's own
                 # budget); the model draws the boundaries and the split
                 # is its own validated map. The ask wants a full
                 # re-emission, NOT a diff — the replaced shared line is
-                # a several-hundred-char comma-join its quote would
-                # miss (measured). Silence keeps the shared whole
+                # a several-hundred-char run its quote would miss
+                # (measured). Silence keeps the shared whole
                 return [_RouteIssue(
                     'segments', 'route_hint',
                     _overrun_hint(code, first, last, blocks))
@@ -570,15 +537,14 @@ async def route(runner: AgentRunner, *, payload: str,
             # hint applied, or it adopted its fix in code and the map
             # may be final
             fb = None
-            for name, ask in (('star', star_ask), ('split', split_ask),
-                              ('shared', shared_ask), ('zeros', zeros_ask)):
+            for name, ask in (('split', split_ask), ('shared', shared_ask),
+                              ('zeros', zeros_ask)):
                 if name not in asked and (fb := await ask()):
                     asked.add(name)
                     break
             if fb:
                 feedback = fb
                 continue
-            segments, _ = _expand_stars(segments)
             assignments = _assignments(segments, by_code)
             by_unit = {}
             for a in assignments:
@@ -921,8 +887,7 @@ def _codes(units: list) -> dict:
 def _parse(text, by_code: dict, n: int):
     """Validate count declarations plus a segment map. Returns (errors,
     counts, derived, segments, budgets); segments are ``(start, end,
-    destinations)`` with destinations a tuple of ``(code, item|None|STAR)``
-    (STAR marks a bare starred run, valid only until _expand_stars),
+    destinations)`` with destinations a tuple of ``(code, item|None)``,
     derived a ``{code: source}`` map of summarizing units, budgets a
     ``{code: Budget}`` map of the (tolerated, never checked) ``@``
     declarations."""
@@ -980,8 +945,7 @@ def _parse(text, by_code: dict, n: int):
         destinations, seen = [], set()
         parts = m.group(3).split(',')
         for d in (t.strip() for t in parts):
-            starred = d.endswith('*')
-            code, _, item = d.removesuffix('*').partition('.')
+            code, _, item = d.partition('.')
             unit = by_code.get(code)
             if code == NONE and item:
                 errors.append(f'line {i + 1}: {NONE} takes no item index')
@@ -989,17 +953,6 @@ def _parse(text, by_code: dict, n: int):
                 destinations.append((NONE, None))
             elif unit is None:
                 errors.append(f'line {i + 1}: unknown unit code {code!r}')
-            elif starred and len(parts) > 1:
-                errors.append(f'line {i + 1}: {code}* takes its line alone — '
-                              f'a star run never comma-joins another code')
-            elif starred and item:
-                errors.append(f'line {i + 1}: {code}* takes no item index — '
-                              f'the run splits one instance per chunk by code')
-            elif starred and unit.kind != 'array':
-                errors.append(f'line {i + 1}: {code}* needs a repeating unit '
-                              f'— only array units split per instance')
-            elif starred:
-                destinations.append((code, STAR))
             elif (code, item) in seen:
                 errors.append(f'line {i + 1}: destination {d!r} appears twice')
             elif unit.kind == 'array' and item == '':
@@ -1035,61 +988,10 @@ def _parse(text, by_code: dict, n: int):
     # ranges are explicit; a diff reply's "+" insert lands at its own
     # editing position, so out-of-order lines are normal, not an error
     errors += _map_errors(segments, counts, derived, by_code, n)
-    _, star_counts = _expand_stars(segments)  # starred units read their
-    # count off the chunk total — published here, once; the rewrite
-    # itself waits until after validation (the hint gate must see the
-    # shared form), so only the totals carry over
-    counts.update(star_counts)
     # exact duplicates collapse — one repeated destination must not
     # flood the repair feedback with the same message
     errors = list(dict.fromkeys(errors))
     return errors, counts, derived, [] if errors else segments, budgets
-
-
-def _star_hints(segments: list, counts: dict, by_code: dict) -> list:
-    """Advisory messages for array units left in shared form while a run
-    covers exactly as many chunks as the unit has instances — probably
-    an entry list that should be starred. Already-fanned maps (starred,
-    or every instance on its own single chunk) and small units
-    (STAR_HINT_MIN) are skipped."""
-    covered, fanned, first = {}, {}, {}
-    for start, end, dests in segments:
-        if _is_star(dests):
-            continue
-        for c in {d for d, _ in dests if d != NONE}:
-            mine = sum(1 for d, _ in dests if d == c)
-            ranged = any(isinstance(item, tuple)
-                         for d, item in dests if d == c)
-            fanned[c] = fanned.get(c, True) and (
-                ranged or (mine == 1 and start == end))
-            covered[c] = covered.get(c, 0) + end - start + 1
-            first.setdefault(c, (start, end))
-    hints = []
-    for code, chunks in covered.items():
-        unit = by_code.get(code)
-        declared = counts.get(code)
-        if unit is None or unit.kind != 'array' \
-                or not declared or declared < STAR_HINT_MIN \
-                or declared != chunks or fanned[code]:
-            continue
-        s, e = first[code]
-        hints.append(
-            f'{code}: this run covers {chunks} chunks for {declared} '
-            f'instances. If every chunk holds exactly one instance, re-emit '
-            f'the map with every {code} run starred ("{s}-{e} {code}*") — '
-            f'it then extracts one instance per chunk. If the '
-            f'instances share their chunks, {_DECLINE}')
-    return hints
-
-
-def _split_hint(code: str, span: int, declared: int) -> str:
-    """The lazy shared-run fallback ask: separate one line per instance
-    where chunk boundaries can, decline by staying silent otherwise."""
-    return (f'{code}: {span} chunks carry {declared} instance(s). If the '
-            f'chunk boundaries can separate the instances, re-emit with one '
-            f'line per instance and a matching count ("5-9 {code}.0", '
-            f'"10-11 {code}.1"). If the instances truly share their chunks, '
-            f'{_DECLINE}')
 
 
 def _overrun_hint(code: str, first: int, last: int, blocks: int) -> str:
@@ -1110,10 +1012,10 @@ def _shared_spans(segments: list, counts: dict) -> dict:
     """Shared-form array units: ``{code: chunk span}`` — instances
     riding shared lines (comma-joined destinations), a lone item
     spanning the whole run, or a ranged run (compact shared syntax).
-    Starred and single-chunk runs excluded."""
+    Single-chunk runs excluded."""
     shared = {}
     for start, end, dests in segments:
-        if _is_star(dests) or start == end:
+        if start == end:
             continue
         per, ranged = {}, set()
         for d, item in dests:
@@ -1132,26 +1034,34 @@ def _lazy_shape(span: int, declared: int) -> bool:
     than one entry plausibly reads alone. The shared recount's case —
     and the overrun ask's exclusion, so one unit can never draw both
     (the exclusivity is this one predicate, not parallel arithmetic)."""
-    return span >= declared * 4 and span - declared >= STAR_HINT_MIN
+    return span >= declared * 4 and span - declared >= HINT_MIN
 
 
 def _shared_hints(spans: dict, counts: dict) -> dict:
     """Array units left in the LAZY shared shape — instances merged into
     one long run, a unit declared once whose lone item spans far more
-    chunks than one entry plausibly reads alone. The mirror of the
-    star hint: there the run holds one instance per chunk and should
-    split per chunk; here several chunks per instance may still
-    separate at chunk boundaries (measured lazy draw: a whole section
-    mapped as one shared item). A genuinely huge single entry is
-    indistinguishable from the merged form — the recount lets the
-    model confirm it; a declined suggestion costs one round.
-    Already-separated maps (each instance its own line) never fire;
-    small excesses don't pay for the round. Returns ``{code: (chunk
-    span, declared)}``."""
+    chunks than one entry plausibly reads alone. Several chunks per
+    instance may still separate at chunk boundaries (measured lazy
+    draw: a whole section mapped as one shared item). A genuinely huge
+    single entry is indistinguishable from the merged form — the
+    recount lets the model confirm it; a declined suggestion costs one
+    round. Already-separated maps (each instance its own line) never
+    fire; small excesses don't pay for the round. Returns ``{code:
+    (chunk span, declared)}``."""
     return {code: (span, declared)
             for code, span in spans.items()
             if (declared := counts.get(code) or 0)
             and _lazy_shape(span, declared)}
+
+
+def _split_hint(code: str, span: int, declared: int) -> str:
+    """The lazy shared-run fallback ask: separate one line per instance
+    where chunk boundaries can, decline by staying silent otherwise."""
+    return (f'{code}: {span} chunks carry {declared} instance(s). If the '
+            f'chunk boundaries can separate the instances, re-emit with one '
+            f'line per instance and a matching count ("5-9 {code}.0", '
+            f'"10-11 {code}.1"). If the instances truly share their chunks, '
+            f'{_DECLINE}')
 
 
 def _overrun_hints(segments: list, spans: dict, counts: dict,
@@ -1159,17 +1069,17 @@ def _overrun_hints(segments: list, spans: dict, counts: dict,
                    derived: dict) -> dict:
     """Array units whose shared run holds more mapped material than one
     shared call may absorb — the dense draw (every instance riding its
-    section's range) that neither the star equality nor the lazy ratio
-    can see: span ≈ declared there, while both hints need span ==
-    declared or the lazy shape. The ask sizes the split from the
-    unit's own arrangement: total arranged budget over one call's
-    capacity gives the block count the model draws to (a unit with no
-    arrangement falls back to its material chars — the ``@`` suffix is
-    tolerated, never checked). Lazy-shaped units stay the recount's
-    (the anchored model will not unmerge those, measured). Returns
-    ``{code: (first chunk, last chunk, blocks)}``."""
+    section's range) that the lazy ratio cannot see: there span ≈
+    declared, while the lazy shape needs span >= declared * 4. The ask
+    sizes the split from the unit's own arrangement: total arranged
+    budget over one call's capacity gives the block count the model
+    draws to (a unit with no arrangement falls back to its material
+    chars — the ``@`` suffix is tolerated, never checked). Lazy-shaped
+    units stay the recount's (the anchored model will not unmerge
+    those, measured). Returns ``{code: (first chunk, last chunk,
+    blocks)}``."""
     wanted = [code for code, span in spans.items()
-              if (declared := counts.get(code) or 0) >= STAR_HINT_MIN
+              if (declared := counts.get(code) or 0) >= HINT_MIN
               and not _lazy_shape(span, declared)]
     if not wanted:
         return {}
@@ -1197,34 +1107,6 @@ def _overrun_hints(segments: list, spans: dict, counts: dict,
         if (blocks := round(total / BATCH_BUDGET_CAP)) >= 2:
             hints[code] = (*bounds[code], blocks)
     return hints
-
-
-def _is_star(dests: tuple):
-    """The starred run's unit code, or None — a bare starred run holds
-    one instance per chunk, split by code."""
-    return dests[0][0] if len(dests) == 1 and dests[0][1] == STAR else None
-
-
-def _expand_stars(segments: list) -> tuple:
-    """Rewrite starred runs into per-chunk single-instance segments —
-    a pure map→map transform, so assignments, groups, material, and
-    budgets all see an ordinary per-item map. Returns ``(segments,
-    totals)``: the rewritten map and each starred unit's chunk total,
-    the code-read instance count. One walk is the single source of
-    both the assigned indexes and the published counts. Presumes the
-    chunker's entry-run guarantee (_pack_entries): every chunk of a
-    starred run holds exactly one instance. Runs of one unit number on
-    in chunk order."""
-    out, totals = [], {}
-    for start, end, dests in segments:
-        if code := _is_star(dests):
-            base = totals.get(code, 0)
-            for i, c in enumerate(range(start, end + 1)):
-                out.append((c, c, ((code, base + i),)))
-            totals[code] = base + end - start + 1
-        else:
-            out.append((start, end, dests))
-    return out, totals
 
 
 def _map_errors(segments, counts, derived, by_code: dict, n: int) -> list:
@@ -1277,11 +1159,6 @@ def _map_errors(segments, counts, derived, by_code: dict, n: int) -> list:
                         items.add(i)
                 else:
                     items.add(item)
-        if STAR in items:  # a starred unit: its chunks ARE the instances
-            if items - {STAR}:
-                errors.append(f'{code}: star and numbered destinations cannot '
-                              f'mix — mark every run of {code} with *')
-            continue
         if (declared := counts.get(code)) is None:
             if items:  # used but undeclared is a real inconsistency
                 errors.append(f'{code}: items {sorted(items)} used but its '
