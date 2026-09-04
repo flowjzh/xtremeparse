@@ -12,18 +12,39 @@ def test_tiny_input_is_one_chunk():
     assert chunk_text('姓名') == ['姓名']
 
 
-def test_plain_hard_wrapped_lines_form_one_paragraph_chunk():
+def test_varied_lines_keep_their_breaks():
+    # OCR/converted text: a line is a layout boundary — the packer may
+    # not bury one unit's band inside another unit's chunk
     text = '姓名：张三\n年龄：30\n电话：13800000000'
-    assert chunk_text(text) == [text]
+    assert chunk_text(text) == text.split('\n')
+
+
+def test_layout_band_lines_stay_addressable():
+    text = ('business negotiations\nPersonal Skills\n'
+            'Language: Fluent in oral English, Mandarin Class1 Grade A\n'
+            "Professional: Driver's license, driving experience for10 years\n"
+            'Office: Mastered the office software such as Word,Excel and PPT')
+    assert chunk_text(text) == text.split('\n')
+
+
+def test_box_wrapped_lines_join_into_sentence_chunks():
+    # every line a full measure — box-width wrapping: the cuts are
+    # mid-sentence, so the sentence tier takes over
+    line = '姓名张三，某公司后端，负责平台组。'
+    text = '\n'.join([line] * 5)
+    chunks = chunk_text(text, max_chars=30)
+    assert ''.join(chunks) == text
+    assert all(len(c) <= 30 for c in chunks)
+    assert len(chunks) == 5  # five sentences, one per chunk
 
 
 def test_blank_lines_separate_paragraphs():
     assert chunk_text('第一段\n\n第二段\n \n第三段') == ['第一段', '第二段', '第三段']
 
 
-def test_heading_opens_block_absorbing_following_plain_lines():
-    text = '## 工作经历\n2020-2023 腾讯 后端'
-    assert chunk_text(text) == [text]
+def test_heading_is_its_own_chunk():
+    assert chunk_text('## 工作经历\n2020-2023 腾讯 后端') == [
+        '## 工作经历', '2020-2023 腾讯 后端']
 
 
 def test_list_items_and_numbered_items_are_individual_chunks():
@@ -32,11 +53,13 @@ def test_list_items_and_numbered_items_are_individual_chunks():
 
 
 def test_negative_numbers_are_not_list_items():
-    assert chunk_text('-10分\n正常行') == ['-10分\n正常行']
+    # near-uniform short lines take the wrap path, where a list split
+    # would wrongly fire if '-' led a list — it must not
+    assert chunk_text('-10分\n-5分') == ['-10分\n-5分']
 
 
 def test_line_leading_dates_are_not_list_items():
-    text = '2015.3 joined 腾讯\n2018.5 left'
+    text = '2015.3 joined 腾讯\n2018.5 went away'
     assert chunk_text(text) == [text]
 
 
@@ -100,12 +123,12 @@ def test_unpunctuated_line_falls_to_character_windows():
     assert chunk_text('密' * 1300, max_chars=600) == ['密' * 600, '密' * 600, '密' * 100]
 
 
-def test_dense_block_inside_markdown_uses_windows_but_keeps_heading():
+def test_dense_line_windows_within_itself_and_heading_stays_alone():
     text = f'## 经历\n{"密" * 700}\n\n## 其他\n简短'
     chunks = chunk_text(text, max_chars=600)
-    assert ''.join(chunks[:2]) == f'## 经历\n{"密" * 700}'  # dense block windowed whole
-    assert chunks[0].startswith('## 经历\n')
-    assert chunks[2] == '## 其他\n简短'
+    assert chunks[0] == '## 经历'
+    assert chunks[1] == '密' * 600 and chunks[2] == '密' * 100
+    assert chunks[3] == '## 其他' and chunks[4] == '简短'
 
 
 def test_crlf_is_normalized():

@@ -1,6 +1,7 @@
-"""Deterministic three-tier chunker: markdown structure, sentence
-punctuation, character windows — plus runs of parallel entries kept
-unmerged so each instance gets its own chunk.
+"""Deterministic chunker: newlines are layout truth — chunks respect
+them unless they provably carry no breaks — with a three-tier fallback
+(markdown structure, sentence punctuation, character windows) for the
+shapes where they don't.
 
 The same input always yields the same chunks, every chunk is an exact
 substring of the (newline-normalized) input in reading order, and any
@@ -11,6 +12,7 @@ Chunk ids are list positions.
 from __future__ import annotations
 
 import re
+from statistics import fmean, pstdev
 
 _HEADING = re.compile(r'^#{1,6}\s')
 _LIST_ITEM = re.compile(r'^\s*(?:[-*+]+\s+|•\s*|\d+[、)]\s*|\d+\.\s+)')
@@ -38,17 +40,40 @@ def normalize_newlines(text: str) -> str:
 def chunk_text(text: str, *, max_chars: int = MAX_CHARS) -> list[str]:
     """Split text into chunks, numbered by position.
 
-    Tier 1 splits on structure: headings open blocks that absorb the plain
-    lines after them, list items and table rows stand alone, blank lines
-    end paragraphs. Tier 2 sentence-splits oversized blocks, keeps runs of
-    parallel entries (bullet-prefixed or ;-chained clauses) unmerged so
-    each stands as its own chunk, and greedily packs the rest up to
-    ``max_chars``. Tier 3 hard-slices whatever still exceeds the ceiling
-    (dense text without punctuation). Every chunk is at most ``max_chars``
-    long.
+    OCR and converted text break lines at layout boundaries, so a line
+    is a chunk as it stands — the band a heading opens stays
+    addressable on its own (measured: 250-char windowing buried a
+    skills band inside another unit's chunk and the router could not
+    point at it). Shapes whose newlines carry no meaning fall to
+    ``_breaks_meaningless`` and the tiered path; an oversized line in a
+    respected text runs that path within itself. Every chunk is at
+    most ``max_chars`` long.
     """
     if not (text := normalize_newlines(text)).strip():
         return []
+    lines = [l for l in text.split('\n') if l.strip()]
+    if _breaks_meaningless(lines, max_chars):
+        return _tiers(text, max_chars)
+    return [c for line in lines for c in _tiers(line, max_chars)]
+
+
+def _breaks_meaningless(lines: list[str], max_chars: int) -> bool:
+    """Whether the newlines in ``lines`` carry no layout meaning — the
+    two shapes where respecting them would split sentences or join
+    nothing: a mean length past the ceiling (prose dumped without
+    breaks — a lone line included), and box-width wrapping (near-zero
+    length variance, every line a full measure, a mid-sentence cut)."""
+    lengths = [len(l) for l in lines]
+    mean = fmean(lengths)
+    if mean > max_chars:
+        return True
+    return pstdev(lengths) <= max(2.0, 0.1 * mean)
+
+
+def _tiers(text: str, max_chars: int) -> list[str]:
+    """The tiered split of text whose newlines carry no meaning:
+    markdown structure, sentence pieces, entry runs kept unmerged,
+    greedy packing."""
     return [c for block in _blocks(text)
             for c in _pack_entries(_SENTENCE_END.split(block), max_chars)]
 
