@@ -48,7 +48,6 @@ from __future__ import annotations
 
 import re
 from bisect import bisect_right
-from collections import Counter
 from dataclasses import dataclass
 from typing import Optional
 
@@ -1028,13 +1027,28 @@ def _diff_text(reply, base_text) -> str | None:
     """A unified-diff reply applied to the model's own previous map:
     "-" lines remove, "+" lines add, everything else is commentary.
     None when the reply is no diff at all (a full re-emission replaces
-    the base instead)."""
+    the base instead). Once a real marker line shows the reply is a
+    diff, a bare line that speaks the map's grammar rides along as an
+    addition — the contract is never to re-emit an unchanged line, so
+    a bare line is a lazy "+": asked to attach items, the model drew
+    the line with no prefix, and dropped as commentary it silently
+    zeroed the unit while the removal beside it landed (measured: the
+    b-[] repair burned to exhaustion on the phantom). A bare line the
+    map already holds dedupes to a no-op; one it cannot hold surfaces
+    as the overlap error it is."""
+    lines = _lines(reply)
+    if not any(l[0] in '+-' and not l.startswith(('---', '+++'))
+               for l in lines):
+        return None
     removed, added = [], []
-    for l in _lines(reply):
-        if l.startswith(('---', '+++')) or l[0] not in '+-':
+    for l in lines:
+        if l.startswith(('---', '+++')):
             continue
-        if content := l[1:].strip():
-            (removed if l[0] == '-' else added).append(content)
+        if l[0] in '+-':
+            if content := l[1:].strip():
+                (removed if l[0] == '-' else added).append(content)
+        elif _LINE.match(l) or _COUNT.match(l):
+            added.append(l)
     if not removed and not added:
         return None
     return _apply_edits(base_text, removed, added)

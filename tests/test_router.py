@@ -3,8 +3,8 @@
 import pytest
 
 from xtremeparse.router import (NONE, RECOUNT_PLACEHOLDERS, ROUTE_PLACEHOLDERS,
-                                RouterError, Group, _name_list, _overlay_text,
-                                _resplit, route)
+                                RouterError, Group, _diff_text, _name_list,
+                                _overlay_text, _resplit, route)
 from xtremeparse.units import MISC, decompose
 from tests.helpers import ScriptedRunner, agent_result
 
@@ -1174,6 +1174,41 @@ async def test_a_still_invalid_diff_keeps_its_base_map():
     assert 'not covered' in runner.calls[4]['feedback'][0].message
 
 
+async def test_a_lazy_attach_line_lands_as_an_addition():
+    # the contract is never to re-emit an unchanged line, so a bare
+    # line beside real markers is a lazy "+": asked to attach its
+    # items, the model drew the lines with no prefix — dropped as
+    # commentary they silently zeroed the unit while the removal
+    # beside them landed, and the phantom burned the repair budget
+    runner = ScriptedRunner(
+        agent_result('0 a\n1-3 -\nb: 2'),
+        agent_result('- 1-3 -\n1 b.0\n2 b.1\n3 -'),
+    )
+    routing = await route(runner, payload=PAYLOAD, units=UNITS, chunks=CHUNKS)
+    assert len(runner.calls) == 2
+    assert [g.chunk_ids for g in routing.groups
+            if g.unit.kind == 'array'] == [[1], [2]]
+
+
+def test_lazy_diff_bare_lines_are_additions_replays_are_no_ops():
+    base = '0 a\n1-2 -\nb: 2'
+    # the bare attach lands, the count rewrite applies
+    assert _diff_text('1 b.0,b.1\n- b: 2\n+ b: 2', base) == \
+        '0 a\n1-2 -\n1 b.0,b.1\nb: 2'
+    # a bare line the map already holds dedupes — a quoted replay of
+    # unchanged lines costs nothing
+    assert _diff_text('1-2 -\n+ 0 a', base) == base
+    # a marker-less reply is no diff at all: the full re-emission
+    # reading stands (a bare fragment must not replace the map)
+    assert _diff_text('1 b.0,b.1', base) is None
+    # prose beside markers stays commentary
+    assert _diff_text('- b: 2\nplease reconsider the summary', base) == \
+        '0 a\n1-2 -'
+    # bare chain lines compose: the fragment patch reading now holds
+    # for marker-mixed replies too
+    chained = '0 a\n1-3 b.0\n4 -\nb: 1\nb.0.c: 2'
+    patched = _diff_text('2 b.0.c.0\n3 b.0.c.1\n+ b.0.c: 2', chained)
+    assert '2 b.0.c.0' in patched and '3 b.0.c.1' in patched
 
 
 # --- nested arrays: a lifted sub-array addressed through its parent ---

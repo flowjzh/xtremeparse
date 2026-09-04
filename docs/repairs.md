@@ -21,6 +21,19 @@ back. Edits cannot regress lines the model already fixed, a quote
 that misses costs nothing, and the patched text parses as a fresh
 answer, so every grammar rule holds of the RESULT, not the patch.
 
+Four degradations are accepted without ceremony: a reply with no diff
+markers parses as a full re-emission, a reply of chain lines alone
+reads as the patch it means (asked to add the chain lines, the model
+answers with the chain lines alone — replacement would drop the map's
+head and spend the next round re-typing lines that were never wrong),
+a bare line beside real markers is the lazy "+" it reads as — the
+contract bans re-emitting unchanged lines, so a line that speaks the
+grammar is an addition, and one the map already holds dedupes to a
+no-op (dropped as commentary it once silently zeroed a unit while the
+removal beside it landed, and the phantom burned the budget) — and an
+empty reply declines the
+suggestion (the previous map stands).
+
 A replay — the same applied map text twice in a row — ends the
 repairs for count mismatches: re-asking cannot move a number the
 model already could not localize (measured: every line re-quoted as
