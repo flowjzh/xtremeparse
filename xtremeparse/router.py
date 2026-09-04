@@ -623,9 +623,9 @@ async def route(runner: AgentRunner, *, payload: str,
         # simply stays shared). Fired alone only when no zero
         # pends beside it — shared_and_zeros owns that round, and
         # the caller passes a non-empty hint dict either way
-        answer = await _recount_shared(runner, payload, shared,
+        answer = await _recount_shared(runner, payload, {c: c for c in shared},
                                        by_code, chunks)
-        pending = resplit(shared, answer)
+        pending = resplit(shared, _parse_shared_answer(answer, shared))
         if len(pending) == len(shared):
             return [_RouteIssue(
                 'segments', 'route_hint',
@@ -678,8 +678,8 @@ async def route(runner: AgentRunner, *, payload: str,
         # splice stands there is no diff round at all — a
         # pending unit simply stays shared, the same rule the
         # shared-only ask applies after a partial adoption
-        answer = await _recount_both(runner, payload, shared, zeros,
-                                     by_code, chunks)
+        answer = await _recount_both(runner, payload, {c: c for c in shared},
+                                     zeros, by_code, chunks)
         if not splice(zeros, answer):
             return False, [_RouteIssue('segments', 'route_invalid',
                                        zeros_note(zeros) + _DIFF_REPLY)]
@@ -698,9 +698,7 @@ async def route(runner: AgentRunner, *, payload: str,
         # halves at once, and a shared round's feedback must
         # leave zeros pending for the next visit
         shared = _shared_hints(shared_spans, counts)
-        zeros = [c for c, u in by_code.items()
-                 if u.kind == 'array' and c not in derived
-                 and counts.get(c) == 0]
+        zeros = _pending_zeros(by_code, counts, derived)
         if shared and zeros and 'shared' not in asked \
                 and 'zeros' not in asked and not recount_instructions:
             asked.update({'shared', 'zeros'})
@@ -755,8 +753,7 @@ async def route(runner: AgentRunner, *, payload: str,
                                      for d, s in derived.items()},
                         'nested_counts': nested_counts,
                         'assignments': assignments,
-                        'budgets': {p: ([str(v) for v in b]
-                                        if isinstance(b, list) else str(b))
+                        'budgets': {p: _budget_text(b)
                                     for p, b in budgets_by_path.items()},
                         'maps': maps}, by_path)
 
@@ -815,6 +812,46 @@ async def route(runner: AgentRunner, *, payload: str,
             if lenient:
                 errors, counts, nested, derived, segments, budgets = \
                     _parse(text, by_code, len(chunks), lenient)
+        if errors and not suggestion and 'undrawn' not in asked \
+                and all(_PASSABLE.match(e) for e in errors):
+            # declared-undrawn family: a count declared, no lines drawn.
+            # Repair rounds fail it — the anchored conversation re-emits
+            # its own map, and the chain/covering arithmetic its fixes
+            # need fumbles shared seams (measured: the 81-item b-[] 1-3
+            # rounds, the block-layout d-[] half the draws, the
+            # same-company multi-stint d-[] burns on the under-merged
+            # run). The fresh recount is the zeros' discipline applied
+            # to the drawing: count each unit plus its instances'
+            # opening text, and code anchors the quotes and lays the
+            # lines itself — the declaration is right (the first pass
+            # reads the document; only the drawing is skipped), so the
+            # recount usually just confirms it. Fires only when every
+            # error is count-family — a map with geometry flaws stays
+            # on the diff path.
+            passable = _passable(errors)
+            _, counts, nested, derived, segments, budgets = \
+                _parse(text, by_code, len(chunks), lenient | passable)
+            if pool := _undrawn_pool(segments, counts, nested):
+                asked.add('undrawn')
+                zeros = ([] if recount_instructions else
+                         _pending_zeros(by_code, counts, derived))
+                answer = await _recount_undrawn(runner, payload, pool,
+                                                zeros, by_code, chunks)
+                fixed = _fold_undrawn(segments, counts, nested, derived,
+                                      pool, zeros, answer, by_code,
+                                      len(chunks), chunks, lenient | passable)
+                if fixed is not None:
+                    (segments, counts, nested, derived), zeros_ok = fixed
+                    text = _map_text(segments, counts, nested, derived,
+                                     budgets, by_code)
+                    diff_base = text
+                    maps.append(text)
+                    stuck_text = None  # adoption resets the replay ledger
+                    replayed = False  # the standing map is code's now
+                    if zeros_ok:
+                        asked.add('zeros')  # the merged ask covered zeros
+                    errors = _map_errors(segments, counts, nested,
+                                         derived, by_code, len(chunks))
         if not errors:
             valid = (segments, counts, nested, derived, budgets, text)
         elif not suggestion:
@@ -886,7 +923,7 @@ async def _recount(runner: AgentRunner, payload: str, by_code: dict,
         # output tokens for a one-line answer). A summarizing unit's
         # derivation needs no source code in the legend: _splice's
         # crossed-count adoption reads it off the misplaced claims
-        legend=_recount_legend(zeros, by_code),
+        legend=_recount_legend({c: c for c in zeros}, by_code),
         chunks=_listing(chunks))
     return await fresh_check(
         runner, payload, instructions, RECOUNT_DESCRIPTION)
@@ -911,7 +948,7 @@ Chunks:
 
 
 async def _recount_shared(runner: AgentRunner, payload: str,
-                          shared: dict, by_code: dict, chunks: list[str]):
+                          shared: dict, by_code: dict, chunks: list[str]) -> str:
     """Fresh-attention recount of the units left merged into shared
     runs. Every shared unit is recounted in the one conversation — the
     chunks listing, the costly part, is shared. The answer carries, per
@@ -919,14 +956,15 @@ async def _recount_shared(runner: AgentRunner, payload: str,
     chunks by content, the one coordinate the model quotes reliably —
     index arithmetic echoes the prompt's own examples instead of the
     chunks (measured: a stable count over hallucinated indexes).
-    Returns ``{code: (count, quotes)}``; units with a malformed or
-    missing section are absent."""
+    Returns the raw answer; `_parse_shared_answer` reads the sections,
+    its keys the labels the legend printed (plain codes here — the
+    declared-undrawn ask passes chain spellings through this same
+    prompt)."""
     instructions = _SHARED_CHECK.format(
         units=_recount_legend(shared, by_code),
         chunks=_listing(chunks))
-    result = await fresh_check(
+    return await fresh_check(
         runner, payload, instructions, SHARED_RECOUNT_DESCRIPTION)
-    return _parse_shared_answer(result, shared)
 
 
 def _parse_shared_answer(result, codes: dict | set) -> dict:
@@ -982,20 +1020,96 @@ async def _recount_both(runner: AgentRunner, payload: str, shared: dict,
     answer` the merged units' sections — each skips the other's
     codes."""
     instructions = _BOTH_CHECK.format(
-        units=_recount_legend(list(shared) + list(zeros), by_code,
+        units=_recount_legend({**shared, **{z: z for z in zeros}}, by_code,
                               lambda c: ' MERGED' if c in shared else ' ZERO'),
         chunks=_listing(chunks))
     return await fresh_check(runner, payload, instructions,
                              _BOTH_RECOUNT_DESCRIPTION)
 
 
-def _recount_legend(codes, by_code, tag=None) -> str:
+def _recount_legend(units, by_code, tag=None) -> str:
     """The Units listing every recount prompt carries — one line per
-    recounted unit, ``<code> = <unit header> RECOUNT``. ``tag`` names
-    the unit's firing mode (``' MERGED'`` / ``' ZERO'``) when the one
+    recounted unit, ``<label> = <unit header> RECOUNT``. ``units`` maps
+    the label to the code (a plain code maps to itself; the declared-
+    undrawn ask passes chain spellings as labels); ``tag`` names the
+    unit's firing mode (``' MERGED'`` / ``' ZERO'``) when the one
     conversation mixes them."""
-    return '\n'.join(f'{code} = {by_code[code].header} RECOUNT'
-                     f'{tag(code) if tag else ""}' for code in codes)
+    return '\n'.join(
+        f'{label} = {by_code[code].header} RECOUNT'
+        f'{tag(label) if tag else ""}' for label, code in units.items())
+
+
+def _pending_zeros(by_code, counts, derived) -> list:
+    """Array units a map left at zero. Nested units never appear in
+    ``counts`` — their numbers live in ``nested`` — so the flat
+    enumeration already excludes them; derived units mirror a source."""
+    return [c for c, u in by_code.items()
+            if u.kind == 'array' and c not in derived
+            and counts.get(c) == 0]
+
+
+def _undrawn_pool(segments, counts, nested) -> list:
+    """The declared-undrawn units of a parsed map — counts declared but
+    no lines drawn: ``[(code, None)]`` top-level, ``[(sub-code, parent
+    index)]`` chained — the same state `_map_errors` reads when it
+    writes the assigns-none errors, read from the source, not the
+    prose."""
+    used = set()
+    for _, _, dests in segments:
+        for dd in dests:
+            used.add((dd[0], None) if dd[2] is None else (dd[0], dd[2]))
+    return [(code, None) for code, declared in counts.items()
+            if declared and (code, None) not in used] + \
+        [(code, parent) for (code, parent), declared in nested.items()
+         if declared and (code, parent) not in used]
+
+
+def _chain_label(code: str, parent: int | None, by_code: dict) -> str:
+    """The chain spelling of a nested unit — the plain code, or
+    ``<parent>.<item>.<code>`` naming the parent instance it hangs
+    under. The one source of the label grammar: the undrawn recount's
+    legend and the rebuilt map's tokens both come here."""
+    if parent is None:
+        return code
+    return f'{_parent_code(by_code[code], by_code)}.{parent}.{code}'
+
+
+async def _recount_undrawn(runner: AgentRunner, payload: str,
+                           units: list, zeros: list, by_code: dict,
+                           chunks: list[str]) -> str:
+    """Fresh-attention recount of the units a map declared but never
+    drew — the merged recount's prompt verbatim (count plus each
+    instance's opening text), the units labeled by their chain
+    spellings. Zero-declared units recount in the same conversation
+    when any pend (the chunks listing is the costly part). Returns the
+    raw answer: `_fold_undrawn` owns the adoption."""
+    shared = {_chain_label(code, parent, by_code): code
+              for code, parent in units}
+    if zeros:
+        return await _recount_both(runner, payload, shared, zeros,
+                                   by_code, chunks)
+    return await _recount_shared(runner, payload, shared, by_code, chunks)
+
+
+def _anchors(quotes: list, domain: list, chunks: list[str]) -> list | None:
+    """Each quote's chunk in ``domain`` — content seek over the
+    domain's normalized texts, normed once per chunk, not once per
+    quote. A quote that misses (or lands where another already
+    anchored: two instances sharing one chunk) fails the whole set —
+    the shared-run recount's own rule, the one coordinate the model
+    quotes reliably. None on any miss; the caller sorts before
+    partitioning (quotes are in the card's order, chunks in document
+    order)."""
+    norms = {c: norm(chunks[c]) for c in domain}
+    hits = []
+    for q in quotes:
+        n = norm(q)
+        hit = next((c for c in domain if c not in hits and n in norms[c]),
+                   None) if n else None
+        if hit is None:
+            return None
+        hits.append(hit)
+    return hits
 
 
 def _resplit(segments: list, counts: dict, nested: dict, code: str, answer,
@@ -1015,17 +1129,8 @@ def _resplit(segments: list, counts: dict, nested: dict, code: str, answer,
     cover = _cover(segments)
     owned = sorted(c for c, dests in cover.items()
                    if code in {dd[0] for dd in dests})
-    if not owned:
+    if not owned or (hits := _anchors(answer[1], owned, chunks)) is None:
         return None
-    norms = {c: norm(chunks[c]) for c in owned}
-    hits = []
-    for q in answer[1]:
-        n = norm(q)
-        hit = next((c for c in owned if c not in hits and n in norms[c]),
-                   None) if n else None
-        if hit is None:
-            return None
-        hits.append(hit)
     hits = sorted(hits)
     # before the first anchor the material rides instance 0
     item_of = {c: max(0, bisect_right(hits, c) - 1) for c in owned}
@@ -1174,13 +1279,15 @@ def _cover(segments: list) -> dict:
 
 
 def _resegment(per_chunk: dict, counts: dict, nested: dict, derived: dict,
-               by_code: dict, n: int):
+               by_code: dict, n: int, lenient: set | None = None):
     """The adoption tail shared by both paths that edit the expanded
     map: a per-chunk destination map → coalesced segments (adjacent
     equal destinations merge into one run; the result is a disjoint
     partition, so containment needs no re-settling — ``_cover`` already
     carried the parents beneath the chains), validated against the
-    declared counts — None when the result is not a valid map."""
+    declared counts — None when the result is not a valid map. ``lenient``
+    passes count-family mismatches through (the undrawn fold validates
+    its claims while unrelated declared-vs-used errors still stand)."""
     rebuilt = []
     for c in range(n):
         dests = per_chunk.get(c, ())
@@ -1188,13 +1295,13 @@ def _resegment(per_chunk: dict, counts: dict, nested: dict, derived: dict,
             rebuilt[-1] = (rebuilt[-1][0], c, dests)
         else:
             rebuilt.append((c, c, dests))
-    if _map_errors(rebuilt, counts, nested, derived, by_code, n):
+    if _map_errors(rebuilt, counts, nested, derived, by_code, n, lenient):
         return None
     return rebuilt
 
 
 def _splice(segments, counts, nested, derived, answer, zeros, by_code: dict,
-            n: int):
+            n: int, lenient: set | None = None):
     """Fold a recount answer into a validated routing — the adoption is
     code's, not the model's: a repair round shown the map re-emits it
     verbatim (measured), so nothing is asked of the anchored
@@ -1204,7 +1311,10 @@ def _splice(segments, counts, nested, derived, answer, zeros, by_code: dict,
     one other repeating unit shares that count, the derivation is
     adopted (its mirroring beats the model's line placement); anything
     else is unusable (caller falls back to a repair round). Returns the
-    merged ``(segments, counts, nested, derived)`` or None."""
+    merged ``(segments, counts, nested, derived)`` or None. ``lenient``
+    passes count-family mismatches through the rebuild's validation —
+    the declared-undrawn fold splices zeros while its own units' errors
+    still stand."""
     cover = _cover(segments)
     claimed, crossed, seen = {}, set(), set()
     for line in str(answer).strip().splitlines():
@@ -1272,10 +1382,161 @@ def _splice(segments, counts, nested, derived, answer, zeros, by_code: dict,
             return None
         derived = {**derived, code: candidates[0]}
     rebuilt = _resegment({c: claimed.get(c) or cover[c] for c in range(n)},
-                         counts, nested, derived, by_code, n)
+                         counts, nested, derived, by_code, n, lenient)
     if rebuilt is None:
         return None
     return rebuilt, counts, nested, derived
+
+
+def _budget_text(b):
+    """One parsed budget's list-or-scalar spelling — the one shared by
+    the trace's budget rendering and the state-to-text rebuild."""
+    return [str(v) for v in b] if isinstance(b, list) else str(b)
+
+
+def _budget_suffix(b) -> str:
+    """A parsed budget's round-trip suffix (``@...``) for the rebuilt
+    map text — the state-to-text rebuild must not lose the executor's
+    estimates."""
+    if b is None:
+        return ''
+    text = _budget_text(b)
+    return '@' + ','.join(text) if isinstance(text, list) else f'@{text}'
+
+
+def _quote_anchor(quote: str, domain: list, norms: dict) -> int | None:
+    """The first chunk of ``domain`` holding the quote — ``norms`` the
+    domain's normalized texts, precomputed once (one norm per chunk,
+    not one per quote). The recount quotes the chunk listing verbatim,
+    so content seek is the one reliable coordinate (index arithmetic
+    echoes the prompt's own examples, measured)."""
+    n = norm(quote)
+    if not n:
+        return None
+    return next((c for c in domain if n in norms[c]), None)
+
+
+def _map_text(segments, counts, nested, derived, budgets, by_code) -> str:
+    """A routing rebuilt in code, rendered back to map text — an
+    adoption that continues the round loop must leave a text the
+    anchored conversation can keep diffing against. Every count line
+    round-trips: declared and zero-filled counts alike, per-parent
+    nested counts, derivations, and budget suffixes (a non-repeating
+    unit's estimate rides the noise count line the parser ignores for
+    the count but reads for the budget)."""
+    lines = []
+    for start, end, dests in segments:
+        if dests == ((NONE, None, None),):
+            lines.append(f'{start} -' if start == end else f'{start}-{end} -')
+            continue
+        chained = {(_parent_code(by_code[scode], by_code), p)
+                   for scode, _, p in dests if p is not None}
+        tokens = []
+        for code, item, parent in dests:
+            if item is None:
+                tokens.append(code)
+            elif parent is not None:
+                tokens.append(f'{_chain_label(code, parent, by_code)}.{item}')
+            elif isinstance(item, tuple):
+                tokens.append(f'{code}.{item[0]}-{item[1]}')
+            elif (code, item) not in chained:
+                # the chain token re-adds its parent at parse — an
+                # explicit parent beside its own chains is redundancy
+                tokens.append(f'{code}.{item}')
+        lines.append(f'{start}-{end} {",".join(tokens)}'
+                     if start != end else f'{start} {",".join(tokens)}')
+    for code, unit in by_code.items():
+        suffix = _budget_suffix(budgets.get(code))
+        if code in derived:
+            lines.append(f'{code} = {derived[code]}{suffix}')
+        elif unit.kind == 'array' and unit.parent is None:
+            lines.append(f'{code}: {counts[code]}{suffix}')
+        elif suffix and unit.kind != 'array':
+            lines.append(f'{code}: 1{suffix}')
+    for (code, parent), k in sorted(nested.items()):
+        lines.append(f'{_chain_label(code, parent, by_code)}: {k}'
+                     f'{_budget_suffix(budgets.get(code))}')
+    return '\n'.join(lines)
+
+
+def _fold_undrawn(segments, counts, nested, derived, pool, zeros, answer,
+                  by_code, n, chunks, lenient):
+    """Fold the declared-undrawn recount into a validated map — the
+    adoption is code's, the anchored conversation never redraws its
+    own lines again. Each undrawn unit's answer — count plus per-
+    instance opening quotes — anchors to chunks: a top-level unit's
+    instances claim the chunks holding their openings (several items
+    may share one chunk when the material is inseparable); a chained
+    unit's sub-entries partition the parent's run from the first to
+    the last anchor, each keeping the chunks up to the next opening,
+    the run's head and tail staying the parent's own. A top-level
+    recount that merges its instances' openings into one quote — the
+    dense list one chunk holds inseparably — claims that chunk for all
+    of them. Claimed chunks keep every other unit's lines — a chunk
+    the map wrote off as irrelevant yields its NONE claim to the
+    recount's material. Counts update to the recount's number, the
+    fresh read authoritative under the zeros' own rule.
+    A unit whose section is unusable — missing, quotes unanchored,
+    count and quotes disagreeing — is skipped and keeps its error for
+    the diff path. Returns ``(rebuilt state, zero half spliced)``, or
+    None when nothing was adoptable."""
+    labels = {_chain_label(code, parent, by_code) for code, parent in pool}
+    parsed = _parse_shared_answer(answer, labels | set(zeros))
+    changed, zeros_ok = False, False
+    if zeros:
+        if spliced := _splice(segments, counts, nested, derived, answer,
+                              zeros, by_code, n, lenient):
+            segments, counts, nested, derived = spliced
+            changed = zeros_ok = True
+    per_chunk = {c: list(ds) for c, ds in _cover(segments).items()}
+    norms = None
+    for code, parent in pool:
+        section = parsed.get(_chain_label(code, parent, by_code))
+        if not section:
+            continue  # absent or zero — the map keeps its error, diff repairs
+        count, quotes = section
+        if parent is None:
+            if norms is None:
+                norms = {c: norm(chunks[c]) for c in range(n)}
+            hits = [_quote_anchor(q, range(n), norms) for q in quotes]
+            if any(c is None for c in hits):
+                continue
+            if len(hits) == 1 and count != len(hits):
+                # the recount merged the instances' openings into one
+                # quote — the dense list one chunk holds inseparably
+                # (measured: 2 of 3 answer the b-[] ask this way);
+                # every item claims the chunk
+                hits = [hits[0]] * count
+            if len(hits) != count:
+                continue  # under-quoted across chunks — ambiguous, diff
+            for i, c in enumerate(hits):
+                ds = per_chunk[c]
+                if ds == [(NONE, None, None)]:
+                    ds.clear()  # material the map wrote off as irrelevant
+                ds.append((code, i, None))
+            counts = {**counts, code: count}
+        else:
+            if count != len(quotes):
+                continue  # unusable — the map keeps its error, diff repairs
+            pcode = _parent_code(by_code[code], by_code)
+            owned = sorted(c for c, ds in per_chunk.items()
+                           if (pcode, parent, None) in ds)
+            if (hits := _anchors(quotes, owned, chunks)) is None:
+                continue
+            anchors = sorted(hits)  # card order ≠ document order
+            for c in owned:
+                if anchors[0] <= c <= anchors[-1]:
+                    per_chunk[c].append((code, bisect_right(anchors, c) - 1,
+                                         parent))
+            nested = {**nested, (code, parent): count}
+        changed = True
+    if not changed:
+        return None
+    rebuilt = _resegment({c: tuple(ds) for c, ds in per_chunk.items()},
+                         counts, nested, derived, by_code, n, lenient)
+    if rebuilt is None:
+        return None
+    return (rebuilt, counts, nested, derived), zeros_ok
 
 
 def _content_len(chunk: str) -> int:
@@ -2083,7 +2344,7 @@ def _nested_errors(code: str, unit: Unit, segments, counts, nested,
     declared = {p: v for (c, p), v in nested.items() if c == code}
     errors = []
     for p in sorted(used.keys() | declared.keys()):
-        chain = f'{pcode}.{p}.{code}'
+        chain = _chain_label(code, p, by_code)
         if code in (lenient or ()) and p in declared:
             continue  # passed through after a replay — the count
             # arbitration owns it (used-but-undeclared still blocks:
