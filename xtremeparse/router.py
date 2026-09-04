@@ -28,9 +28,13 @@ count — gets its fix in a round of its own: the overflow ask hands
 the model the block lines to ratify — the even partition computed in
 code, one line per call-sized block, the count sized from the unit's
 own budget — and the merged lazy form gets a fresh-conversation
-recount that code re-splits at the quoted openings. A fan-out round
+recount that code re-splits at the quoted openings, the one
+conversation carrying every unit the map miscounted — merged and
+zero-declared alike. A fan-out round
 is a suggestion: silence declines it, and so does an answer that
-fails validation — the standing map was valid before the ask.
+fails validation — the standing map was valid before the ask
+(the zero recount is the exception: its disagreement is resolved,
+never declined).
 The declared counts make the map self-consistent: item indexes must
 run exactly 0..declared-1, every declared item must receive chunks.
 Coverage and disjointness hold per line range (line order itself
@@ -44,6 +48,7 @@ from __future__ import annotations
 
 import re
 from bisect import bisect_right
+from collections import Counter
 from dataclasses import dataclass
 from typing import Optional
 
@@ -69,6 +74,8 @@ SPLIT_MATERIAL_CAP = 1000  # mapped content chars one shared call may
 RECOUNT_DESCRIPTION = 'Declarations and map lines for the RECOUNT units only'
 SHARED_RECOUNT_DESCRIPTION = ('Per recounted unit: a count line and the '
                               "instances' opening quotes")
+_BOTH_RECOUNT_DESCRIPTION = ('Per recounted unit: a count line, then its '
+                             "instances' opening quotes or map lines")
 # placeholders every prompt template must carry (host overrides are
 # validated against these; see docs/prompting.md)
 ROUTE_PLACEHOLDERS = frozenset({'top', 'none', 'legend', 'chunks'})
@@ -569,9 +576,36 @@ async def route(runner: AgentRunner, *, payload: str,
                 rounds.append(_RouteIssue('segments', 'route_hint',
                                           _overrun_hint(code, first, last,
                                                         lines)))
-        return rounds or None
+        if not rounds:
+            return None
+        asked.add('split')  # every ask marks itself when it spends a round
+        return True, rounds
 
-    async def shared_ask(recount_spans):
+    def splice(zeros, answer):
+        """`_splice`'s fold — commit the recount's state on success.
+        The caller owns the fallback."""
+        nonlocal segments, counts, nested, derived
+        if merged := _splice(segments, counts, nested, derived, answer,
+                             zeros, by_code, len(chunks)):
+            segments, counts, nested, derived = merged
+            return True
+        return False
+
+    def resplit(shared, parsed):
+        """Re-split each shared run at its recounted openings; returns
+        the codes whose sections were unusable."""
+        nonlocal segments, counts
+        pending = []
+        for code in shared:
+            if merged := _resplit(segments, counts, nested, code,
+                                  parsed.get(code),
+                                  by_code, derived, chunks):
+                segments, counts = merged
+            else:
+                pending.append(code)
+        return pending
+
+    async def shared_ask(shared):
         nonlocal segments, counts, nested
         # instances merged into one long run: the anchored
         # conversation will not unmerge its own map (a repair
@@ -586,29 +620,20 @@ async def route(runner: AgentRunner, *, payload: str,
         # adopted, though: a diff re-parses the model's answer
         # text, so a round taken after a partial adoption would
         # discard the adopted splits (the pending unit then
-        # simply stays shared)
-        shared = _shared_hints(recount_spans, counts)
-        if not shared:
-            return None
+        # simply stays shared). Fired alone only when no zero
+        # pends beside it — shared_and_zeros owns that round, and
+        # the caller passes a non-empty hint dict either way
         answer = await _recount_shared(runner, payload, shared,
                                        by_code, chunks)
-        pending = {}
-        for code, (span, declared) in shared.items():
-            if merged := _resplit(segments, counts, nested, code,
-                                  answer.get(code),
-                                  by_code, derived, chunks):
-                segments, counts = merged
-            else:
-                pending[code] = (span, declared)
-        if pending and len(pending) == len(shared):
+        pending = resplit(shared, answer)
+        if len(pending) == len(shared):
             return [_RouteIssue(
                 'segments', 'route_hint',
-                _split_hint(code, span, declared) + _DIFF_REPLY)
-                for code, (span, declared) in pending.items()]
+                _split_hint(code, *shared[code]) + _DIFF_REPLY)
+                for code in pending]
         return None  # a full or partial adoption stands
 
-    async def zeros_ask(spans):
-        nonlocal segments, counts, nested, derived
+    async def zeros_ask(zeros):
         # a zero is never trusted on the map's own say-so: the
         # model commits to its finished map and will not revisit
         # NONE'd material — not in the same pass, and not in a
@@ -618,19 +643,19 @@ async def route(runner: AgentRunner, *, payload: str,
         # code splices the answer in — the anchored conversation
         # would re-emit its own map verbatim. Its disagreement is
         # resolved, never declined: a botched fix keeps the repair
-        # loop, because the alternative is trusting the suspect zero
-        zeros = [c for c, u in by_code.items()
-                 if u.kind == 'array' and c not in derived
-                 and counts.get(c) == 0]
-        if not zeros:
-            return None
+        # loop, because the alternative is trusting the suspect
+        # zero. Fired alone only when no shared run pends beside
+        # it — shared_and_zeros owns that round, and the caller
+        # passes a non-empty zero list either way
         answer = await _recount(runner, payload, by_code, zeros,
                                 chunks,
                                 instructions=recount_instructions)
-        if merged := _splice(segments, counts, nested, derived, answer,
-                             zeros, by_code, len(chunks)):
-            segments, counts, nested, derived = merged
+        if splice(zeros, answer):
             return None  # the recount's adoption stands
+        return [_RouteIssue('segments', 'route_invalid',
+                            zeros_note(zeros) + _DIFF_REPLY)]
+
+    def zeros_note(zeros):
         note = (f'{", ".join(zeros)}: a separate recount of '
                 'the document disagreed with this map but '
                 'could not be merged — for each, recheck the '
@@ -640,27 +665,71 @@ async def route(runner: AgentRunner, *, payload: str,
                 'another repeating unit; keep 0 only if '
                 'truly absent')
         history.append([note])
-        return [_RouteIssue('segments', 'route_invalid',
-                            note + _DIFF_REPLY)]
+        return note
+
+    async def shared_and_zeros(shared, zeros):
+        # both kinds pend: one fresh conversation recounts them
+        # together — the chunks listing is the costly part, and
+        # the two recount prompts differ only in framing. Zeros
+        # fold first, and nothing is adopted before the splice
+        # lands: its disagreement is a resolution, and the diff
+        # round a failed splice forces re-parses the model's
+        # answer text over any split adopted here. Once the
+        # splice stands there is no diff round at all — a
+        # pending unit simply stays shared, the same rule the
+        # shared-only ask applies after a partial adoption
+        answer = await _recount_both(runner, payload, shared, zeros,
+                                     by_code, chunks)
+        if not splice(zeros, answer):
+            return False, [_RouteIssue('segments', 'route_invalid',
+                                       zeros_note(zeros) + _DIFF_REPLY)]
+        parsed = _parse_shared_answer(answer, list(shared) + zeros)
+        # the zero units' count lines delimit sections too — a count
+        # line outside the shared codes would otherwise ride the
+        # preceding unit's quote list and fail its count check
+        resplit(shared, parsed)
+        return None  # a full or partial adoption stands
+
+    async def fanout_ask(shared_spans):
+        # both fan-out kinds in one round when they pend together;
+        # a host's recount_instructions is tuned for the zero
+        # case, so an override keeps the two asks apart. The asks
+        # mark themselves here — a combined round spends both
+        # halves at once, and a shared round's feedback must
+        # leave zeros pending for the next visit
+        shared = _shared_hints(shared_spans, counts)
+        zeros = [c for c, u in by_code.items()
+                 if u.kind == 'array' and c not in derived
+                 and counts.get(c) == 0]
+        if shared and zeros and 'shared' not in asked \
+                and 'zeros' not in asked and not recount_instructions:
+            asked.update({'shared', 'zeros'})
+            return await shared_and_zeros(shared, zeros)
+        if shared and 'shared' not in asked:
+            asked.add('shared')
+            if fb := await shared_ask(shared):
+                return True, fb
+        if zeros and 'zeros' not in asked:
+            asked.add('zeros')
+            if fb := await zeros_ask(zeros):
+                return False, fb
+        return None
 
     async def hint_pass():
-        """The hint passes in firing order — each ask returns the
-        feedback list to spend a round on, tagged with whether that
-        round is a suggestion (a fan-out ask: silence or wreckage both
-        keep the standing map) or a resolution (zeros: its fix keeps
-        the repair loop). The flag lives here, beside the ask table —
-        a fourth ask cannot forget to classify itself. Returns None
-        when no hint applied or one adopted its fix in code and the
-        map may be final."""
+        """The hint passes in firing order — split first (its
+        adoption shifts the spans the fan-out round reads), then
+        the fan-out round. Each ask marks itself in ``asked`` when
+        it spends a round and returns its own classification —
+        (declinable, feedback) or None — because a combined round's
+        grade is whichever disposition its halves force; the split
+        ask is a suggestion, always. Returns None when no hint
+        applied or one adopted its fix in code and the map may be
+        final."""
         spans, merged = _shared_spans(segments, counts)
-        for name, ask, arg, declinable in (
-                ('split', split_ask, spans, True),
-                ('shared', shared_ask, merged, True),
-                ('zeros', zeros_ask, spans, False)):
-            if name not in asked and (fb := await ask(arg)):
-                asked.add(name)
-                return declinable, fb
-        return None
+        if 'split' not in asked \
+                and (fb := await split_ask(spans)) is not None:
+            return fb
+        return await fanout_ask(merged)
 
     def finalize():
         assignments = _assignments(segments, by_code)
@@ -788,8 +857,7 @@ async def _recount(runner: AgentRunner, payload: str, by_code: dict,
         # output tokens for a one-line answer). A summarizing unit's
         # derivation needs no source code in the legend: _splice's
         # crossed-count adoption reads it off the misplaced claims
-        legend='\n'.join(f'{c} = {by_code[c].header} RECOUNT'
-                         for c in zeros),
+        legend=_recount_legend(zeros, by_code),
         chunks=_listing(chunks))
     return await fresh_check(
         runner, payload, instructions, RECOUNT_DESCRIPTION)
@@ -825,8 +893,7 @@ async def _recount_shared(runner: AgentRunner, payload: str,
     Returns ``{code: (count, quotes)}``; units with a malformed or
     missing section are absent."""
     instructions = _SHARED_CHECK.format(
-        units='\n'.join(f'{code} = {by_code[code].header} RECOUNT'
-                        for code in shared),
+        units=_recount_legend(shared, by_code),
         chunks=_listing(chunks))
     result = await fresh_check(
         runner, payload, instructions, SHARED_RECOUNT_DESCRIPTION)
@@ -842,6 +909,64 @@ def _parse_shared_answer(result, codes: dict | set) -> dict:
         if (m := _COUNT.match(line)) and m.group(1) in codes else None)
     return {code: (count, [q for q in quotes if q])
             for (code, count), quotes in sections.items() if count}
+
+
+# The quote rule below is _SHARED_CHECK's, the zero-unit rules are
+# _CHECK's — reword one firing mode's copy and the others must follow,
+# or the adoption rates drift by path with no test signal.
+_BOTH_CHECK = '''A document's chunks are listed below. Some repeating units were
+left miscounted: the MERGED ones had their instances folded into one
+shared run, the ZERO ones were written off as absent. Recount them in
+the DOCUMENT — read the whole chunk list; a brief mention inside an
+otherwise irrelevant run is still an instance.
+
+For each unit marked RECOUNT answer a count line "<code>: <n>" — how
+many instances the DOCUMENT holds — then, per its tag:
+
+- a MERGED unit: exactly n lines, one per instance in the card's
+  order, each quoting VERBATIM the opening text of that instance as
+  it stands in the chunk listing — enough text to locate its chunk,
+  no commentary;
+- a ZERO unit with its own text: its map lines in the routing DSL
+  ("4 <code>.0", "5 <code>.1"), one item per instance, covering
+  exactly its material, numbered by the card's declared order when
+  the card declares one;
+- a ZERO unit the document truly does not contain: the count line
+  "<code>: 0" alone.
+
+Units:
+{units}
+
+Chunks:
+
+{chunks}
+'''
+
+
+async def _recount_both(runner: AgentRunner, payload: str, shared: dict,
+                        zeros: list, by_code: dict, chunks: list[str]) -> str:
+    """Fresh-attention recount of the merged and the zero units in the
+    one conversation — the chunks listing, the costly part, is shared.
+    Each unit answers a count line; a merged unit's instances quote
+    their openings, a zero unit claims map lines. Returns the raw
+    answer: `_splice` reads the zero units' lines, `_parse_shared_
+    answer` the merged units' sections — each skips the other's
+    codes."""
+    instructions = _BOTH_CHECK.format(
+        units=_recount_legend(list(shared) + list(zeros), by_code,
+                              lambda c: ' MERGED' if c in shared else ' ZERO'),
+        chunks=_listing(chunks))
+    return await fresh_check(runner, payload, instructions,
+                             _BOTH_RECOUNT_DESCRIPTION)
+
+
+def _recount_legend(codes, by_code, tag=None) -> str:
+    """The Units listing every recount prompt carries — one line per
+    recounted unit, ``<code> = <unit header> RECOUNT``. ``tag`` names
+    the unit's firing mode (``' MERGED'`` / ``' ZERO'``) when the one
+    conversation mixes them."""
+    return '\n'.join(f'{code} = {by_code[code].header} RECOUNT'
+                     f'{tag(code) if tag else ""}' for code in codes)
 
 
 def _resplit(segments: list, counts: dict, nested: dict, code: str, answer,

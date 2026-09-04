@@ -997,15 +997,16 @@ async def test_split_ask_precedes_the_lazy_recount():
 
 # two array units: one for the split ask, a merged one for the shared
 # recount — codes a=basic_info, b=jobs, c=projects, d=$misc
+PROJECTS = {'type': 'array', 'description': '项目经历',
+            'items': {'type': 'object', 'properties': {
+                'name': {'type': 'string', 'description': '项目名'}}}}
+
 TWO_ARRAYS = decompose({
     'type': 'object',
     'properties': {
         'basic_info': SCHEMA['properties']['basic_info'],
         'jobs': SCHEMA['properties']['jobs'],
-        'projects': {'type': 'array', 'description': '项目经历',
-                     'items': {'type': 'object', 'properties': {
-                         'name': {'type': 'string', 'description': '项目名'},
-                     }}},
+        'projects': PROJECTS,
         'created': SCHEMA['properties']['created'],
     },
 })
@@ -1048,6 +1049,80 @@ async def test_partial_adoption_skips_the_fallback_round():
     jobs = [a for a in routing.raw['assignments'] if a['unit'] == 'jobs']
     assert jobs[0]['chunks'] == list(range(1, 15))
     assert jobs[1]['chunks'] == list(range(15, 19))
+
+
+BOTH_UNITS = decompose({
+    'type': 'object',
+    'properties': {
+        'basic_info': SCHEMA['properties']['basic_info'],
+        'jobs': SCHEMA['properties']['jobs'],
+        'projects': PROJECTS,
+        'certs': {'type': 'array', 'description': '证书',
+                  'items': {'type': 'object', 'properties': {
+                      'name': {'type': 'string', 'description': '证书名'},
+                  }}},
+    },
+})
+# codes: a=basic_info, b=jobs, c=projects, d=certs
+BOTH_MAP = ('0 a\n1-18 b.0\n19-20 c.0\n21-22 c.1\n23-38 -\n39 -\n'
+            'a: 1\nb: 1\nc: 2\nd: 0')
+
+
+async def test_merged_and_zero_units_recount_in_one_conversation():
+    # both fan-out kinds pend: one fresh conversation recounts them
+    # together — the chunks listing is the costly part
+    runner = ScriptedRunner(
+        agent_result(BOTH_MAP),
+        agent_result('b: 2\nc5\nc15\nd: 0'))
+    routing = await route(runner, payload=PAYLOAD, units=BOTH_UNITS,
+                          chunks=LAZY_CHUNKS)
+    recount = runner.calls[1]
+    assert len(runner.calls) == 2 and recount['feedback'] is None
+    assert 'RECOUNT MERGED' in recount['instructions'] \
+        and 'RECOUNT ZERO' in recount['instructions'] \
+        and 'b = [jobs | array] 工作经历 RECOUNT MERGED' \
+        in recount['instructions'] \
+        and 'd = [certs | array] 证书 RECOUNT ZERO' \
+        in recount['instructions']
+    assert routing.raw['counts'] == {'jobs': 2, 'projects': 2, 'certs': 0}
+    jobs = [a for a in routing.raw['assignments'] if a['unit'] == 'jobs']
+    assert jobs[0]['chunks'] == list(range(1, 15))
+    assert jobs[1]['chunks'] == list(range(15, 19))
+
+
+async def test_combined_recount_zeros_fallback_leaves_the_map_standing():
+    # the zero unit's section claims mapped material and cannot merge:
+    # one resolution round follows — a diff re-parses the model's text
+    # over any split, so the merged unit's usable sections are not
+    # adopted first, and a decline keeps the standing map
+    runner = ScriptedRunner(
+        agent_result(BOTH_MAP),
+        agent_result('b: 2\nc5\nc15\nd: 3\n19 d.0,d.1,d.2'),
+        agent_result(''))
+    routing = await route(runner, payload=PAYLOAD, units=BOTH_UNITS,
+                          chunks=LAZY_CHUNKS)
+    assert len(runner.calls) == 3
+    assert 'could not be merged' \
+        in runner.calls[2]['feedback'][0].message
+    assert routing.raw['counts'] == {'jobs': 1, 'projects': 2, 'certs': 0}
+
+
+async def test_recount_instructions_override_keeps_the_two_asks_apart():
+    # a host's override is tuned for the zero case: the combined
+    # conversation stays off, the two recounts run serially
+    runner = ScriptedRunner(
+        agent_result(BOTH_MAP),
+        agent_result('b: 2\nc5\nc15'),
+        agent_result('d: 0'))
+    routing = await route(runner, payload=PAYLOAD, units=BOTH_UNITS,
+                          chunks=LAZY_CHUNKS,
+                          recount_instructions='Units:\n{legend}\n\n{chunks}')
+    assert len(runner.calls) == 3
+    assert 'were left merged as one' in runner.calls[1]['instructions']
+    assert 'Units:' in runner.calls[2]['instructions'] \
+        and 'd = [certs | array] 证书 RECOUNT' \
+        in runner.calls[2]['instructions']
+    assert routing.raw['counts'] == {'jobs': 2, 'projects': 2, 'certs': 0}
 
 
 async def test_a_repair_round_diffs_against_the_previous_answer():
@@ -1097,6 +1172,8 @@ async def test_a_still_invalid_diff_keeps_its_base_map():
         await route(runner, payload=PAYLOAD, units=UNITS, chunks=CHUNKS)
     assert len(runner.calls) == 5
     assert 'not covered' in runner.calls[4]['feedback'][0].message
+
+
 
 
 # --- nested arrays: a lifted sub-array addressed through its parent ---
@@ -1433,6 +1510,8 @@ async def test_chain_line_overlapping_another_units_run_is_named():
                 chunks=NESTED_CHUNKS)
     assert 'overlaps after chunk' \
         in runner.calls[1]['feedback'][0].message
+
+
 
 
 async def test_per_sub_entry_declarations_fold_into_the_parent_count():

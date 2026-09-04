@@ -20,13 +20,6 @@ since the diff's lines are the model's own previous answer quoted
 back. Edits cannot regress lines the model already fixed, a quote
 that misses costs nothing, and the patched text parses as a fresh
 answer, so every grammar rule holds of the RESULT, not the patch.
-Three degradations are accepted without ceremony: a reply with no diff
-markers parses as a full re-emission, a reply of chain lines alone
-reads as the patch it means (asked to add the chain lines, the model
-answers with the chain lines alone — replacement would drop the map's
-head and spend the next round re-typing lines that were never wrong),
-and an empty reply declines the
-suggestion (the previous map stands).
 
 A replay — the same applied map text twice in a row — ends the
 repairs for count mismatches: re-asking cannot move a number the
@@ -39,7 +32,9 @@ syntax, an undeclared unit) still burns the budget.
 ## Fan-out suggestions
 
 Two suggestion rounds exist, one round each per routing — the map was
-valid before they fire, so they are asks, not repairs:
+valid before they fire, so they are asks, not repairs (when a merged
+unit and a zero-declared unit pend together, their two recounts share
+one fresh conversation — see the zero-count recount below):
 
 - Material overflow. A shared run whose mapped material exceeds one
   shared call's capacity (~1000 content chars) is split: the router
@@ -59,7 +54,13 @@ valid before they fire, so they are asks, not repairs:
   opening quotes, the one form that survives without the map — and
   code re-splits the run at the quoted openings; adoption is code's,
   not the model's. A recount that comes back unusable falls back to
-  one diff round. A line that already carries one destination per
+  one diff round — fired alone, that is: beside a zero unit's recount
+  (below) the two share one fresh conversation, the chunks listing
+  being the costly part, and once the zero's answer is spliced in
+  there is no diff round at all — a run whose own sections came back
+  unusable simply stays shared, a diff round then would re-parse the
+  pre-split text and discard the zero's adoption. A line that already
+  carries one destination per
   instance is decomposed — its recount could only shave decode, so it
   fires only past a load bar, and a unit declared once obeys the same
   arithmetic (a lone item over a handful of chunks reads as one long
@@ -77,10 +78,17 @@ own rejected suggestion.
 A missing declaration reads as 0, and a zero is never trusted on the
 map's own say-so: a fresh conversation without the map re-counts the
 zero units, and code splices the answer in — the anchored model would
-re-emit its own map verbatim. Unlike the fan-out rounds this
+re-emit its own map verbatim. When a merged unit pends beside the
+zero one, the two share that one conversation: the merged unit's
+instances quote their openings, the zero unit claims map lines or
+confirms 0 — a host's own recount instructions keep the two asks
+apart. Unlike the fan-out rounds this
 disagreement must be resolved, not declined: a fix attempt that fails
 validation keeps the repair loop, because the alternative is trusting
-the suspect zero. A confirming answer costs no round: the splice
+the suspect zero — so in the shared conversation the zero folds
+first, before anything is adopted: the diff round a failed splice
+forces re-parses the model's text, and an adoption taken before it
+would be lost. A confirming answer costs no round: the splice
 re-segments through the per-chunk cover, which keeps a parent's
 destinations beneath the chain chunks nesting in its run, so even the
 covering form (parent line drawn over its chains) round-trips the
