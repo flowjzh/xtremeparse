@@ -38,14 +38,17 @@ Two suggestion rounds exist, one round each per routing — the map was
 valid before they fire, so they are asks, not repairs:
 
 - Material overflow. A shared run whose mapped material exceeds one
-  shared call's capacity (~1000 content chars) is asked to split: the
-  router computes the even partition itself and hands the model the
-  block lines to ratify — one ranged line per call-sized block, the
-  block count sized from the unit's own arranged budget over the
-  executor's per-call cap. The reply is a dozen transcription lines
-  where an instance-enumerated split would be ~85, and the model never
-  computes block boundaries at all (self-computed boundaries across a
-  long run's junk headings are measured round-losers: an overlapping
+  shared call's capacity (~1000 content chars) is split: the router
+  computes the even partition itself — one ranged line per call-sized
+  block, the block count sized from the unit's own arranged budget
+  over the executor's per-call cap — and splices the block lines into
+  the standing map itself; the ask round typed them verbatim every
+  time, a round spent re-taking code's dictation. The ask round
+  survives only for a run code may not redraw — a line inside it
+  carrying another unit's destination or a chain — where the model
+  ratifies the computed lines or declines by silence (the model never
+  computes block boundaries at all: self-computed boundaries across a
+  long run's junk headings are measured round-losers — an overlapping
   block sent the model into per-instance enumeration).
 - Merged instances. Instances sharing a run far longer than their
   count get a fresh-conversation recount — count plus each instance's

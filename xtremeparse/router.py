@@ -529,22 +529,47 @@ async def route(runner: AgentRunner, *, payload: str,
                           'description': 'Segment map and count declarations '
                                          'only — no prose, no JSON.'}
 
+    def adopt(text):
+        """Commit a code-authored map text: parse, take the state it
+        names, leave the text behind for diff_base to anchor on — the
+        one adoption that must survive a later model diff. Returns the
+        parse errors; the caller owns the fallback."""
+        nonlocal counts, nested, derived, segments, budgets, diff_base, valid
+        errors, cts, nest, deriv, segs, budg = _parse(text, by_code,
+                                                      len(chunks))
+        if not errors:
+            counts, nested, derived, segments, budgets = \
+                cts, nest, deriv, segs, budg
+            diff_base = text
+            valid = (segs, cts, nest, deriv, budg, text)
+        return errors
+
     async def split_ask(spans):
         # a shared run holding more mapped material than one shared
-        # call may absorb — the dense draw (span ≈ declared). One round
-        # hands the model the exact block lines to ratify: the even
-        # partition computed in code, because the model's own boundary
-        # arithmetic across a long run's junk headings is what loses
-        # rounds (measured: 2 of 5 canary trials drew an overlapping
-        # block and fell into per-instance enumeration). The ask rides
-        # the shared diff protocol, so the reply is transcription — a
-        # dozen short lines, not a re-decoded map. Silence keeps the
-        # shared whole
-        return [_RouteIssue('segments', 'route_hint',
-                            _overrun_hint(code, first, last, lines))
-                for code, (first, last, lines) in _overrun_hints(
-                    segments, spans, counts, chunks, by_code, budgets,
-                    derived).items()] or None
+        # call may absorb — the dense draw (span ≈ declared). The even
+        # partition is computed in code, because the model's own
+        # boundary arithmetic across a long run's junk headings is what
+        # loses rounds (measured: 2 of 5 canary trials drew an
+        # overlapping block and fell into per-instance enumeration) —
+        # and adopted in code too: the ask round transcribed the block
+        # lines verbatim every time, a round spent re-typing what code
+        # already wrote. The round survives only for runs code may not
+        # redraw — a line shared with another unit or carrying a chain
+        rounds = []
+        for code, (first, last, lines) in _overrun_hints(
+                segments, spans, counts, chunks, by_code, budgets,
+                derived).items():
+            spliced = _adopt_blocks(diff_base, code, first, last, lines)
+            if spliced is None or (spliced != diff_base
+                                   and adopt(spliced)):
+                # None: another unit's destination or a chain rides the
+                # run's lines; errors: unverifiable — either way the
+                # ask round owns it. == diff_base is a refired pass
+                # after a full adoption
+                rounds.append(_RouteIssue('segments', 'route_hint',
+                                          _overrun_hint(code, first, last,
+                                                        lines)))
+        return rounds or None
 
     async def shared_ask(recount_spans):
         nonlocal segments, counts, nested
@@ -861,6 +886,11 @@ def _resplit(segments: list, counts: dict, nested: dict, code: str, answer,
     return rebuilt, counts
 
 
+def _dests(dests: str) -> list:
+    """A _LINE destination list's comma-split tokens."""
+    return [t.strip() for t in dests.split(',')]
+
+
 def _diff_text(reply, base_text) -> str | None:
     """A unified-diff reply applied to the model's own previous map as
     order-free line algebra: "-" lines drop every line they quote
@@ -973,7 +1003,7 @@ def _splice(segments, counts, nested, derived, answer, zeros, by_code: dict,
             continue
         start, end = int(m.group(1)), int(m.group(2) or m.group(1))
         dests = []
-        for d in (t.strip() for t in m.group(3).split(',')):
+        for d in _dests(m.group(3)):
             code, _, item = d.partition('.')
             if code == NONE:
                 if dests:
@@ -1220,8 +1250,8 @@ def _parse(text, by_code: dict, n: int, lenient: set | None = None):
                           f'or outside 0..{n - 1}')
             continue
         destinations, seen = [], set()
-        parts = m.group(3).split(',')
-        for d in (t.strip() for t in parts):
+        tokens = _dests(m.group(3))
+        for d in tokens:
             code, _, rest = d.partition('.')
             unit = by_code.get(code)
             if code == NONE and rest:
@@ -1240,7 +1270,7 @@ def _parse(text, by_code: dict, n: int, lenient: set | None = None):
                     errors.append(f'line {i + 1}: {err}')
             else:
                 out, err = _destination(d, code, rest, unit, by_code, seen,
-                                        len(parts) > 1, start, end)
+                                        len(tokens) > 1, start, end)
                 if err:
                     errors.append(f'line {i + 1}: {err}')
                 else:
@@ -1504,7 +1534,9 @@ def _block_lines(code: str, first: int, last: int, declared: int,
 
 
 def _overrun_hint(code: str, first: int, last: int, lines: str) -> str:
-    """The material-overflow ask, pure geometry: replace the run with
+    """The material-overflow ask — ``_adopt_blocks``'s fallback, for a
+    run whose lines code may not redraw — pure geometry: replace the
+    run with
     the ranged block lines computed in code, as a diff against
     the standing map — the replaced line is the short ranged form its
     quote cannot miss (the several-hundred-char comma-join that once
@@ -1518,6 +1550,35 @@ def _overrun_hint(code: str, first: int, last: int, lines: str) -> str:
             f'line per block, exactly as written:\n{lines}\n'
             f'If the instances truly share their chunks inseparably, '
             f'{_DECLINE}') + _DIFF_REPLY
+
+
+def _adopt_blocks(text: str, code: str, first: int, last: int,
+                  lines: str) -> str | None:
+    """The overrun ask's adoption: the computed block lines splice into
+    the standing map text in place of the run's own lines. The ask
+    round transcribed them verbatim every time (measured) — the
+    adoption re-validates by construction, the blocks covering the
+    run's chunks and declared items exactly. None when code may not
+    own the rewrite: a line inside the run carrying another unit's
+    destination or a chain would lose it, and that run's ask keeps
+    its round. The input back means there was nothing to rewrite — a
+    refired pass after a full adoption."""
+    own = re.compile(rf'{code}(?:\.\d+(?:-\d+)?)?')
+    out, at = [], None
+    for line in text.split('\n'):
+        m = _LINE.match(line.strip())
+        if not (m and int(m[1]) <= last and int(m[2] or m[1]) >= first):
+            out.append(line)
+            continue
+        if m[3] != '-' and not all(own.fullmatch(t) for t in _dests(m[3])):
+            return None  # another unit's destination or a chain rides it
+        if at is None:
+            at = len(out)  # the blocks take the run's first line's slot
+        # else dropped: a later line of the run yields to the blocks
+    if at is None:
+        return text
+    out.insert(at, lines)
+    return '\n'.join(out)
 
 
 def _shared_spans(segments: list, counts: dict) -> tuple:
@@ -1603,10 +1664,11 @@ def _overrun_hints(segments: list, spans: dict, counts: dict,
     section's range) that the lazy ratio cannot see: there span ≈
     declared, while the lazy shape needs span >= declared * 4. The ask
     sizes the split from the unit's own arrangement: total arranged
-    budget over one call's capacity gives the block count the model
-    ratifies (a unit with no arrangement falls back to its material
-    chars — the ``@`` suffix is tolerated, never checked). The block
-    lines are computed here; the model only confirms or declines.
+    budget over one call's capacity gives the block count (a unit with
+    no arrangement falls back to its material chars — the ``@`` suffix
+    is tolerated, never checked); the lines are computed here and
+    adopted in code (``_adopt_blocks``) — the ask round only survives
+    where the adoption declines the redraw.
     Lazy-shaped units stay the recount's (the anchored model will not
     unmerge those, measured). Returns ``{code: (first chunk, last
     chunk, block lines)}``."""
