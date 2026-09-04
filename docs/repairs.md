@@ -21,6 +21,26 @@ back. Edits cannot regress lines the model already fixed, a quote
 that misses costs nothing, and the patched text parses as a fresh
 answer, so every grammar rule holds of the RESULT, not the patch.
 
+A replay — the same applied map text twice in a row — ends the
+repairs for count mismatches: re-asking cannot move a number the
+model already could not localize (measured: every line re-quoted as
+-x/+x until the budget burned), so the declared-vs-used error passes
+through and the extraction's count arbitration owns the number. The
+path there starts one notch earlier: a verbatim -x/+x pair applies as
+no edit at all — the lines would only re-append, reordering a map
+whose line order carries no meaning — and a reply that still repeats
+the map is told so, that its pairs cancel out and the full corrected
+map is the escape hatch. Only count mismatches pass; a replayed map
+with any other error (coverage, syntax, an undeclared unit) still
+burns the budget. The budget's end settles rather than raises, on
+the same trade: the last parse-valid round finalizes, and a
+never-valid map whose only remaining flaws are count mismatches
+passes them to the arbitration too. A geometry flaw (an overlap, a
+coverage hole) still raises — chunks would be double-claimed
+silently, and the caller's fresh draw is the cure for an oscillating
+anchor (measured: shown the two conflicting lines by name, the model
+re-emits the corrected map in full within the budget).
+
 Four degradations are accepted without ceremony: a reply with no diff
 markers parses as a full re-emission, a reply of chain lines alone
 reads as the patch it means (asked to add the chain lines, the model
@@ -33,14 +53,6 @@ no-op (dropped as commentary it once silently zeroed a unit while the
 removal beside it landed, and the phantom burned the budget) — and an
 empty reply declines the
 suggestion (the previous map stands).
-
-A replay — the same applied map text twice in a row — ends the
-repairs for count mismatches: re-asking cannot move a number the
-model already could not localize (measured: every line re-quoted as
--x/+x until the budget burned), so the declared-vs-used error passes
-through and the extraction's count arbitration owns the number. Only
-mismatches pass; a replayed map with any other error (coverage,
-syntax, an undeclared unit) still burns the budget.
 
 ## Fan-out suggestions
 

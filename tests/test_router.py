@@ -104,7 +104,9 @@ async def test_overlap_between_segments_is_repaired():
         agent_result('0 a\n1 b.0\n2-3 -\nb: 1'),
     )
     await route(runner, payload=PAYLOAD, units=UNITS, chunks=CHUNKS)
-    assert 'overlaps after chunk' in runner.calls[1]['feedback'][0].message
+    # the conflicting line is named — range and codes — so the repair
+    # can quote it instead of hunting for it
+    assert 'overlaps line 0-1 (a)' in runner.calls[1]['feedback'][0].message
 
 
 async def test_out_of_order_map_lines_are_accepted():
@@ -1543,10 +1545,49 @@ async def test_chain_line_overlapping_another_units_run_is_named():
         agent_result('0 a\n1 b.1\n2-3 b.0.c.0\n4 -\nb: 2\nb.0.c: 1'))
     await route(runner, payload=PAYLOAD, units=NESTED_UNITS,
                 chunks=NESTED_CHUNKS)
-    assert 'overlaps after chunk' \
+    assert 'overlaps line' \
         in runner.calls[1]['feedback'][0].message
 
 
+async def test_a_no_op_rewrite_is_named_on_the_next_repair():
+    # a replayed map ("-" removes a line, "+" adds it right back) is
+    # the burn signature: the feedback names the no-op and points at
+    # the full-map escape instead of re-firing the bare error
+    noop = agent_result('- 1 b.0\n+ 1 b.0')
+    runner = ScriptedRunner(BAD_MAP, noop, noop, noop, noop)
+    with pytest.raises(RouterError):
+        await route(runner, payload=PAYLOAD, units=UNITS, chunks=CHUNKS)
+    assert 'changed nothing' in runner.calls[2]['feedback'][0].message
+    assert 'changed nothing' not in runner.calls[1]['feedback'][0].message
+
+
+async def test_exhaustion_with_a_valid_earlier_round_settles_on_it():
+    # a resolution round's fix keeps thrashing to the budget's end:
+    # the last parse-valid round — the map whose recount disagreed —
+    # finalizes instead of raising. A flawed 200 beats a 500
+    runner = ScriptedRunner(
+        agent_result('0 a\n1-3 -\nb: 0'),
+        agent_result('b: 2\n0 b.0,b.1'),  # recount claims chunk 0: unspliceable
+        agent_result('x'), agent_result('y'), agent_result('x'), agent_result('y'))
+    routing = await route(runner, payload=PAYLOAD, units=UNITS, chunks=CHUNKS)
+    assert len(runner.calls) == 6
+    assert routing.raw['counts'] == {'jobs': 0}
+
+
+async def test_exhaustion_passes_count_flaws_to_the_arbitration():
+    # never valid, never replayed (every reply a different wrong map):
+    # at the budget's end a declared-vs-used mismatch is the
+    # arbitration's number, not a reason to raise
+    runner = ScriptedRunner(
+        agent_result('0 a\n1 b.0\n2-3 -\nb: 3'),
+        agent_result('0 a\n1 b.0\n2-3 -\nb: 4'),
+        agent_result('1 b.0\n0 a\n2-3 -\nb: 3'),
+        agent_result('0 a\n1 b.0\n2-3 -\nb: 5'),
+        agent_result('1 b.0\n2-3 -\n0 a\nb: 3'),
+    )
+    routing = await route(runner, payload=PAYLOAD, units=UNITS, chunks=CHUNKS)
+    assert len(runner.calls) == 5
+    assert routing.raw['counts'] == {'jobs': 3}
 
 
 async def test_per_sub_entry_declarations_fold_into_the_parent_count():

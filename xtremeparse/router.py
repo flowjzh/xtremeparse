@@ -48,6 +48,7 @@ from __future__ import annotations
 
 import re
 from bisect import bisect_right
+from collections import Counter
 from dataclasses import dataclass
 from typing import Optional
 
@@ -799,7 +800,8 @@ async def route(runner: AgentRunner, *, payload: str,
         diff_base = text
         maps.append(text)
         if errors and not suggestion:
-            if text == stuck_text:
+            replayed = text == stuck_text
+            if replayed:
                 # the model replayed its map verbatim (measured: a count
                 # it cannot localize comes back as a no-op diff until
                 # the budget burns — every line re-quoted as -x/+x).
@@ -821,6 +823,16 @@ async def route(runner: AgentRunner, *, payload: str,
                       'round; restore that fix while addressing the others'
                       if e in past and e not in history[-1] else e
                       for e in errors]
+            if replayed:
+                # the reply was a no-op rewrite: say so — a verbatim
+                # "-x/+x" pair cancels out, and the full map is the
+                # escape hatch when quoting keeps missing
+                marked = [f'{m} — and your previous reply changed '
+                          'nothing: re-quoting a line as a "-x/+x" '
+                          'pair cancels out; quote only the lines you '
+                          'are changing, or re-emit the corrected map '
+                          'in full'
+                          for m in marked]
             feedback = [_RouteIssue('segments', 'route_invalid', m + _DIFF_FIX)
                         for m in marked]
             history.append(errors)
@@ -837,6 +849,24 @@ async def route(runner: AgentRunner, *, payload: str,
             suggestion, feedback = hint_fb
             continue
         return finalize()
+    # exhausted: the model had its bounded repairs, and the flaws that
+    # remain are the ones it could not localize (measured: oscillation
+    # between two wrong redraws, or junk). Settle, on the replay
+    # downgrade's own trade — a settled 200 beats a 500: the last
+    # valid round stands, and count-family mismatches on the final
+    # text pass through to the extraction's count arbitration. A
+    # geometry flaw (overlap, coverage) has no downstream arbiter —
+    # passing it would double-claim chunks silently — so that stays a
+    # RouterError, and the caller's fresh draw is the cure
+    if valid is not None:
+        segments, counts, nested, derived, budgets, _ = valid
+        return finalize()
+    lenient |= _passable(errors)
+    if lenient:
+        errors, counts, nested, derived, segments, budgets = \
+            _parse(diff_base, by_code, len(chunks), lenient)
+        if not errors:
+            return finalize()
     raise RouterError(f'router segment map invalid after repair: {errors}')
 
 
@@ -1037,19 +1067,17 @@ def _diff_text(reply, base_text) -> str | None:
     map already holds dedupes to a no-op; one it cannot hold surfaces
     as the overlap error it is."""
     lines = _lines(reply)
-    if not any(l[0] in '+-' and not l.startswith(('---', '+++'))
-               for l in lines):
-        return None
-    removed, added = [], []
+    removed, added, saw_marker = [], [], False
     for l in lines:
         if l.startswith(('---', '+++')):
             continue
         if l[0] in '+-':
+            saw_marker = True
             if content := l[1:].strip():
                 (removed if l[0] == '-' else added).append(content)
         elif _LINE.match(l) or _COUNT.match(l):
             added.append(l)
-    if not removed and not added:
+    if not saw_marker or not removed and not added:
         return None
     return _apply_edits(base_text, removed, added)
 
@@ -1059,7 +1087,10 @@ def _apply_edits(base_text, removed: list, added: list) -> str:
     removed lines drop by content (content-anchored — the model quotes
     its own answer, so a quote that misses costs nothing), added lines
     append unless the map already holds them (a no-op — the model
-    rewrites "-x/+x" pairs for lines it means to keep). Line order
+    rewrites "-x/+x" pairs for lines it means to keep). A "-x/+x" pair
+    verbatim cancels before any of that: a line removed and re-added
+    would only re-append (reorder), and the applier owes every caller
+    the byte-stable base the replay downgrade keys on. Line order
     carries no meaning (ranges are explicit), so no positions are
     tracked: the result is exactly the listed edits — the map text the
     round leaves behind. A reply that rewrites every map line as
@@ -1068,6 +1099,12 @@ def _apply_edits(base_text, removed: list, added: list) -> str:
     counts-first text the parser then blamed the model for. The
     grammar's order is the applier's invariant: map lines first,
     everything after."""
+    added = list(added)  # an applier may pass a dict.fromkeys dedupe map
+    common = Counter(removed) & Counter(added)
+    removed = list((Counter(removed) - common).elements())
+    added = list((Counter(added) - common).elements())
+    if not removed and not added:
+        return base_text  # every edit cancelled — the base stands
     out = [l for l in _lines(base_text) if l not in removed]
     kept = set(out)
     out += [a for a in dict.fromkeys(added) if a not in kept]
@@ -1920,9 +1957,10 @@ def _map_errors(segments, counts, nested, derived, by_code: dict,
             chains.append(seg)
         else:
             covering.append(seg)
-    errors, prev_end, prev_dests = [], -1, ()
+    errors, prev_start, prev_end, prev_dests = [], -1, -1, ()
     for start, end, dests in covering:
         if start <= prev_end:
+            codes = ','.join(sorted({dd[0] for dd in prev_dests}))
             if start == end == prev_end:
                 shared = sorted(
                     {dd[0] for dd in dests} & {dd[0] for dd in prev_dests}
@@ -1931,19 +1969,20 @@ def _map_errors(segments, counts, nested, derived, by_code: dict,
                 tail = (f'two {shared[0]} instances on one chunk ride one '
                         f'line, e.g. "{prev_end} {shared[0]}.0,{shared[0]}.1"'
                         if shared else
-                        'units sharing a chunk ride that line together, '
-                        'e.g. "5 x.0,y.0"')
+                        'share the chunk on one line, e.g. '
+                        f'"{start} x.0,y.0", or shorten or drop one of '
+                        'the two lines')
             else:
                 # a multi-chunk overlap is two claims on the same
                 # material — the ride hints would point the wrong way
                 tail = ('draw each chunk on exactly one line — shorten or '
                         'drop whichever line covers material another line '
                         'already carries')
-            errors.append(f'segment {start}-{end} overlaps after chunk '
-                          f'{prev_end} — every chunk sits on exactly one '
-                          f'line; {tail}')
+            errors.append(f'segment {start}-{end} overlaps line '
+                          f'{prev_start}-{prev_end} ({codes}) — every '
+                          f'chunk sits on exactly one line; {tail}')
         if end > prev_end:
-            prev_end, prev_dests = end, dests
+            prev_start, prev_end, prev_dests = start, end, dests
     for start, end, dests in chains:
         if not _hosted_chain(start, end, _chain_parents(dests, by_code),
                              covering):
