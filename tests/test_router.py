@@ -3,8 +3,8 @@
 import pytest
 
 from xtremeparse.router import (NONE, RECOUNT_PLACEHOLDERS, ROUTE_PLACEHOLDERS,
-                                RouterError, Group, _name_list, _resplit,
-                                route)
+                                RouterError, Group, _name_list, _overlay_text,
+                                _resplit, route)
 from xtremeparse.units import MISC, decompose
 from tests.helpers import ScriptedRunner, agent_result
 
@@ -1286,6 +1286,39 @@ async def test_nested_declaration_before_the_map_is_rejected():
         agent_result('0 a\n1-2 b.0.c.0\n3 b.1\n4 -\nb: 2\nb.0.c: 1'))
     await route(runner, payload=PAYLOAD, units=NESTED_UNITS, chunks=NESTED_CHUNKS)
     assert 'follow the map' in runner.calls[1]['feedback'][0].message
+
+
+def test_overlay_patches_chain_only_replies():
+    # the measured marker-less fragment: asked to add the chain lines,
+    # the model answers with the chain lines alone — the patch reading
+    # keeps the head the replacement reading would have dropped
+    base = '0 a\n1-2 b.0\n3 b.1\n4 -\nb: 2\nb.0.c: 2'
+    assert _overlay_text('1 b.0.c.0\n2 b.0.c.1', base) == (
+        '0 a\n1-2 b.0\n3 b.1\n4 -\n1 b.0.c.0\n2 b.0.c.1\nb: 2\nb.0.c: 2')
+    assert _overlay_text('1 b.0.c.0', base) == (
+        '0 a\n1-2 b.0\n3 b.1\n4 -\n1 b.0.c.0\nb: 2\nb.0.c: 2')
+    # any covering line keeps the replacement reading — the other
+    # marker-less intent, omission-to-delete; counts alone patch
+    # nothing without chains to ride in on
+    assert _overlay_text('1-2 b.0.c.0\n3 b.1', base) is None
+    assert _overlay_text('b: 3', base) is None
+
+
+async def test_chain_fragment_repair_keeps_the_map_head():
+    # the chain-lazy repair answered with the chain lines alone: the
+    # patch reading lands the chains inside the standing parent run —
+    # two rounds, no head re-typing
+    runner = ScriptedRunner(
+        agent_result('0 a\n1-2 b.0\n3 b.1\n4 -\nb: 2\nb.0.c: 2'),
+        agent_result('1 b.0.c.0\n2 b.0.c.1'))
+    routing = await route(runner, payload=PAYLOAD, units=NESTED_UNITS,
+                          chunks=NESTED_CHUNKS)
+    assert 'declared 2 items under b.0' in runner.calls[1]['feedback'][0].message
+    assert len(runner.calls) == 2
+    roles = [g for g in routing.groups if g.unit.path == 'jobs.roles']
+    assert [(g.item, g.chunk_ids) for g in roles] == [(0, [1]), (1, [2])]
+    assert routing.raw['counts'] == {'jobs': 2}
+    assert routing.raw['nested_counts'] == {'jobs.roles': {0: 2}}
 
 
 async def test_prompt_teaches_the_chain():

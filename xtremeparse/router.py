@@ -720,6 +720,8 @@ async def route(runner: AgentRunner, *, payload: str,
                 text = base  # an empty reply declines; the base stands
             elif (applied := _diff_text(text, base)) is not None:
                 text = applied
+            elif (patched := _overlay_text(text, base)) is not None:
+                text = patched  # a marker-less reply patches, not replaces
         errors, counts, nested, derived, segments, budgets = \
             _parse(text, by_code, len(chunks))
         # every answer leaves a map text behind — a full re-emission is
@@ -886,41 +888,85 @@ def _resplit(segments: list, counts: dict, nested: dict, code: str, answer,
     return rebuilt, counts
 
 
+def _lines(text) -> list:
+    """The stripped, non-blank lines every applier and the parser must
+    agree on."""
+    return [l.strip() for l in str(text).strip().splitlines() if l.strip()]
+
+
 def _dests(dests: str) -> list:
     """A _LINE destination list's comma-split tokens."""
     return [t.strip() for t in dests.split(',')]
 
 
 def _diff_text(reply, base_text) -> str | None:
-    """A unified-diff reply applied to the model's own previous map as
-    order-free line algebra: "-" lines drop every line they quote
-    (content-anchored — the model quotes its own answer, so a quote
-    that misses costs nothing), "+" lines add theirs (one the map
-    already holds is a no-op — the model rewrites "-x/+x" pairs for
-    lines it means to keep), everything else is commentary. Line order
-    carries no meaning (ranges are explicit), so no positions are
-    tracked: the result is exactly the model's listed edits — the map
-    text the round leaves behind. None when the reply is no diff at
-    all (a full re-emission replaces the base instead)."""
+    """A unified-diff reply applied to the model's own previous map:
+    "-" lines remove, "+" lines add, everything else is commentary.
+    None when the reply is no diff at all (a full re-emission replaces
+    the base instead)."""
     removed, added = [], []
-    for l in (s.strip() for s in str(reply).strip().splitlines()):
-        if not l or l.startswith(('---', '+++')) or l[0] not in '+-':
+    for l in _lines(reply):
+        if l.startswith(('---', '+++')) or l[0] not in '+-':
             continue
         if content := l[1:].strip():
             (removed if l[0] == '-' else added).append(content)
     if not removed and not added:
         return None
-    out = [l for l in (s.strip() for s in str(base_text).strip().splitlines())
-           if l and l not in removed]
+    return _apply_edits(base_text, removed, added)
+
+
+def _apply_edits(base_text, removed: list, added: list) -> str:
+    """Order-free line algebra, the apply step every applier shares:
+    removed lines drop by content (content-anchored — the model quotes
+    its own answer, so a quote that misses costs nothing), added lines
+    append unless the map already holds them (a no-op — the model
+    rewrites "-x/+x" pairs for lines it means to keep). Line order
+    carries no meaning (ranges are explicit), so no positions are
+    tracked: the result is exactly the listed edits — the map text the
+    round leaves behind. A reply that rewrites every map line as
+    "-x/+x" pairs leaves the count declarations as the only surviving
+    base lines — appending the additions behind them built a
+    counts-first text the parser then blamed the model for. The
+    grammar's order is the applier's invariant: map lines first,
+    everything after."""
+    out = [l for l in _lines(base_text) if l not in removed]
     kept = set(out)
     out += [a for a in dict.fromkeys(added) if a not in kept]
-    # a reply that rewrites every map line as "-x/+x" pairs leaves the
-    # count declarations as the only surviving base lines — appending
-    # the additions behind them built a counts-first text the parser
-    # then blamed the model for. The grammar's order is the applier's
-    # invariant: map lines first, everything after.
     out.sort(key=lambda l: 0 if _LINE.match(l) else 1)
     return '\n'.join(out)
+
+
+def _overlay_text(reply, base_text) -> str | None:
+    """A marker-less reply of chain lines alone, read as the patch it
+    means — the one marker-less fragment the batteries measure: asked
+    to add the chain lines, the model answers with the chain lines
+    alone, and full-replacement dropped the map's head, spent the next
+    round re-typing lines that were never wrong, and left a legal map
+    to boot. The chains patch in (dedup included), the count lines
+    replace their code's declaration, and every other base line
+    stands. Any covering line keeps the replacement reading —
+    omission-to-delete is the other marker-less intent, and one
+    reading cannot serve both. Chain-ness stays textual and
+    over-approximate on purpose: two or more dots in a destination
+    token (``b.0.d.0``, the ranged ``b.0.sub.0-2``, the bare-numeric
+    ``b.0.1`` whether chain or flat fold) — the parser's
+    re-validation owns the borderline forms. None when there is
+    nothing to patch."""
+    chains, rcount = [], []
+    for l in _lines(reply):
+        if _LINE.match(l):
+            if any(t.count('.') >= 2 for t in _dests(_LINE.match(l)[3])):
+                chains.append(l)
+            else:
+                return None  # a covering line: the map is replaced
+        elif _COUNT.match(l):
+            rcount.append(l)
+    if not chains:
+        return None
+    rcodes = {_COUNT.match(l)[1] for l in rcount}
+    removed = [bl for bl in _lines(base_text)
+               if (bm := _COUNT.match(bl)) and bm[1] in rcodes]
+    return _apply_edits(base_text, removed, dict.fromkeys(chains + rcount))
 
 
 def _pure_chain(dests: tuple) -> bool:

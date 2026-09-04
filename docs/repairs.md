@@ -20,8 +20,12 @@ since the diff's lines are the model's own previous answer quoted
 back. Edits cannot regress lines the model already fixed, a quote
 that misses costs nothing, and the patched text parses as a fresh
 answer, so every grammar rule holds of the RESULT, not the patch.
-Two degradations are accepted without ceremony: a reply with no diff
-markers parses as a full re-emission, and an empty reply declines the
+Three degradations are accepted without ceremony: a reply with no diff
+markers parses as a full re-emission, a reply of chain lines alone
+reads as the patch it means (asked to add the chain lines, the model
+answers with the chain lines alone — replacement would drop the map's
+head and spend the next round re-typing lines that were never wrong),
+and an empty reply declines the
 suggestion (the previous map stands).
 
 A replay — the same applied map text twice in a row — ends the
