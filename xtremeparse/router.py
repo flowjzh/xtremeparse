@@ -139,15 +139,9 @@ instead.
 Rules:
 - As you write the map, number a repeating unit's instances in the
   order you meet them across the WHOLE document — a new item index per
-  instance, early and late instances alike. When the unit's card
-  describes a numbering order for its instances (e.g. 'number in
-  reverse chronological order'), rank the instances under the card's
-  rule FIRST, however the card defines that order, then write the
-  map's ascending lines carrying those
-  ranked indexes — a document that lists the instances in the
-  opposite direction puts the LARGEST index on its first line; the
-  count line after the map reports the highest index plus one, 0
-  for a unit the document does not contain at all. A unit with no
+  instance, early and late instances alike; the count line after the
+  map reports the highest index plus one, 0 for a unit the document
+  does not contain at all. A unit with no
   text of its own that only summarizes another unit declares just
   its source and takes NO map lines:
   "x = y @30%" — its items (and its count) mirror the source's
@@ -255,8 +249,7 @@ Rules:
   the map covers 0..{top}
   exactly once in ascending non-overlapping lines, item indexes of
   each unit run 0..used-1 with no gaps, every count line matches
-  the map, and a unit whose card declares an instance order numbers
-  its items by that order.
+  the map.
 
 Chunks:
 
@@ -288,8 +281,7 @@ from the list at the end:
 - its count, "<code>: <n>", when the unit has its own text in the
   chunks — then add its map lines in the routing DSL
   ("4 <code>.0", "5 <code>.1"), one item per instance, covering
-  exactly its material, numbered by the card's declared order when
-  the card declares one;
+  exactly its material;
 - "<code>: 0" alone when the document truly does not contain the unit.
 
 Chunks:
@@ -934,7 +926,7 @@ were left merged as one; recount them.
 
 For each unit marked RECOUNT answer:
 1. a count line "<code>: <n>" — how many instances the DOCUMENT holds;
-2. then exactly n lines, one per instance in the card's order, each
+2. then exactly n lines, one per instance, each
    quoting VERBATIM the opening text of that instance as it stands in
    the chunk listing — enough text to locate its chunk, no commentary.
 
@@ -990,14 +982,13 @@ otherwise irrelevant run is still an instance.
 For each unit marked RECOUNT answer a count line "<code>: <n>" — how
 many instances the DOCUMENT holds — then, per its tag:
 
-- a MERGED unit: exactly n lines, one per instance in the card's
-  order, each quoting VERBATIM the opening text of that instance as
+- a MERGED unit: exactly n lines, one per instance, each quoting
+  VERBATIM the opening text of that instance as
   it stands in the chunk listing — enough text to locate its chunk,
   no commentary;
 - a ZERO unit with its own text: its map lines in the routing DSL
   ("4 <code>.0", "5 <code>.1"), one item per instance, covering
-  exactly its material, numbered by the card's declared order when
-  the card declares one;
+  exactly its material;
 - a ZERO unit the document truly does not contain: the count line
   "<code>: 0" alone.
 
@@ -1098,8 +1089,7 @@ def _anchors(quotes: list, domain: list, chunks: list[str]) -> list | None:
     anchored: two instances sharing one chunk) fails the whole set —
     the shared-run recount's own rule, the one coordinate the model
     quotes reliably. None on any miss; the caller sorts before
-    partitioning (quotes are in the card's order, chunks in document
-    order)."""
+    partitioning (quotes may not arrive in document order)."""
     norms = {c: norm(chunks[c]) for c in domain}
     hits = []
     for q in quotes:
@@ -1117,9 +1107,9 @@ def _resplit(segments: list, counts: dict, nested: dict, code: str, answer,
     """Replace a merged unit's map lines with per-instance lines built
     from a fresh recount: each quoted opening anchors to its chunk
     (content seek, whitespace-normalized) and the unit's owned chunks
-    partition at those anchors — quotes are in the card's order, chunks
-    in document order, so anchors dedupe and sort rather than assume
-    either direction; a quote whose chunk is already anchored reads as
+    partition at those anchors — quotes may not arrive in document
+    order, so anchors sort rather than assume a direction; a quote
+    whose chunk is already anchored reads as
     two instances sharing one chunk and fails the seek. Other units'
     destinations on the same chunks are preserved. Adoption is code's;
     any unusable piece returns None for the caller's fallback. Returns
@@ -1509,7 +1499,7 @@ def _fold_undrawn(segments, counts, nested, derived, pool, zeros, answer,
                 hits = [hits[0]] * count
             if len(hits) != count:
                 continue  # under-quoted across chunks — ambiguous, diff
-            for i, c in enumerate(hits):
+            for i, c in enumerate(sorted(hits)):
                 ds = per_chunk[c]
                 if ds == [(NONE, None, None)]:
                     ds.clear()  # material the map wrote off as irrelevant
@@ -1523,7 +1513,7 @@ def _fold_undrawn(segments, counts, nested, derived, pool, zeros, answer,
                            if (pcode, parent, None) in ds)
             if (hits := _anchors(quotes, owned, chunks)) is None:
                 continue
-            anchors = sorted(hits)  # card order ≠ document order
+            anchors = sorted(hits)  # quotes may not arrive in document order
             for c in owned:
                 if anchors[0] <= c <= anchors[-1]:
                     per_chunk[c].append((code, bisect_right(anchors, c) - 1,

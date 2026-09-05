@@ -30,12 +30,9 @@ repeating (array) unit.
     unit nested inside another repeating unit's instances — it has no
     address of its own and is only reached through the chain below.
   - `.item` on a repeating unit is the instance's index, numbered across
-    the WHOLE document in the order the map meets the instances — unless
-    the unit's card declares a numbering order (e.g. reverse
-    chronological), which overrides document order: the map's ascending
-    lines then carry the card-ranked indexes, so a document listing the
-    instances in the opposite direction puts the largest index on its
-    first line.
+    the WHOLE document in the order the map meets the instances. Any
+    ordering of the extracted array is the host's concern — the map
+    never re-ranks.
   - A chain `<code>.<item>.<sub-code>.<sub-item>` addresses one
     sub-entry of a nested unit under one parent instance
     (`3-15 c.0.d.0` — parent instance 0's first sub-entry). A parent's

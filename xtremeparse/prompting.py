@@ -25,7 +25,7 @@ Unit:
 WHOLE_ARRAY_ADDENDUM = '''
 
 The output schema is an array: return every instance the assigned
-material holds as its own entry, in material order — never merge
+material holds as its own entry — never merge
 instances into one entry, never summarize.'''
 
 SPECIALIST_PLACEHOLDERS = frozenset({'card'})
