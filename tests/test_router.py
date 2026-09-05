@@ -878,13 +878,45 @@ async def test_single_chunk_range_may_share_its_line():
         [(0, [1]), (1, [1])]
 
 
-async def test_multi_chunk_range_never_comma_joins():
+async def test_multi_chunk_range_shared_with_other_destinations_expands():
+    # the co-chunked shared form spelled compactly on any line length
     runner = ScriptedRunner(
-        agent_result('0 a\n1 b.0\n2-3 b.0,b.1-2\n4 -\nb: 3'),
-        agent_result('0 a\n1 b.0\n2-3 b.1-2\n4 -\nb: 3'),
-    )
-    await route(runner, payload=PAYLOAD, units=UNITS, chunks=CHUNKS + ['无关页脚二'])
-    assert 'takes its line alone' in runner.calls[1]['feedback'][0].message
+        agent_result('0 a\n1 b.0\n2-3 b.0,b.1-2\n4 -\nb: 3'))
+    routing = await route(runner, payload=PAYLOAD, units=UNITS,
+                          chunks=CHUNKS + ['无关页脚二'])
+    assert len(runner.calls) == 1
+    jobs = [g for g in routing.groups if g.unit.kind == 'array']
+    assert [(g.item, g.chunk_ids) for g in jobs] == \
+        [(0, [1, 2, 3]), (1, [2, 3]), (2, [2, 3])]
+
+
+async def test_shared_range_expansion_keeps_the_undrawn_gate_open():
+    # the expanded map's only error is the count family — the recount
+    # fires and adopts in the one round, no diff repairs
+    chunks = ['姓名张三', '公司甲·工程师', '公司甲·经理', '无关页脚']
+    runner = ScriptedRunner(
+        agent_result('0 -\n1-2 a,b.0-1\n3 -\nb: 2\nb.0.c: 2'),
+        agent_result('b.0.c: 2\n公司甲·工程师\n公司甲·经理'))
+    routing = await route(runner, payload=PAYLOAD, units=NESTED_UNITS,
+                          chunks=chunks)
+    assert len(runner.calls) == 2
+    roles = [g for g in routing.groups if g.unit.path == 'jobs.roles']
+    assert [(g.item, g.parent, g.chunk_ids) for g in roles] == \
+        [(0, 0, [1]), (1, 0, [2])]
+
+
+async def test_multi_chunk_chain_range_shared_expands_like_the_flat_form():
+    # the dotted-chain spelling of a comma-joined range takes the same
+    # tolerance — one rule, not two
+    runner = ScriptedRunner(
+        agent_result('0 -\n1-2 a,b.0.c.0-1\n3 -\nb: 1\nb.0.c: 2'))
+    routing = await route(runner, payload=PAYLOAD, units=NESTED_UNITS,
+                          chunks=['姓名张三', '公司甲·工程师', '公司甲·经理',
+                                  '无关页脚'])
+    assert len(runner.calls) == 1
+    roles = [g for g in routing.groups if g.unit.path == 'jobs.roles']
+    assert [(g.item, g.parent, g.chunk_ids) for g in roles] == \
+        [(0, 0, [1, 2]), (1, 0, [1, 2])]
 
 
 async def test_ranged_instances_cannot_repeat_across_lines():
@@ -1555,6 +1587,32 @@ async def test_chain_line_overlapping_another_units_run_is_named():
     await route(runner, payload=PAYLOAD, units=NESTED_UNITS,
                 chunks=NESTED_CHUNKS)
     assert 'overlaps line' \
+        in runner.calls[1]['feedback'][0].message
+
+
+async def test_parent_line_overlapping_its_chains_names_the_remedy():
+    # the top-down draft — a parent line covering its own chain lines —
+    # gets the concrete remedy: the parent keeps only the chunks outside
+    # its chains, and the count must match the items drawn
+    runner = ScriptedRunner(
+        agent_result('0 a\n1-3 b.0-1\n2 b.0.c.0\n4 -\nb: 2\nb.0.c: 1'),
+        agent_result('0 a\n1 b.0\n2 b.0.c.0\n3 b.1\n4 -\nb: 2\nb.0.c: 1'))
+    await route(runner, payload=PAYLOAD, units=NESTED_UNITS,
+                chunks=NESTED_CHUNKS)
+    message = runner.calls[1]['feedback'][0].message
+    assert 'outside its chains (1, 3)' in message
+    assert 'count line must match' in message
+
+
+async def test_sub_slice_overlapping_its_sibling_names_the_boundary():
+    # two sub-entry slices of the same parent instance overlap — the
+    # earlier one ends where the later begins
+    runner = ScriptedRunner(
+        agent_result('0 a\n1-2 b.0\n1-2 b.0.c.0\n2 b.0.c.1\n3 -\n4 -\nb: 1\nb.0.c: 2'),
+        agent_result('0 a\n1 b.0.c.0\n2 b.0.c.1\n3 -\n4 -\nb: 1\nb.0.c: 2'))
+    await route(runner, payload=PAYLOAD, units=NESTED_UNITS,
+                chunks=NESTED_CHUNKS)
+    assert 'end the earlier one at 1, where b.0.c.1 begins' \
         in runner.calls[1]['feedback'][0].message
 
 

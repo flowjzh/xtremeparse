@@ -213,7 +213,10 @@ Rules:
       c.0.d: 2
   After the map, each parent instance holding sub-entries declares
   their count ("c.0.d: 2", budget suffix as for any unit); a parent
-  holding none declares nothing.
+  holding none declares nothing. That count line is the lifted
+  sub-array's ONLY declaration — never a top-level count ("d: 2"),
+  never a source ("d = c.0.d"), and a sub-entry takes no count line
+  of its own.
 - Items of the SAME unit that separable chunk boundaries CAN separate
   MUST each get their own line ("5-9 x.0" then "10-11 x.1"): each
   item's budget then scales against its own material. Sharing one line
@@ -230,7 +233,10 @@ Rules:
   each takes its own line and no ranged line may cover them — drawing
   the ranged form and per-instance lines for the same instances
   overlaps and is invalid. Short runs (a few instances) stay per-item
-  lines.
+  lines. Length alone never makes a ranged line — density does; and a
+  parent whose sub-entries take chain lines takes plain per-item
+  lines for its own chunks, never a ranged parent line beside its
+  chain lines (the chains feed the parent those chunks).
 - Every declared item receives at least one chunk. A unit sharing
   another's run may repeat one item across several lines (one instance
   spanning what another unit splits into many).
@@ -255,7 +261,8 @@ Chunks:
 
 {chunks}
 
-Unit codes:
+Unit codes (legend lines are definitions for reference — the map and
+count lines name codes only):
 {legend}'''
 
 
@@ -321,6 +328,20 @@ def items_of(dest):
     The one spelling of that rule — parser validation, assignment
     expansion, executor batching and material pricing all come here."""
     return range(dest[0], dest[1] + 1) if isinstance(dest, tuple) else (dest,)
+
+
+def _claim_range(a, b, key, seen) -> list:
+    """A ranged claim's unclaimed indexes — ``key(k)`` their seen-mark,
+    the idempotent re-claim fold the plain and chain parser paths
+    share: a repeated destination claims nothing new. The expansion
+    half is ``items_of``'s."""
+    out = []
+    for k in items_of((a, b)):
+        mark = key(k)
+        if mark not in seen:
+            seen.add(mark)
+            out.append(k)
+    return out
 
 
 def _undouble(item: str) -> str:
@@ -819,10 +840,9 @@ async def route(runner: AgentRunner, *, payload: str,
             # reads the document; only the drawing is skipped), so the
             # recount usually just confirms it. Fires only when every
             # error is count-family — a map with geometry flaws stays
-            # on the diff path.
+            # on the diff path, and the standing parse's state serves
+            # as is (its coherence: _parse's return)
             passable = _passable(errors)
-            _, counts, nested, derived, segments, budgets = \
-                _parse(text, by_code, len(chunks), lenient | passable)
             if pool := _undrawn_pool(segments, counts, nested):
                 asked.add('undrawn')
                 zeros = ([] if recount_instructions else
@@ -1343,8 +1363,8 @@ def _splice(segments, counts, nested, derived, answer, zeros, by_code: dict,
                 if b < a:
                     return None  # unordered — the same rejection _parse names
                 # a ranged claim is the compact shared form's own
-                # syntax: the claimed chunks carry instances a..b
-                # inseparably, one destination per index
+                # syntax: the claimed chunks carry instances a..b,
+                # one destination per index
                 index = items_of((a, b))
             else:
                 index = [int(item)]
@@ -1743,7 +1763,7 @@ def _parse(text, by_code: dict, n: int, lenient: set | None = None):
                     errors.append(f'line {i + 1}: {err}')
             else:
                 out, err = _destination(d, code, rest, unit, by_code, seen,
-                                        len(tokens) > 1, start, end)
+                                        len(tokens) > 1)
                 if err:
                     errors.append(f'line {i + 1}: {err}')
                 else:
@@ -1766,7 +1786,11 @@ def _parse(text, by_code: dict, n: int, lenient: set | None = None):
     # exact duplicates collapse — one repeated destination must not
     # flood the repair feedback with the same message
     errors = list(dict.fromkeys(errors))
-    return errors, counts, nested, derived, [] if errors else segments, budgets
+    # segments return alongside errors: the callers gate on the error
+    # list, and the declared-undrawn path reads the standing state
+    # when every error is count-family (its segments are coherent —
+    # syntax and geometry errors are never passable)
+    return errors, counts, nested, derived, segments, budgets
 
 
 def _chain_parents(dests: tuple, by_code: dict) -> set:
@@ -1827,13 +1851,14 @@ def _merge_line(segments: list, start: int, end: int, dests: tuple):
             if ds != dests:
                 theirs = () if ds == ((NONE, None, None),) else ds
                 mine = () if dests == ((NONE, None, None),) else dests
+                theirs_set = set(theirs)  # linear membership, not |mine|·|theirs|
                 segments[k] = (s, e, theirs + tuple(
-                    dd for dd in mine if dd not in theirs))
+                    dd for dd in mine if dd not in theirs_set))
             return None
     return start, end, dests
 
 
-def _destination(d, code, rest, unit, by_code, seen, multi, start, end):
+def _destination(d, code, rest, unit, by_code, seen, multi):
     """One destination token parsed against the schema — ``(destinations,
     error)``. Top-level destinations are ``(code, item)``; a chain
     through a lifted sub-array adds ``(sub-code, sub-item, parent)`` to
@@ -1849,7 +1874,7 @@ def _destination(d, code, rest, unit, by_code, seen, multi, start, end):
     item = _undouble(m.group(1)) if m.group(1) else m.group(1)
     mid, sub = m.group(2), m.group(3)
     if mid is None:
-        return _plain(d, code, item, unit, seen, multi, start, end)
+        return _plain(d, code, item, unit, seen, multi)
     dotted = f'{item}.{mid}' + (f'.{sub}' if sub else '')
     if mid.isdigit():
         # the bare numeric tail: a sub-entry of the unit's one lifted
@@ -1886,16 +1911,11 @@ def _destination(d, code, rest, unit, by_code, seen, multi, start, end):
         a, b = int(m2.group(1)), int(m2.group(2))
         if b < a:
             return [], f'{d!r} is unordered'
-        if multi and start < end:
-            return [], (f'{code}.{item}.{sub_code}.{sub} takes its line '
-                        f'alone — a ranged run never comma-joins another code')
         # a second chain of the same parent on one line rides the
         # parent destination already claimed — the co-chunked shared
         # form ('c.0.d.0,c.0.d.1') is exactly that spelling; a
         # re-claimed destination is idempotent, never an error
-        ks = [k for k in items_of((a, b))
-              if (sub_code, str(k), item) not in seen]
-        seen.update((sub_code, str(k), item) for k in ks)
+        ks = _claim_range(a, b, lambda k: (sub_code, str(k), item), seen)
         parent_dest = [] if (code, item) in seen \
             else [(code, parent, None)]
         seen.add((code, item))
@@ -1935,7 +1955,7 @@ def _attach_chain(destinations, d, code, rest, unit, by_code):
     return [], None
 
 
-def _plain(d, code, item, unit, seen, multi, start, end):
+def _plain(d, code, item, unit, seen, multi):
     """The no-chain destinations — itemless whole, plain item, ranged:
     the grammar before chains. A re-claimed destination is idempotent,
     never an error: the model repeats a parent instance when its chains
@@ -1953,22 +1973,13 @@ def _plain(d, code, item, unit, seen, multi, start, end):
         a, b = int(m2.group(1)), int(m2.group(2))
         if b < a:
             return [], f'{d!r} is unordered'
-        if multi and start < end:
-            return [], (f'{code}.{item} takes its line alone — a ranged '
-                        f'run never comma-joins another code')
         if multi:
-            # a ranged claim sharing ONE chunk with another unit's item is
-            # the co-chunked shared form spelled compactly — instances
-            # a..b all ride the chunk, exactly what comma-joined indexes
-            # mean — expanded here. The model reaches for this shape
-            # persistently wherever a small unit shares its section
-            # heading's chunk; rejecting it sent repairs circling
-            # (measured: a canary repair loop cycled delete-unit → false
-            # zero → recount → overlap and exhausted the budget)
-            ks = [k for k in items_of((a, b))
-                  if (code, str(k)) not in seen]
-            seen.update((code, str(k)) for k in ks)
-            return [(code, k, None) for k in ks], None
+            # a ranged claim sharing its line with another destination
+            # is the co-chunked shared form spelled compactly —
+            # expanded per index; alone on its line it stays the
+            # inseparable batched run it means
+            return [(code, k, None) for k in
+                    _claim_range(a, b, lambda k: (code, str(k)), seen)], None
         if (code, item) in seen:
             return [], None
         seen.add((code, item))
@@ -2191,6 +2202,57 @@ def _passable(errors: list) -> set:
     return {m[1] for e in errors if (m := _PASSABLE.match(e))}
 
 
+def _chain_remedy(start, dests, prev_start, prev_end, prev_dests,
+                  segments, by_code):
+    """The concrete remedy for a chain-involved overlap, when one
+    exists: a parent line covering its own chain lines names the
+    chunks the parent may keep and the count it must then match; two
+    sub-entry slices of one parent instance overlapping name the
+    earlier slice's end — the chunk before the later one begins.
+    None when the overlap is ordinary. The containment check reads
+    ranged parent claims deliberately — hosting (`_hosted_chain`)
+    stays strict: a ranged run is the inseparable batched form, and
+    only the remedy names its chains' chunks."""
+    if not any(dd[2] is not None for dd in dests):
+        return None
+    prev_plain = [(dd[0], dd[1]) for dd in prev_dests if dd[2] is None]
+    prev_parents = _chain_parents(prev_dests, by_code)
+    for dd in dests:
+        if dd[2] is None:
+            continue
+        pcode, pitem = _parent_code(by_code[dd[0]], by_code), dd[2]
+        if not any(cc == pcode and pitem in items_of(item)
+                   for cc, item in prev_plain):
+            continue
+        if prev_start < start and (pcode, pitem) in prev_parents:
+            return (f'the two chain lines are sub-entries of one instance '
+                    f'— each takes its own slice: end the earlier one at '
+                    f'{start - 1}, where '
+                    f'{_chain_label(dd[0], pitem, by_code)}.{dd[1]} begins')
+        spans = [(s2, e2) for s2, e2, ds2 in segments for dd2 in ds2
+                 if dd2[2] is not None
+                 and _parent_code(by_code[dd2[0]], by_code) == pcode
+                 and dd2[2] == pitem]
+        outside = [c for c in range(prev_start, prev_end + 1)
+                   if not any(s2 <= c <= e2 for s2, e2 in spans)]
+        runs = []
+        for c in outside:
+            if runs and c == runs[-1][1] + 1:
+                runs[-1] = (runs[-1][0], c)
+            else:
+                runs.append((c, c))
+        named = ', '.join(str(a) if a == b else f'{a}-{b}'
+                          for a, b in runs)
+        if not named:
+            return (f'the parent line\'s chunks are all its chains\' — '
+                    f'drop the parent line, the chains feed the parent')
+        return (f'the parent line covers chunks its own chain lines carry '
+                f'— the parent keeps only the chunks outside its chains '
+                f'({named}); then the count line must match the '
+                f'{pcode}-items the map draws')
+    return None
+
+
 def _map_errors(segments, counts, nested, derived, by_code: dict,
                 n: int, lenient: set | None = None) -> list:
     """Whole-map consistency: line-range overlap, declared-vs-used
@@ -2212,7 +2274,9 @@ def _map_errors(segments, counts, nested, derived, by_code: dict,
     for start, end, dests in covering:
         if start <= prev_end:
             codes = ','.join(sorted({dd[0] for dd in prev_dests}))
-            if start == end == prev_end:
+            tail = _chain_remedy(start, dests, prev_start, prev_end,
+                                 prev_dests, segments, by_code)
+            if tail is None and start == end == prev_end:
                 shared = sorted(
                     {dd[0] for dd in dests} & {dd[0] for dd in prev_dests}
                     & {c for c, u in by_code.items()
@@ -2223,7 +2287,7 @@ def _map_errors(segments, counts, nested, derived, by_code: dict,
                         'share the chunk on one line, e.g. '
                         f'"{start} x.0,y.0", or shorten or drop one of '
                         'the two lines')
-            else:
+            if tail is None:
                 # a multi-chunk overlap is two claims on the same
                 # material — the ride hints would point the wrong way
                 tail = ('draw each chunk on exactly one line — shorten or '

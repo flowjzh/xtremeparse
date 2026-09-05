@@ -42,29 +42,31 @@ repeating (array) unit.
     The sub-item follows the
     same numbering rules as an item; the doubled range spelling
     (`c.0.d.0-d.2`) normalizes like the flat form. A nested unit is
-    never written bare (`d.0`, `d: 2`) — validation names the chain
-    instead; a bare `d: 0` is tolerated as the silence it restates.
+    never written bare (`d.0`, `d: 2`, `d = c.0.d`) — validation names
+    the chain instead; a bare `d: 0` is tolerated as the silence it
+    restates, and a sub-entry takes no count line of its own.
     A chain line drawn inside the parent instance's own run
     becomes the fine partition of that run: the parent's line stays
     the one carrying the coverage, and each sub-entry keeps its own
     slice as its own extraction scope (the executor fans them out
     separately); a chain line no parent run contains covers those
-    chunks for the parent itself.
+    chunks for the parent itself. A parent whose sub-entries take
+    chain lines takes plain per-item lines for its own chunks —
+    never a ranged parent line beside its chain lines.
 - A bare repeating code (`4-9 x`) means several instances share the run
   unsplit — that material is extracted once, whole.
 - A ranged run (`12-93 x.0-92`) is the compact shared form: those chunks
   carry exactly instances 0..92, inseparably — one destination instead
   of 93 comma-joined indexes, the run's material extracted once until a
-  split round redraws it. The base prompt makes it mandatory for long
+  split round redraws it. The base prompt makes it mandatory for dense
   entry-list runs (consecutive instances, roughly one to a chunk): the
   initial draw stays one short line — cheap to emit and, when a split
-  round rewrites it, cheap to quote in a diff. Ranges take their line
-  alone — never comma-joined — unless the range shares a SINGLE chunk
-  with another unit's item (`5 x.0,y.0-y.2`): one chunk holding
-  instances a..b is the co-chunked shared form spelled compactly, and
-  the parser spells it back out. A multi-chunk range never comma-joins
-  — the other unit's item would ride every block. No instance may
-  appear in two ranges.
+  round rewrites it, cheap to quote in a diff. A range takes its line
+  alone only as the inseparable batched run it means. Comma-joined
+  with another destination (`5 x.0,y.0-y.2`) it spells the shared
+  form compactly — instances a..b each ride the line's chunks, one
+  chunk or many — and the parser spells it back out per index. No
+  instance may appear in two ranges.
 - A run may feed several DIFFERENT units at once, comma-joined
   (`5 x.0,y.0`) — a summary or cross-cutting unit rides the lines of the
   unit whose text it shares, item by item. An instance whose own text
