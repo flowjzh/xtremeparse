@@ -10,6 +10,23 @@ host's selection.
 from __future__ import annotations
 
 
+def pair_at(values: list, i: int):
+    """The list's value for index ``i`` — a short list's last value
+    covers items beyond it. The one pairing rule every budget read
+    applies (the executor's _arranged, item_chars, the audit's
+    realignment)."""
+    return values[i] if i < len(values) else values[-1]
+
+
+def whole_units(groups: list) -> set:
+    """Unit paths whose execution ran as ONE call over a shared run —
+    the trace's whole strategy with an arrangement present. Their
+    budget lists share the run's material: audits judge them on their
+    total, never item-wise."""
+    return {g['unit'] for g in groups
+            if g.get('strategy') == 'whole' and g.get('budget')}
+
+
 def per_item_budgets(groups: list) -> dict:
     """Trace groups → the per-path budget map ``item_chars`` reads: one
     number or the item-index-ordered list."""

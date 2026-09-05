@@ -45,6 +45,46 @@ def test_budget_fit_judges_a_per_item_budget_list():
     assert verdict.value is False and 'jobs[1]' in verdict.reason
 
 
+def test_budget_fit_judges_a_whole_run_on_its_total():
+    # a whole-strategy run's entries are slices of shared material; a
+    # merged item concentrating a sub-array's values breaks item-wise
+    # pairing (60/25 = 2.4) — the total (25+25) against the array's
+    # total (60+10) is the run's real reading
+    result = budget_result([{'unit': 'career.jobs', 'budget': [25, 25],
+                             'item': None, 'strategy': 'whole'}],
+                           {'career': {'jobs': [{'company': 'x' * 10,
+                                                 'positions': [{'title': 'y' * 50}]},
+                                                {'company': 'z' * 10}]}})
+    verdict = BudgetFit().evaluate(ctx(result))
+    assert verdict.value is True, verdict.reason
+
+
+def test_budget_fit_judges_a_whole_runs_lone_number_on_its_total():
+    # one shared number covers the whole run — pairing it per item
+    # flags every item below the sub-heavy one (0.11-0.64); the run's
+    # total (929 vs 824) is the declaration's real reading
+    result = budget_result([{'unit': 'career.jobs', 'budget': 929,
+                             'item': None, 'strategy': 'whole'}],
+                           {'career': {'jobs': [{'company': 'x' * 591},
+                                                {'company': 'y' * 133},
+                                                {'company': 'z' * 100}]}})
+    assert BudgetFit().evaluate(ctx(result)).value is True
+
+
+def test_budget_fit_realigns_arrangements_with_the_hosts_sort():
+    # the host sorted [A, B] into [B, A]: pairing sorted position i
+    # with budget entry i reads A's 60 chars against B's 10 and flags
+    # both — perm [1, 0] pairs each item with its own arrangement
+    out = SimpleNamespace(
+        data={'career': {'jobs': [{'company': 'x' * 10},
+                                  {'company': 'y' * 60}]}},
+        trace=SimpleNamespace(router={}, groups=[
+            {'unit': 'career.jobs', 'budget': 60, 'item': 0},
+            {'unit': 'career.jobs', 'budget': 10, 'item': 1}]),
+        sort={'career.jobs': [1, 0]})
+    assert BudgetFit().evaluate(ctx(out)).value is True
+
+
 def test_budget_fit_band_and_clean_pass():
     close = budget_result([{'unit': 'career.jobs', 'budget': 2, 'item': 0}],
                           {'career': {'jobs': [{'company': '腾讯'}]}})  # 2/2

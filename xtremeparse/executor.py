@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from typing import Literal, Optional
 
 from xtremeparse.contracts import AgentRunner, AgentResult, BATCH_BUDGET_CAP, JSONSchema
+from xtremeparse.evalkit import pair_at
 from xtremeparse.prompting import (SPECIALIST_INSTRUCTIONS, WHOLE_ARRAY_ADDENDUM,
                                    estimate_tokens)
 from xtremeparse.router import Routing, items_of
@@ -200,7 +201,7 @@ def _arranged(budgets: dict, unit: Unit, item: Optional[int]):
     values = arranged if isinstance(arranged, list) else [arranged]
     if item is None:
         return values[0] if len(values) == 1 else list(values)
-    return values[item] if item < len(values) else values[-1]
+    return pair_at(values, item)
 
 
 def _block_budget(budgets: dict, unit: Unit, items: tuple):

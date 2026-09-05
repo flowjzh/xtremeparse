@@ -1,6 +1,18 @@
 """Plain-data trace reads: budget aggregation and router-tripwire math."""
 
-from xtremeparse.evalkit import per_item_budgets, router_overlap
+from xtremeparse.evalkit import pair_at, per_item_budgets, router_overlap, whole_units
+
+
+def test_pair_at_clamps_to_the_last_value():
+    assert pair_at([10, 20], 0) == 10 and pair_at([10, 20], 1) == 20
+    assert pair_at([10, 20], 5) == 20  # a short list's last value covers beyond
+
+
+def test_whole_units_names_whole_strategy_groups_with_budgets():
+    groups = [{'unit': 'jobs', 'budget': [10, 20], 'item': None, 'strategy': 'whole'},
+              {'unit': 'edu', 'budget': 50, 'item': 0, 'strategy': 'per-item'},
+              {'unit': 'misc', 'budget': 5, 'item': None, 'strategy': None}]
+    assert whole_units(groups) == {'jobs'}
 
 
 def test_per_item_budgets_zips_batch_lists_with_their_items():

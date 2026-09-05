@@ -145,21 +145,33 @@ def test_item_chars_pairs_each_item_with_its_own_budget():
     data = {'career': {'jobs': [{'company': '腾讯'},
                                 {'company': '腾讯',
                                  'positions': [{'title': '工程师'}]}]}}
-    assert item_chars({'career.jobs': [10, 20]}, data) == {
+    assert item_chars({'career.jobs': [10, 20]}, data, whole=set()) == {
         'career.jobs': [('career.jobs[0]', 10, 2),
                         ('career.jobs[1]', 20, 5)]}
 
 
+def test_item_chars_judges_a_whole_run_on_its_total():
+    # a shared run's entries are slices of one material — item-wise
+    # attribution is meaningless: one total check, the kw form's shape
+    data = {'career': {'jobs': [{'company': '腾讯'},
+                                {'company': '腾讯',
+                                 'positions': [{'title': '工程师'}]}]}}
+    assert item_chars({'career.jobs': [10, 20]}, data,
+                      whole={'career.jobs'}) == {
+        'career.jobs': [('career.jobs (whole total)', 30, 7)]}
+
+
 def test_item_chars_lone_number_covers_every_item():
     assert item_chars({'career.jobs': 5}, {'career': {'jobs': [
-        {'company': '腾讯'}, {'company': '阿里'}]}}) == {
+        {'company': '腾讯'}, {'company': '阿里'}]}}, whole=set()) == {
         'career.jobs': [('career.jobs[0]', 5, 2), ('career.jobs[1]', 5, 2)]}
 
 
 def test_item_chars_checks_non_list_values_whole_and_skips_missing():
-    assert item_chars({'basic_info': 1}, {'basic_info': {'name': '张三'}}) == {
+    assert item_chars({'basic_info': 1}, {'basic_info': {'name': '张三'}},
+                      whole=set()) == {
         'basic_info': [('basic_info', 1, 2)]}
-    assert item_chars({'jobs': 5}, {}) == {}
+    assert item_chars({'jobs': 5}, {}, whole=set()) == {}
 
 
 async def test_correction_rerun_carries_the_budget():

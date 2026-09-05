@@ -23,6 +23,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 from xtremeparse.contracts import AgentResult, AgentRunner, Validator
+from xtremeparse.evalkit import pair_at
 from xtremeparse.paths import resolve, resolve_list
 from xtremeparse.executor import Call, Execution, dispatch_specialist, values_from_calls
 from xtremeparse.merge import merge
@@ -215,29 +216,36 @@ def _under(path: str, root: str) -> bool:
     return path == root or path.startswith(f'{root}.') or path.startswith(f'{root}[')
 
 
-def item_chars(budgets: dict, data: dict) -> dict:
+def item_chars(budgets: dict, data: dict, *, whole: set) -> dict:
     """Per budgeted path: ``[(key, arranged, chars)]`` — one entry per
     item for lists, one for the whole value otherwise, each carrying
     its own arranged budget (a lone number covers every item; a short
-    list's last value covers items beyond it). The counting surface for
-    budget reads (trace, eval audits); the unit is the item's
-    extracted VALUE characters — the leaf values' own text, keys and
-    punctuation never counted, exactly what a budget declares.
-    Overruns are ACCEPTED, never retried: a retry costs a full extra
-    decode, the very thing budgets exist to save — budgets shape batch
-    scheduling only."""
+    list's last value covers items beyond it). ``whole`` names unit
+    paths whose extraction ran as ONE call over a shared run (the
+    trace's whole strategy): the arrangement — a list of material
+    slices or one lone number covering the run — shares its material,
+    so item-wise attribution is meaningless; one entry judges its
+    total against the array's total, the keyword form's shape.
+    The counting surface for budget reads (trace, eval audits); the
+    unit is the item's extracted VALUE characters — the leaf values'
+    own text, keys and punctuation never counted, exactly what a
+    budget declares. Overruns are ACCEPTED, never retried: a retry
+    costs a full extra decode, the very thing budgets exist to save —
+    budgets shape batch scheduling only."""
     out = {}
     for path, arranged in budgets.items():
         if (value := resolve(data, path)) is None:
             continue
+        if path in whole and isinstance(value, list):
+            total = sum(arranged) if isinstance(arranged, list) else arranged
+            out[path] = [(f'{path} (whole total)', total, value_chars(value))]
+            continue
         values = arranged if isinstance(arranged, list) else [arranged]
-        entries = []
-        for i, item in (enumerate(value) if isinstance(value, list)
-                        else [(None, value)]):
-            budget = values[i] if i is not None and i < len(values) else values[-1]
-            entries.append((f'{path}[{i}]' if i is not None else path,
-                            budget, value_chars(item)))
-        out[path] = entries
+        if isinstance(value, list):
+            out[path] = [(f'{path}[{i}]', pair_at(values, i), value_chars(item))
+                         for i, item in enumerate(value)]
+        else:
+            out[path] = [(path, values[-1], value_chars(value))]
     return out
 
 
