@@ -41,10 +41,10 @@ async def fresh_check(runner: AgentRunner, payload: str,
 
 
 def unmarked(line: str) -> str:
-    """A reply line minus its enumeration marker — the one list form
-    models add around quoted lines ('1. x', '一、x'); both reply
+    """A reply line minus its enumeration marker — the list forms
+    models add around quoted lines ('1. x', '- x', '* x'); both reply
     parsers strip it before reading the quote."""
-    return re.sub(r'^\d+\s*[.、)]\s*', '', line).strip()
+    return re.sub(r'^(?:\d+\s*[.、)]|[-*•])\s*', '', line).strip()
 
 
 ARBITRATION_LIST_CAP = 120  # entry openings one arbitration carries —
@@ -67,14 +67,21 @@ def _openings(items: list) -> list:
 
 _ARBITRATION_CHECK = '''The context carries a document. Below is the list of
 instances of one repeating unit extracted from it, each quoted by its
-opening text. Re-read the document and check the list: which document
+opening text:
+
+{list}
+
+'''
+# the answer skeleton carries no holes — a list spliced into a verdict
+# section is unrepresentable, so the pre-filled-verdict failure mode
+# (measured on a live trace) cannot come back through a template edit
+_ARBITRATION_SKELETON = '''Re-read the document and check the list: which document
 instances are MISSING from the list, and which list entries does the
 document NOT contain? Quote each as its opening text, one per line,
 verbatim — enough text to identify it, no commentary. When the list is
 complete and faithful, answer with both sections empty.
 
 missing:
-{list}
 
 extra:
 '''
@@ -106,22 +113,28 @@ def _label(line: str) -> str | None:
 
 
 def _parse_arbitration(result, doc: str, entries: list) -> dict:
-    """``{'missing': [...], 'extra': [...]}`` from an arbitration reply
-    — both section labels must appear, missing quotes must anchor to
-    the document, extra quotes to the list entries they reject; any
-    unanchored line voids the verdict (a partial verdict invites
-    adopting a half-read answer)."""
+    """``{'missing': [...], 'extra': [...]}`` from an arbitration reply.
+    Void the verdict when: a section label is absent; a missing quote
+    fails to anchor to the document; an extra quote appears in the
+    document itself — a provably false claim, the entry is real
+    wherever the list holds it; an extra quote matches no list entry.
+    A partial verdict invites adopting a half-read answer."""
     buckets = sectioned(result, _label)
     if set(buckets) != {'missing', 'extra'}:
         return {}  # not a verdict at all — before any document scan
-    # normalize only what a non-empty section will seek against
-    doc_n = norm(doc) if buckets['missing'] else ''
-    entries_n = [norm(e) for e in entries] if buckets['extra'] else []
-    if not all((n := norm(q)) and n in doc_n for q in buckets['missing']):
+    # normalize each section once — both guards over it re-read the
+    # same quotes, and a blank quote voids below like any unanchored one
+    missing = [norm(q) for q in buckets['missing']]
+    extra = [norm(q) for q in buckets['extra']]
+    doc_n = norm(doc) if missing or extra else ''
+    if not all(n and n in doc_n for n in missing):
         return {}
-    if not all((n := norm(q)) and any(n in e for e in entries_n)
-               for q in buckets['extra']):
+    if not all(n and n not in doc_n for n in extra):
         return {}
+    if extra:
+        entries_n = [norm(e) for e in entries]
+        if not all(any(n in e for e in entries_n) for n in extra):
+            return {}
     return {k: list(dict.fromkeys(v)) for k, v in buckets.items()}
 
 
@@ -147,8 +160,8 @@ async def arbitrate_extraction(runner: AgentRunner, *, items: list,
     (``actual + missing - extra``), or None when the reply is unusable;
     the caller falls back by direction then."""
     listed = _openings(items)[:ARBITRATION_LIST_CAP]
-    instructions = _ARBITRATION_CHECK.format(
-        list='\n'.join(f'- {e}' for e in listed))
+    instructions = (_ARBITRATION_CHECK.format(
+        list='\n'.join(f'- {e}' for e in listed)) + _ARBITRATION_SKELETON)
     raw = await fresh_check(runner, payload, instructions, CHECK_DESCRIPTION)
     if verdict := _parse_arbitration(raw, payload, listed):
         return actual + len(verdict['missing']) - len(verdict['extra']), raw
