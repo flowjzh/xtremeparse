@@ -1435,6 +1435,27 @@ async def test_nested_declared_count_must_match_mapped_sub_items():
     assert 'declared 2 items under b.0' in runner.calls[1]['feedback'][0].message
 
 
+async def test_sub_item_beyond_the_declaration_names_the_fold():
+    runner = ScriptedRunner(
+        agent_result('0 a\n1 b.0.c.0\n2 b.0.c.1\n3 b.0.c.2\n4 -\nb: 1\nb.0.c: 2'),
+        agent_result('0 a\n1 b.0.c.0\n2-3 b.0.c.1\n4 -\nb: 1\nb.0.c: 2'))
+    await route(runner, payload=PAYLOAD, units=NESTED_UNITS, chunks=NESTED_CHUNKS)
+    messages = ' '.join(i.message for i in runner.calls[1]['feedback'])
+    assert ("sub-item 2 under b.0 is beyond the declared 2 (0..1) — extend "
+            "the previous sub-entry's line over its chunks (\"2-3 b.0.c.1\")"
+            in messages)
+
+
+async def test_coverage_hole_after_a_line_names_the_extension():
+    runner = ScriptedRunner(
+        agent_result('0 a\n1-2 b.0\n4 -\nb: 1'),
+        agent_result('0 a\n1-3 b.0\n4 -\nb: 1'))
+    await route(runner, payload=PAYLOAD, units=NESTED_UNITS, chunks=NESTED_CHUNKS)
+    messages = ' '.join(i.message for i in runner.calls[1]['feedback'])
+    assert 'chunks not covered: [3]' in messages
+    assert 'extend the preceding line over them ("1-3 b.0")' in messages
+
+
 async def test_nested_declaration_without_map_lines_is_named():
     runner = ScriptedRunner(
         agent_result('0 a\n1 b.0\n2 b.1\n3-4 -\nb: 2\nb.0.c: 2'),

@@ -1101,6 +1101,44 @@ def _chain_label(code: str, parent: int | None, by_code: dict) -> str:
     return f'{_parent_code(by_code[code], by_code)}.{parent}.{code}'
 
 
+def _line_of(segments, code: str, item: int, parent: int | None):
+    """The first line claiming one nested item under one parent
+    instance — (start, end), or None. The over-draw remedy's fold
+    endpoints come from here."""
+    for s, e, dests in segments:
+        for dd in dests:
+            if dd[0] == code and dd[2] == parent and item in items_of(dd[1]):
+                return s, e
+    return None
+
+
+def _runs(nums) -> list:
+    """Consecutive ints folded to inclusive (a, b) runs — the grouping
+    half of ``items_of``'s expansion."""
+    runs = []
+    for c in nums:
+        if runs and c == runs[-1][1] + 1:
+            runs[-1] = (runs[-1][0], c)
+        else:
+            runs.append((c, c))
+    return runs
+
+
+def _dest_token(code: str, item, parent, by_code: dict) -> str:
+    """One destination's map token — the bare code, ``code.item``,
+    the ranged ``code.a-b``, or the chain spelling. The one renderer
+    of the token grammar: rebuilt maps and repair hints both come
+    here, so what the parser reads and what the feedback names stay
+    the same language."""
+    if item is None:
+        return code
+    if parent is not None:
+        return f'{_chain_label(code, parent, by_code)}.{item}'
+    if isinstance(item, tuple):
+        return f'{code}.{item[0]}-{item[1]}'
+    return f'{code}.{item}'
+
+
 async def _recount_undrawn(runner: AgentRunner, payload: str,
                            units: list, zeros: list, by_code: dict,
                            chunks: list[str],
@@ -1462,16 +1500,10 @@ def _map_text(segments, counts, nested, derived, budgets, by_code) -> str:
                    for scode, _, p in dests if p is not None}
         tokens = []
         for code, item, parent in dests:
-            if item is None:
-                tokens.append(code)
-            elif parent is not None:
-                tokens.append(f'{_chain_label(code, parent, by_code)}.{item}')
-            elif isinstance(item, tuple):
-                tokens.append(f'{code}.{item[0]}-{item[1]}')
-            elif (code, item) not in chained:
+            if (code, item) not in chained:
                 # the chain token re-adds its parent at parse — an
                 # explicit parent beside its own chains is redundancy
-                tokens.append(f'{code}.{item}')
+                tokens.append(_dest_token(code, item, parent, by_code))
         lines.append(f'{start}-{end} {",".join(tokens)}'
                      if start != end else f'{start} {",".join(tokens)}')
     for code, unit in by_code.items():
@@ -2254,14 +2286,8 @@ def _chain_remedy(start, dests, prev_start, prev_end, prev_dests,
                  and dd2[2] == pitem]
         outside = [c for c in range(prev_start, prev_end + 1)
                    if not any(s2 <= c <= e2 for s2, e2 in spans)]
-        runs = []
-        for c in outside:
-            if runs and c == runs[-1][1] + 1:
-                runs[-1] = (runs[-1][0], c)
-            else:
-                runs.append((c, c))
         named = ', '.join(str(a) if a == b else f'{a}-{b}'
-                          for a, b in runs)
+                          for a, b in _runs(outside))
         if not named:
             return (f'the parent line\'s chunks are all its chains\' — '
                     f'drop the parent line, the chains feed the parent')
@@ -2395,8 +2421,44 @@ def _map_errors(segments, counts, nested, derived, by_code: dict,
                           f'uses {sorted(items)}{hint}')
     if missing := sorted(set(range(n)) - {
             c for s, e, *_ in segments for c in range(s, e + 1)}):
-        errors.append(f'chunks not covered: {missing}')
+        errors.append(f'chunks not covered: {missing}'
+                      f'{_coverage_hint(segments, missing, by_code)}')
     return errors
+
+
+def _coverage_hint(segments, missing: list, by_code: dict) -> str:
+    """The concrete fold for a hole that continues a line: extend the
+    preceding line over it, or mark the chunks '-'. Bare when the hole
+    does not follow one line — the cascade this names (delete a chain
+    line, its chunks go homeless) burned a prod exhaustion."""
+    start, end = _runs(missing)[0]
+    prev = next((seg for seg in segments if seg[1] == start - 1), None)
+    if prev is None or len(prev[2]) != 1:
+        return ''
+    dd = prev[2][0]
+    if dd[1] is None or by_code.get(dd[0]) is None:
+        return ''  # an itemless or unknown-code dest names no extension
+    return (f' — extend the preceding line over them '
+            f'("{prev[0]}-{end} '
+            f'{_dest_token(dd[0], dd[1], dd[2], by_code)}"), '
+            f'or mark them \'-\'')
+
+
+def _overdraw_remedy(segments, code: str, parent: int, declared: int,
+                     extra: int, by_code: dict) -> str:
+    """The concrete remedy for a sub-item index beyond the declared
+    count: the previous sub-entry's line extended over the extra
+    line's chunks — bare deletion orphans them and the repair
+    whipsaws — or the count itself is wrong."""
+    prev = _line_of(segments, code, declared - 1, parent)
+    mine = _line_of(segments, code, extra, parent)
+    if prev and prev[0] <= mine[0]:
+        return (f'— extend the previous sub-entry\'s line over its chunks '
+                f'("{prev[0]}-{mine[1]} '
+                f'{_dest_token(code, declared - 1, parent, by_code)}"), '
+                f'or the count is wrong — declare what the document holds')
+    return ('— its line\'s chunks ride another sub-entry\'s line, or the '
+            'count is wrong — declare what the document holds')
 
 
 def _nested_errors(code: str, unit: Unit, segments, counts, nested,
@@ -2424,14 +2486,24 @@ def _nested_errors(code: str, unit: Unit, segments, counts, nested,
             # with no declaration there is nothing to arbitrate)
         if p in used and p in declared:
             if used[p] != set(range(declared[p])):
-                errors.append(
-                    f'{code}: declared {declared[p]} items under {pcode}.{p} '
-                    f'but the map uses {sorted(used[p])} — give each '
-                    f'sub-entry its own line where chunk boundaries can '
-                    f'separate them ("5-9 {chain}.0", "10-11 {chain}.1"); '
-                    f'instances that share one chunk ride one line '
-                    f'("5 {chain}.0,{chain}.1"); or the count is wrong — '
-                    f'declare what the document holds')
+                if declared[p] and (extra := min(
+                        (i for i in used[p] if i >= declared[p]),
+                        default=None)):
+                    remedy = _overdraw_remedy(segments, code, p,
+                                              declared[p], extra, by_code)
+                    errors.append(
+                        f'{code}: sub-item {extra} under {pcode}.{p} is beyond '
+                        f'the declared {declared[p]} '
+                        f'(0..{declared[p] - 1}) {remedy}')
+                else:
+                    errors.append(
+                        f'{code}: declared {declared[p]} items under {pcode}.{p} '
+                        f'but the map uses {sorted(used[p])} — give each '
+                        f'sub-entry its own line where chunk boundaries can '
+                        f'separate them ("5-9 {chain}.0", "10-11 {chain}.1"); '
+                        f'instances that share one chunk ride one line '
+                        f'("5 {chain}.0,{chain}.1"); or the count is wrong — '
+                        f'declare what the document holds')
         elif p in used:
             errors.append(
                 f'{code}: sub-entries used under {pcode}.{p} but their '
