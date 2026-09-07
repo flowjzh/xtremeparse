@@ -71,6 +71,26 @@ async def test_prompt_carries_legend_rules_and_numbered_chunks():
     assert call['feedback'] is None
 
 
+@pytest.mark.parametrize('overall, present', [(None, False),
+                                              ('Chinese resumes only', True)])
+async def test_overall_block_in_the_route_prompt(overall, present):
+    runner = runner_ok()
+    kwargs = {'overall': overall} if overall is not None else {}
+    await route(runner, payload=PAYLOAD, units=UNITS, chunks=CHUNKS, **kwargs)
+    rendered = 'Overall Instruction:\n\nChinese resumes only'
+    assert (rendered in runner.calls[0]['instructions']) is present
+
+
+async def test_overall_instruction_renders_into_the_recount_prompt():
+    runner = ScriptedRunner(
+        agent_result('0 a\n1-3 -\nb: 0'),
+        agent_result('b: 0'))  # the recount confirms the zero
+    await route(runner, payload=PAYLOAD, units=UNITS, chunks=CHUNKS,
+                overall='Chinese resumes only')
+    assert 'Overall Instruction:\n\nChinese resumes only' \
+        in runner.calls[1]['instructions']
+
+
 def test_default_prompts_carry_all_placeholders():
     # drift guard: an edited default missing a slot would render empty
     # at call time — the same fail-fast hosts get for their overrides

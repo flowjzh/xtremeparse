@@ -48,6 +48,13 @@ def provenance(template) -> str:
         else f'#{hashlib.sha1(template.encode()).hexdigest()[:8]}'
 
 
+def overall(schema: JSONSchema) -> str | None:
+    """The schema's document-level instruction — the root description,
+    which the router renders as the "Overall Instruction" block. The
+    one derivation shared by the extractor and the eval probes."""
+    return schema.get('description') or None
+
+
 def shared_payload(text: str, schema: JSONSchema) -> str:
     """The byte-identical content prefix the ROUTER's call carries —
     full text plus the full schema, whose field descriptions feed the

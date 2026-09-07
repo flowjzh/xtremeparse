@@ -136,7 +136,7 @@ one: 0 only for a unit truly absent, and a unit with no text of its
 own that only summarizes another declares its source ("x = y")
 instead.
 
-Rules:
+{overall}Rules:
 - As you write the map, number a repeating unit's instances in the
   order you meet them across the WHOLE document — a new item index per
   instance, early and late instances alike; the count line after the
@@ -283,7 +283,7 @@ listed at the end were left at zero; recount their instances in the
 DOCUMENT — read the whole chunk list; a brief mention inside an
 otherwise irrelevant run is still an instance.
 
-For each unit answer one line only, <code> being that unit's code
+{overall}For each unit answer one line only, <code> being that unit's code
 from the list at the end:
 - its count, "<code>: <n>", when the unit has its own text in the
   chunks — then add its map lines in the routing DSL
@@ -493,6 +493,13 @@ def _listing(chunks: list[str]) -> str:
                      for i, c in enumerate(chunks))
 
 
+def _overall_block(overall: str) -> str:
+    """The block an overall instruction renders as, or '' — the templates
+    glue `{overall}` onto the following line and the block carries its
+    own trailing newlines, so the prompts read the same either way."""
+    return f'Overall Instruction:\n\n{overall}\n\n' if overall else ''
+
+
 def _name_list(unit: Unit) -> bool:
     """The unit's items are each one string value and nothing else —
     the mechanical shape of a list of names: either the item schema is
@@ -521,7 +528,8 @@ def _name_list(unit: Unit) -> bool:
 async def route(runner: AgentRunner, *, payload: str,
                 units: list[Unit], chunks: list[str],
                 instructions: str = None,
-                recount_instructions: str = None) -> Routing:
+                recount_instructions: str = None,
+                overall: str = None) -> Routing:
     """Map chunks to units via one agent call, with bounded repairs —
     each a diff against the previous answer — feeding the validation
     errors back as ``feedback``; plus one
@@ -532,10 +540,13 @@ async def route(runner: AgentRunner, *, payload: str,
     prefix (see prompting). ``instructions``/``recount_instructions``
     replace the default prompt templates; they must carry their
     placeholders (ROUTE_PLACEHOLDERS / RECOUNT_PLACEHOLDERS — the
-    Extractor validates host overrides at construction)."""
+    Extractor validates host overrides at construction). ``overall`` is
+    the schema's document-level instruction, rendered as the "Overall
+    Instruction" block in the default prompts — '' when absent."""
     by_code = _codes(units)
+    overall_block = _overall_block(overall)
     instructions = (instructions or _INSTRUCTIONS).format(
-        top=len(chunks) - 1, none=NONE,
+        top=len(chunks) - 1, none=NONE, overall=overall_block,
         # card headers (not bare paths): the description is the cue for
         # what a unit collects — and for recognizing a unit that only
         # summarizes another (its card names the unit it mirrors)
@@ -637,7 +648,7 @@ async def route(runner: AgentRunner, *, payload: str,
         # pends beside it — shared_and_zeros owns that round, and
         # the caller passes a non-empty hint dict either way
         answer = await _recount_shared(runner, payload, {c: c for c in shared},
-                                       by_code, chunks)
+                                       by_code, chunks, overall_block=overall_block)
         pending = resplit(shared, _parse_shared_answer(answer, shared))
         if len(pending) == len(shared):
             return [_RouteIssue(
@@ -662,7 +673,8 @@ async def route(runner: AgentRunner, *, payload: str,
         # passes a non-empty zero list either way
         answer = await _recount(runner, payload, by_code, zeros,
                                 chunks,
-                                instructions=recount_instructions)
+                                instructions=recount_instructions,
+                                overall_block=overall_block)
         if splice(zeros, answer):
             return None  # the recount's adoption stands
         return [_RouteIssue('segments', 'route_invalid',
@@ -692,7 +704,8 @@ async def route(runner: AgentRunner, *, payload: str,
         # pending unit simply stays shared, the same rule the
         # shared-only ask applies after a partial adoption
         answer = await _recount_both(runner, payload, {c: c for c in shared},
-                                     zeros, by_code, chunks)
+                                     zeros, by_code, chunks,
+                                     overall_block=overall_block)
         if not splice(zeros, answer):
             return False, [_RouteIssue('segments', 'route_invalid',
                                        zeros_note(zeros) + _DIFF_REPLY)]
@@ -848,7 +861,8 @@ async def route(runner: AgentRunner, *, payload: str,
                 zeros = ([] if recount_instructions else
                          _pending_zeros(by_code, counts, derived))
                 answer = await _recount_undrawn(runner, payload, pool,
-                                                zeros, by_code, chunks)
+                                                zeros, by_code, chunks,
+                                                overall_block=overall_block)
                 fixed = _fold_undrawn(segments, counts, nested, derived,
                                       pool, zeros, answer, by_code,
                                       len(chunks), chunks, lenient | passable)
@@ -921,7 +935,7 @@ async def route(runner: AgentRunner, *, payload: str,
 
 async def _recount(runner: AgentRunner, payload: str, by_code: dict,
                    zeros: list, chunks: list[str],
-                   instructions: str = None) -> str:
+                   instructions: str = None, overall_block: str = '') -> str:
     """Fresh-attention recount of the units a valid map left at zero.
     Deliberately NOT a repair round: no history, so the model never
     sees the map it is re-examining — anchoring on its own finished
@@ -936,7 +950,7 @@ async def _recount(runner: AgentRunner, payload: str, by_code: dict,
         # derivation needs no source code in the legend: _splice's
         # crossed-count adoption reads it off the misplaced claims
         legend=_recount_legend({c: c for c in zeros}, by_code),
-        chunks=_listing(chunks))
+        chunks=_listing(chunks), overall=overall_block)
     return await fresh_check(
         runner, payload, instructions, RECOUNT_DESCRIPTION)
 
@@ -944,7 +958,7 @@ async def _recount(runner: AgentRunner, payload: str, by_code: dict,
 _SHARED_CHECK = '''A document's chunks are listed below. Some repeating units' instances
 were left merged as one; recount them.
 
-For each unit marked RECOUNT answer:
+{overall}For each unit marked RECOUNT answer:
 1. a count line "<code>: <n>" — how many instances the DOCUMENT holds;
 2. then exactly n lines, one per instance, each
    quoting VERBATIM the opening text of that instance as it stands in
@@ -960,7 +974,8 @@ Chunks:
 
 
 async def _recount_shared(runner: AgentRunner, payload: str,
-                          shared: dict, by_code: dict, chunks: list[str]) -> str:
+                          shared: dict, by_code: dict, chunks: list[str],
+                          overall_block: str = '') -> str:
     """Fresh-attention recount of the units left merged into shared
     runs. Every shared unit is recounted in the one conversation — the
     chunks listing, the costly part, is shared. The answer carries, per
@@ -974,7 +989,7 @@ async def _recount_shared(runner: AgentRunner, payload: str,
     prompt)."""
     instructions = _SHARED_CHECK.format(
         units=_recount_legend(shared, by_code),
-        chunks=_listing(chunks))
+        chunks=_listing(chunks), overall=overall_block)
     return await fresh_check(
         runner, payload, instructions, SHARED_RECOUNT_DESCRIPTION)
 
@@ -999,7 +1014,7 @@ shared run, the ZERO ones were written off as absent. Recount them in
 the DOCUMENT — read the whole chunk list; a brief mention inside an
 otherwise irrelevant run is still an instance.
 
-For each unit marked RECOUNT answer a count line "<code>: <n>" — how
+{overall}For each unit marked RECOUNT answer a count line "<code>: <n>" — how
 many instances the DOCUMENT holds — then, per its tag:
 
 - a MERGED unit: exactly n lines, one per instance, each quoting
@@ -1022,7 +1037,8 @@ Chunks:
 
 
 async def _recount_both(runner: AgentRunner, payload: str, shared: dict,
-                        zeros: list, by_code: dict, chunks: list[str]) -> str:
+                        zeros: list, by_code: dict, chunks: list[str],
+                        overall_block: str = '') -> str:
     """Fresh-attention recount of the merged and the zero units in the
     one conversation — the chunks listing, the costly part, is shared.
     Each unit answers a count line; a merged unit's instances quote
@@ -1033,7 +1049,7 @@ async def _recount_both(runner: AgentRunner, payload: str, shared: dict,
     instructions = _BOTH_CHECK.format(
         units=_recount_legend({**shared, **{z: z for z in zeros}}, by_code,
                               lambda c: ' MERGED' if c in shared else ' ZERO'),
-        chunks=_listing(chunks))
+        chunks=_listing(chunks), overall=overall_block)
     return await fresh_check(runner, payload, instructions,
                              _BOTH_RECOUNT_DESCRIPTION)
 
@@ -1087,7 +1103,8 @@ def _chain_label(code: str, parent: int | None, by_code: dict) -> str:
 
 async def _recount_undrawn(runner: AgentRunner, payload: str,
                            units: list, zeros: list, by_code: dict,
-                           chunks: list[str]) -> str:
+                           chunks: list[str],
+                           overall_block: str = '') -> str:
     """Fresh-attention recount of the units a map declared but never
     drew — the merged recount's prompt verbatim (count plus each
     instance's opening text), the units labeled by their chain
@@ -1098,8 +1115,10 @@ async def _recount_undrawn(runner: AgentRunner, payload: str,
               for code, parent in units}
     if zeros:
         return await _recount_both(runner, payload, shared, zeros,
-                                   by_code, chunks)
-    return await _recount_shared(runner, payload, shared, by_code, chunks)
+                                   by_code, chunks,
+                                   overall_block=overall_block)
+    return await _recount_shared(runner, payload, shared, by_code, chunks,
+                                 overall_block=overall_block)
 
 
 def _anchors(quotes: list, domain: list, chunks: list[str]) -> list | None:

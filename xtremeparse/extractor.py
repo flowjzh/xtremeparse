@@ -15,7 +15,8 @@ from xtremeparse.corrections import (MAX_ROUNDS, correct, count_issues,
 from xtremeparse.executor import execute, values_from_calls, values_key
 from xtremeparse.merge import merge
 from xtremeparse.prompting import (SPECIALIST_PLACEHOLDERS, check_placeholders,
-                                   estimate_tokens, provenance, shared_payload)
+                                   estimate_tokens, overall, provenance,
+                                   shared_payload)
 from xtremeparse.router import (RECOUNT_PLACEHOLDERS, ROUTE_PLACEHOLDERS,
                                 route)
 from xtremeparse.scheduling import TaskScheduler
@@ -91,7 +92,8 @@ class Extractor:
             route_task = await scheduler.start_task(
                 route(runner, payload=payload, units=units, chunks=chunks,
                       instructions=self.router_instructions,
-                      recount_instructions=self.recount_instructions),
+                      recount_instructions=self.recount_instructions,
+                      overall=overall(schema)),
                 estimated_tokens=tokens)
             routing = await route_task
             budgets = {**(routing.budgets or {}), **self.output_budgets}

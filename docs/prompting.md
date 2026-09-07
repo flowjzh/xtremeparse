@@ -11,7 +11,9 @@ the primary tuning path.
    schema the host passes in: unit cards and legends are composed from
    them, and field fidelity follows the description's wording (a
    fidelity clause in a field description moves output where generic
-   prompt rules never did).
+   prompt rules never did). The schema's root `description` is the
+   document-level counterpart — it rides the router prompt as an
+   "Overall Instruction" block.
 2. **Prompt overrides second.** For adapting the generic extraction
    discipline to a new document domain, a weaker model, or another
    language.
@@ -42,6 +44,12 @@ Extractor(runner,
   format is fixed by code (the card header is the cue the default
   prompts rely on — an override legend interpretation is the override's
   to keep consistent).
+- The default router and recount templates carry one optional slot,
+  `{overall}`: the schema's root `description`, rendered as an
+  "Overall Instruction" block before the rules. It is not in the
+  required placeholder sets — an override without it never shows the
+  block. The extractor fills it from the schema automatically; direct
+  `route()` callers pass `overall=`.
 - Correction rounds re-dispatch with the same override automatically —
   a correction round continues the original call's conversation history.
 - The judge prompt (`xtremeparse.judging.judge(instructions=...)`) is
