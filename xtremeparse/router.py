@@ -84,6 +84,7 @@ _DEST = (r'[a-z]+(?:\.\d+)*(?:\.[a-z_]+(?:\.\d+)*)?'
          r'(?:-(?:[a-z]+\.)?\d+)?')
 _LINE = re.compile(rf'^(\d+)(?:-(\d+))?\s+({_DEST}(?:\s*,\s*{_DEST})*'
                    r'|-(?:\.\d+)?)$')
+_MISSING = re.compile(r'^chunks not covered: \[([\d, ]+)\]$')
 _ITEM_RANGE = re.compile(r'(\d+)-(\d+)')
 _DOUBLED = re.compile(r'(\d+)-[a-z]+\.(\d+)')
 _SUBITEM = re.compile(r'(\d+)(?:\.\d+)*(?:-(\d+))?')
@@ -882,10 +883,25 @@ async def route(runner: AgentRunner, *, payload: str,
             valid = (segments, counts, nested, derived, budgets, text)
         elif not suggestion:
             past = set().union(*history[:-1]) if len(history) > 1 else set()
-            marked = [f'{e} — this error was already fixed in an earlier '
-                      'round; restore that fix while addressing the others'
-                      if e in past and e not in history[-1] else e
-                      for e in errors]
+            removed = []
+            if any(_MISSING.match(e) for e in errors):
+                edits = _diff_edits(result.data)
+                if edits:
+                    removed = _net_edits(*edits)[0]
+            marked = []
+            for raw in errors:
+                e = raw
+                if m := _MISSING.match(e):
+                    missing = [int(x) for x in m[1].split(',')]
+                    blame = _uncovered_removal(removed, missing)
+                    e += (f' — your removal of "{blame}" uncovered these; '
+                          f're-add it unless the chunks belong elsewhere'
+                          if blame else
+                          _coverage_hint(segments, missing, by_code))
+                if raw in past and raw not in history[-1]:
+                    e += ' — this error was already fixed in an earlier ' \
+                         'round; restore that fix while addressing the others'
+                marked.append(e)
             if replayed:
                 # the reply was a no-op rewrite: say so — a verbatim
                 # "-x/+x" pair cancels out, and the full map is the
@@ -1139,6 +1155,20 @@ def _dest_token(code: str, item, parent, by_code: dict) -> str:
     return f'{code}.{item}'
 
 
+def _dest_tokens(dests, by_code: dict) -> str:
+    """A line's right-hand side, comma-joined. A parent whose own
+    chains ride the line is dropped — the chain token re-adds its
+    parent at parse, so an explicit parent beside them is redundancy.
+    The one spelling a map line's destinations take: the rebuilt map
+    and the repair hints both come here, so a removal the hint quotes
+    matches the line the base text holds."""
+    chained = {(_parent_code(by_code[scode], by_code), p)
+               for scode, _, p in dests if p is not None}
+    return ','.join(_dest_token(code, item, parent, by_code)
+                    for code, item, parent in dests
+                    if (code, item) not in chained)
+
+
 async def _recount_undrawn(runner: AgentRunner, payload: str,
                            units: list, zeros: list, by_code: dict,
                            chunks: list[str],
@@ -1225,22 +1255,20 @@ def _dests(dests: str) -> list:
     return [t.strip() for t in dests.split(',')]
 
 
-def _diff_text(reply, base_text) -> str | None:
-    """A unified-diff reply applied to the model's own previous map:
-    "-" lines remove, "+" lines add, everything else is commentary.
-    None when the reply is no diff at all (a full re-emission replaces
-    the base instead). Once a real marker line shows the reply is a
-    diff, a bare line that speaks the map's grammar rides along as an
-    addition — the contract is never to re-emit an unchanged line, so
-    a bare line is a lazy "+": asked to attach items, the model drew
-    the line with no prefix, and dropped as commentary it silently
-    zeroed the unit while the removal beside it landed (measured: the
-    b-[] repair burned to exhaustion on the phantom). A bare line the
-    map already holds dedupes to a no-op; one it cannot hold surfaces
-    as the overlap error it is."""
-    lines = _lines(reply)
+def _diff_edits(reply) -> tuple | None:
+    """A diff reply's removals and additions — None when the reply is
+    no diff at all. The one parse of the marker grammar: the applier
+    and the feedback's removal blame both read it, so a removal the
+    hint names is a removal the grammar agrees was asked. Once a real
+    marker line shows the reply is a diff, a bare line that speaks the
+    map's grammar rides along as an addition — the contract is never
+    to re-emit an unchanged line, so a bare line is a lazy "+": asked
+    to attach items, the model drew the line with no prefix, and
+    dropped as commentary it silently zeroed the unit while the
+    removal beside it landed (measured: the b-[] repair burned to
+    exhaustion on the phantom)."""
     removed, added, saw_marker = [], [], False
-    for l in lines:
+    for l in _lines(reply):
         if l.startswith(('---', '+++')):
             continue
         if l[0] in '+-':
@@ -1251,7 +1279,29 @@ def _diff_text(reply, base_text) -> str | None:
             added.append(l)
     if not saw_marker or not removed and not added:
         return None
-    return _apply_edits(base_text, removed, added)
+    return removed, added
+
+
+def _diff_text(reply, base_text) -> str | None:
+    """A unified-diff reply applied to the model's own previous map.
+    None when the reply is no diff at all (a full re-emission replaces
+    the base instead). A bare line the map already holds dedupes to a
+    no-op; one it cannot hold surfaces as the overlap error it is."""
+    edits = _diff_edits(reply)
+    if edits is None:
+        return None
+    return _apply_edits(base_text, *edits)
+
+
+def _net_edits(removed: list, added: list) -> tuple:
+    """A "-x/+x" pair verbatim cancels: a line removed and re-added
+    would only re-append (reorder), and the applier owes every caller
+    the byte-stable base the replay downgrade keys on. The removals
+    that survive are what the base actually lost — the removal blame
+    in the feedback reads the same list."""
+    common = Counter(removed) & Counter(added)
+    return (list((Counter(removed) - common).elements()),
+            list((Counter(added) - common).elements()))
 
 
 def _apply_edits(base_text, removed: list, added: list) -> str:
@@ -1259,10 +1309,7 @@ def _apply_edits(base_text, removed: list, added: list) -> str:
     removed lines drop by content (content-anchored — the model quotes
     its own answer, so a quote that misses costs nothing), added lines
     append unless the map already holds them (a no-op — the model
-    rewrites "-x/+x" pairs for lines it means to keep). A "-x/+x" pair
-    verbatim cancels before any of that: a line removed and re-added
-    would only re-append (reorder), and the applier owes every caller
-    the byte-stable base the replay downgrade keys on. Line order
+    rewrites "-x/+x" pairs for lines it means to keep). Line order
     carries no meaning (ranges are explicit), so no positions are
     tracked: the result is exactly the listed edits — the map text the
     round leaves behind. A reply that rewrites every map line as
@@ -1272,9 +1319,7 @@ def _apply_edits(base_text, removed: list, added: list) -> str:
     grammar's order is the applier's invariant: map lines first,
     everything after."""
     added = list(added)  # an applier may pass a dict.fromkeys dedupe map
-    common = Counter(removed) & Counter(added)
-    removed = list((Counter(removed) - common).elements())
-    added = list((Counter(added) - common).elements())
+    removed, added = _net_edits(removed, added)
     if not removed and not added:
         return base_text  # every edit cancelled — the base stands
     out = [l for l in _lines(base_text) if l not in removed]
@@ -1496,16 +1541,9 @@ def _map_text(segments, counts, nested, derived, budgets, by_code) -> str:
         if dests == ((NONE, None, None),):
             lines.append(f'{start} -' if start == end else f'{start}-{end} -')
             continue
-        chained = {(_parent_code(by_code[scode], by_code), p)
-                   for scode, _, p in dests if p is not None}
-        tokens = []
-        for code, item, parent in dests:
-            if (code, item) not in chained:
-                # the chain token re-adds its parent at parse — an
-                # explicit parent beside its own chains is redundancy
-                tokens.append(_dest_token(code, item, parent, by_code))
-        lines.append(f'{start}-{end} {",".join(tokens)}'
-                     if start != end else f'{start} {",".join(tokens)}')
+        tokens = _dest_tokens(dests, by_code)
+        lines.append(f'{start}-{end} {tokens}'
+                     if start != end else f'{start} {tokens}')
     for code, unit in by_code.items():
         suffix = _budget_suffix(budgets.get(code))
         if code in derived:
@@ -2253,19 +2291,30 @@ def _passable(errors: list) -> set:
     return {m[1] for e in errors if (m := _PASSABLE.match(e))}
 
 
-def _chain_remedy(start, dests, prev_start, prev_end, prev_dests,
+def _chain_remedy(start, end, dests, prev_start, prev_end, prev_dests,
                   segments, by_code):
     """The concrete remedy for a chain-involved overlap, when one
-    exists: a parent line covering its own chain lines names the
-    chunks the parent may keep and the count it must then match; two
-    sub-entry slices of one parent instance overlapping name the
-    earlier slice's end — the chunk before the later one begins.
-    None when the overlap is ordinary. The containment check reads
-    ranged parent claims deliberately — hosting (`_hosted_chain`)
-    stays strict: a ranged run is the inseparable batched form, and
-    only the remedy names its chains' chunks."""
+    exists: a slice re-drawing a destination a wider line holds names
+    the removal that lets the slices replace it; a parent line
+    covering its own chain lines names the chunks the parent may keep
+    and the count it must then match; two sub-entry slices of one
+    parent instance overlapping name the earlier slice's end — the
+    chunk before the later one begins. None when the overlap is
+    ordinary. The containment check reads ranged parent claims
+    deliberately — hosting (`_hosted_chain`) stays strict: a ranged
+    run is the inseparable batched form, and only the remedy names
+    its chains' chunks."""
     if not any(dd[2] is not None for dd in dests):
         return None
+    if prev_start <= start and end <= prev_end and any(
+            dd[2] is not None and dd in prev_dests for dd in dests):
+        # a slice re-drawing a destination the wide line already
+        # holds is a split whose whole the model forgot to remove
+        # (measured: the split added both halves, the original line
+        # stayed, and the rounds no-op'd out) — name the removal
+        return (f'add "- {prev_start}-{prev_end} '
+                f'{_dest_tokens(prev_dests, by_code)}" and the slices '
+                f'replace it')
     prev_plain = [(dd[0], dd[1]) for dd in prev_dests if dd[2] is None]
     prev_parents = _chain_parents(prev_dests, by_code)
     for dd in dests:
@@ -2298,6 +2347,18 @@ def _chain_remedy(start, dests, prev_start, prev_end, prev_dests,
     return None
 
 
+def _uncovered_removal(removed: list, missing: list) -> str | None:
+    """The round's own removal that uncovered the missing chunks, if
+    one did — the blame the feedback names for a re-add. When this
+    fires it takes precedence over the extend-the-neighbour fold: the
+    removal is the cause, and the neighbour may hold a foreign unit."""
+    for l in removed:
+        if (m := _LINE.match(l)) and any(
+                int(m[1]) <= c <= int(m[2] or m[1]) for c in missing):
+            return l
+    return None
+
+
 def _map_errors(segments, counts, nested, derived, by_code: dict,
                 n: int, lenient: set | None = None) -> list:
     """Whole-map consistency: line-range overlap, declared-vs-used
@@ -2319,7 +2380,7 @@ def _map_errors(segments, counts, nested, derived, by_code: dict,
     for start, end, dests in covering:
         if start <= prev_end:
             codes = ','.join(sorted({dd[0] for dd in prev_dests}))
-            tail = _chain_remedy(start, dests, prev_start, prev_end,
+            tail = _chain_remedy(start, end, dests, prev_start, prev_end,
                                  prev_dests, segments, by_code)
             if tail is None and start == end == prev_end:
                 shared = sorted(
@@ -2421,8 +2482,10 @@ def _map_errors(segments, counts, nested, derived, by_code: dict,
                           f'uses {sorted(items)}{hint}')
     if missing := sorted(set(range(n)) - {
             c for s, e, *_ in segments for c in range(s, e + 1)}):
-        errors.append(f'chunks not covered: {missing}'
-                      f'{_coverage_hint(segments, missing, by_code)}')
+        # bare on purpose: the extend-the-neighbour fold composes at
+        # the feedback layer, where the round's own removals are known
+        # and a removal-caused hole blames the removal instead
+        errors.append(f'chunks not covered: {missing}')
     return errors
 
 
@@ -2513,11 +2576,17 @@ def _nested_errors(code: str, unit: Unit, segments, counts, nested,
             # the map that skipped the sub-entries) — offering "drop the
             # declaration" here read as an equal branch and the model
             # took it after drawing the chains, then got whipsawed by
-            # this same check one round later (measured)
+            # this same check one round later (measured). Every missing
+            # index named: a draw that runs one chain short is where
+            # the split cascades start
+            names = [f'"{chain}.{i}"'
+                     for i in range(max(1, min(declared[p], 4)))]
+            ellipsis = ', …' if len(names) < declared[p] else ''
             errors.append(
                 f'{code}: declared {declared[p]} items under {pcode}.{p} '
                 f'but the map assigns none — add the chain lines '
-                f'("{chain}.0") as "+" diff lines, everything else stays; '
+                f'({", ".join(names)}{ellipsis}) as "+" diff lines, '
+                f'everything else stays; '
                 f'keep the declaration: it is correct when the document '
                 f'holds the sub-entries the lines should cover')
     if isinstance(have := counts.get(pcode), int):

@@ -1464,6 +1464,46 @@ async def test_nested_declaration_without_map_lines_is_named():
     await route(runner, payload=PAYLOAD, units=NESTED_UNITS, chunks=NESTED_CHUNKS)
     messages = ' '.join(i.message for i in runner.calls[2]['feedback'])
     assert 'declared 2 items under b.0 but the map assigns none' in messages
+    assert '("b.0.c.0", "b.0.c.1")' in messages
+
+
+async def test_a_split_of_an_undropped_line_names_the_removal():
+    # the prod slip: the model split a wide chain line into two slices
+    # without removing the wide line — the remedy quotes the removal
+    runner = ScriptedRunner(
+        agent_result('0 a\n1-3 b.0.c.1\n1-2 b.0.c.1\n4 -\nb: 1\nb.0.c: 2'),
+        agent_result('0 a\n1-2 b.0.c.1\n3 b.0.c.0\n4 -\nb: 1\nb.0.c: 2'))
+    await route(runner, payload=PAYLOAD, units=NESTED_UNITS, chunks=NESTED_CHUNKS)
+    messages = ' '.join(i.message for i in runner.calls[1]['feedback'])
+    assert 'add "- 1-3 b.0.c.1" and the slices replace it' in messages
+
+
+async def test_a_removal_uncovering_chunks_names_the_re_add():
+    # the collapse's second half: the repair's own removal leaves its
+    # chunks bare — the feedback names the line to re-add
+    runner = ScriptedRunner(
+        agent_result('0 a\n1-3 -\n4 -\nb: 1\nb.0.c: 1'),
+        agent_result('b.0.c: 1\n无此内容'),  # recount quotes anchor nowhere
+        agent_result('- 1-3 -\n+ 1-2 b.0.c.0'),
+        agent_result('0 a\n1-2 b.0.c.0\n3-4 -\nb: 1\nb.0.c: 1'))
+    await route(runner, payload=PAYLOAD, units=NESTED_UNITS, chunks=NESTED_CHUNKS)
+    messages = ' '.join(i.message for i in runner.calls[3]['feedback'])
+    assert 'chunks not covered: [3]' in messages
+    assert 'your removal of "1-3 -" uncovered these' in messages
+
+
+async def test_removal_blame_wins_over_the_neighbour_fold():
+    # when the hole is both a removal's doing and a neighbour's
+    # continuation, the removal is the cause — one remedy, stated once
+    runner = ScriptedRunner(
+        agent_result('0 a\n1-3 -\n4 -\nb: 1'),
+        agent_result('b: 1\n无此内容'),  # recount quotes anchor nowhere
+        agent_result('- 1-3 -\n+ 1-2 b.0'),
+        agent_result('0 a\n1-2 b.0\n3-4 -\nb: 1'))
+    await route(runner, payload=PAYLOAD, units=NESTED_UNITS, chunks=NESTED_CHUNKS)
+    messages = ' '.join(i.message for i in runner.calls[3]['feedback'])
+    assert 'your removal of "1-3 -" uncovered these' in messages
+    assert 'extend the preceding line' not in messages
 
 
 async def test_chain_parent_index_out_of_range_is_named():
