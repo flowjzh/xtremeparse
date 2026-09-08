@@ -164,24 +164,23 @@ def _route(calls: list, issues: list) -> list:
 
 
 def _count_calls(calls: list, issue) -> list:
-    """The unit's calls owning the mismatch (see _route for the why):
-    what a call owes is its own ``slots`` (a batch or a single), while a
-    whole-array call owes the unit's declared count (the issue's
+    """The calls owning the mismatch (see _route for the why): what a
+    call owes is its own ``slots`` (a batch or a single), while a
+    whole-array call owes the array's declared count (the issue's
     ``expected``); shortfalls go to calls short of that, over-counts to
-    calls past it. The issue path's bracket indexes (an item, or a
-    lifted sub-array's parent scope) name the position, never the
-    unit — stripped before matching."""
-    unit = re.sub(r'\[\d+\]', '', issue.path)
+    calls past it. Issues carry the counts key they were built from —
+    matched against ``value_path`` by identity, so a lifted sub-array's
+    issue never reaches a sibling parent's call."""
     over = (issue.expected or 0) < (issue.got or 0)
     out = []
     for c in calls:
-        if c.unit.path != unit or c.result is None:
+        if c.value_path != issue.key or c.result is None:
             continue
         slots = c.slots if c.slots is not None else \
             (issue.expected if c.array_shaped else None)
         if slots is None:
             continue
-        got = len(c.result.data or [])
+        got = c.produced
         if got > slots or (not over and got < slots
                            and not (c.strategy == 'whole'
                                     and (slots - got) * 100
@@ -255,6 +254,8 @@ class _CountIssue:
     whole-array call that collapsed instances into fewer entries."""
 
     path: str
+    key: str  # the counts key the path was built from — the values
+    # address routing matches by identity and a revision writes back to
     code: str = 'item_count'  # trace vocabulary only — _route keys the
     # count routing on this type, never on the code
     message: str = ''
@@ -266,13 +267,17 @@ class _CountIssue:
 
 
 def count_mismatches(counts: dict, data: dict) -> dict:
-    """``{unit_path: (declared, actual)}`` over every count mismatch —
+    """``{array_key: (declared, actual)}`` over every count mismatch —
     the arbitration view of count_issues: per-index shortfalls fold to
-    their unit (all of a unit's issues share the pair). Which side of a
-    mismatch is wrong is exactly what an arbitration must decide."""
+    their issue's ``key``, the values address an arbiter reads its
+    items from and a revision writes back to. Folding the bare unit
+    path instead handed a lifted sub-array's mismatch to its parent
+    unit (measured: a sub-array holding 1 of 4 revised the healthy
+    parent's declared 4 down to a phantom 2). Which side of a mismatch
+    is wrong is exactly what an arbitration must decide."""
     out = {}
     for i in count_issues(counts, data):
-        out.setdefault(i.path.partition('[')[0], (i.expected, i.got))
+        out.setdefault(i.key, (i.expected, i.got))
     return out
 
 
@@ -295,7 +300,7 @@ def count_issues(counts: dict, data: dict, soft=()) -> list:
         actual = len(resolve_list(data, path))
         if actual < declared:
             issues += [_CountIssue(
-                f'{path}[{i}]', expected=declared, got=actual,
+                f'{path}[{i}]', key=path, expected=declared, got=actual,
                 message=f'{path} is missing item {i} of {declared} — the '
                         f'array holds {actual}; return every instance as '
                         'its own entry, without splitting or duplicating')
@@ -305,7 +310,8 @@ def count_issues(counts: dict, data: dict, soft=()) -> list:
             tail = ('the check could not settle the dispute, reported '
                     'unrepaired') if soft_hit else 'merge the duplicates'
             issues.append(_CountIssue(
-                path, expected=declared, got=actual, report_only=soft_hit,
+                path, key=path, expected=declared, got=actual,
+                report_only=soft_hit,
                 message=f'declared {declared} items but the array holds '
                         f'{actual} — {tail}'))
     return issues

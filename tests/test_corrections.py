@@ -3,7 +3,8 @@
 from xtremeflow.scheduler import TaskScheduler
 
 from xtremeparse.contracts import AgentResult
-from xtremeparse.corrections import correct, count_issues, item_chars
+from xtremeparse.corrections import (correct, count_issues, count_mismatches,
+                                     item_chars)
 from xtremeparse.executor import Call, Execution
 from xtremeparse.patching import is_patch_round
 from xtremeparse.units import MISC, decompose
@@ -194,6 +195,12 @@ def test_count_issues_reconcile_declared_against_data():
     assert [i.path for i in count_issues({'jobs': 2}, {})] == ['jobs[0]', 'jobs[1]']
 
 
+def test_count_mismatches_fold_top_level_shortfalls_and_over_counts():
+    data = {'jobs': [{'company': '甲'}, {'company': '乙'}, {'company': '丙'}]}
+    assert count_mismatches({'jobs': 4}, data) == {'jobs': (4, 3)}
+    assert count_mismatches({'jobs': 2}, data) == {'jobs': (2, 3)}
+
+
 async def test_count_shortfall_retries_only_short_batches():
     # a full batch holds no missing instance — the shortfall retries the
     # short batch alone, and the full batch's healthy result stands
@@ -255,6 +262,52 @@ async def test_over_count_whole_call_holding_the_duplicates_is_rerun():
     assert [c['scope'] for c in runner.calls] == ['s']
     assert [c['company'] for c in data['jobs']] == ['腾讯', '阿里']
     assert issues == []
+
+
+async def test_count_shortfall_reruns_the_failed_single_alone():
+    # a per-item single holds its one entry or nothing: the failed
+    # single re-runs, its healthy peer (whose entry dict has many keys)
+    # stands
+    ok = call('jobs', {'company': '腾讯', 'title': '工程师'},
+              item=0, strategy='per-item', scope='s0')
+    failed = call('jobs', None, item=1, strategy='per-item', scope='s1')
+    runner = ScriptedRunner(agent_result({'company': '阿里'}))
+    data, issues, rounds = await correct(
+        runner, execution(ok, failed),
+        validator=lambda d: count_issues({'jobs': 2}, d),
+        payload='p', scheduler=scheduler())
+    assert [c['scope'] for c in runner.calls] == ['s1']
+    assert [j['company'] for j in data['jobs']] == ['腾讯', '阿里']
+    assert issues == []
+
+
+async def test_a_healthy_single_never_owns_a_count_mismatch():
+    # a single's entry dict has many keys — len() is not an instance
+    # count; the shortfall routes to nobody and reports
+    ok = call('jobs', {'company': '腾讯', 'title': '工程师'},
+              item=0, strategy='per-item', scope='s0')
+    runner = ScriptedRunner()
+    data, issues, rounds = await correct(
+        runner, execution(ok),
+        validator=lambda d: count_issues({'jobs': 2}, d),
+        payload='p', scheduler=scheduler())
+    assert runner.calls == [] and rounds == []
+    assert [i.path for i in issues] == ['jobs[1]']
+
+
+async def test_an_over_count_never_reruns_healthy_singles():
+    # duplicates across healthy singles have no over-full owner either
+    one = call('jobs', {'company': '腾讯'}, item=0, strategy='per-item',
+               scope='s0')
+    two = call('jobs', {'company': '阿里'}, item=1, strategy='per-item',
+               scope='s1')
+    runner = ScriptedRunner()
+    data, issues, rounds = await correct(
+        runner, execution(one, two),
+        validator=lambda d: count_issues({'jobs': 1}, d),
+        payload='p', scheduler=scheduler())
+    assert runner.calls == [] and rounds == []
+    assert [i.path for i in issues] == ['jobs']
 
 
 def test_soft_count_issues_report_without_routing():
@@ -359,13 +412,25 @@ NESTED_UNITS = {u.path: u for u in decompose({
 })}
 
 
+NESTED_DATA = {'career': {'jobs': [
+    {'company': '甲', 'roles': [{'title': '工程师'}]},
+    {'company': '乙'}]}}
+NESTED_COUNTS = {'career.jobs': 2, 'career.jobs[0].roles': 2}
+
+
 def test_count_issues_reconcile_a_lifted_sub_array_per_parent():
-    data = {'career': {'jobs': [
-        {'company': '甲', 'roles': [{'title': '工程师'}]},
-        {'company': '乙'}]}}
-    issues = count_issues({'career.jobs': 2, 'career.jobs[0].roles': 2}, data)
+    issues = count_issues(NESTED_COUNTS, NESTED_DATA)
     assert [(i.path, i.expected, i.got) for i in issues] == \
         [('career.jobs[0].roles[1]', 2, 1)]
+
+
+def test_count_mismatches_fold_to_the_array_the_issue_shorts():
+    # a lifted sub-array's mismatch keeps its bracket scope — the key
+    # the arbiter reads items from and a revision writes back to;
+    # folding to the bare unit path would hand the parent's count and
+    # entries to the arbitration
+    assert count_mismatches(NESTED_COUNTS, NESTED_DATA) == \
+        {'career.jobs[0].roles': (2, 1)}
 
 
 async def test_nested_shortfall_reruns_the_short_whole_call():
@@ -378,6 +443,28 @@ async def test_nested_shortfall_reruns_the_short_whole_call():
         payload='p', scheduler=scheduler())
     assert issues == []
     assert [(r.unit_path, r.item) for r in rounds] == [('career.jobs.roles', None)]
+
+
+async def test_a_sub_array_issue_routes_to_its_own_parent_alone():
+    # the issue carries its array key: parent 1's shortfall must not
+    # re-run parent 0's healthy whole call under parent 1's feedback
+    healthy = Call(NESTED_UNITS['career.jobs.roles'], None, 'whole', [1],
+                   'r0', agent_result([{'title': '工程师'}, {'title': '经理'}]),
+                   parent=0)
+    short = Call(NESTED_UNITS['career.jobs.roles'], None, 'whole', [2],
+                 'r1', agent_result([{'title': '工程师'}]), parent=1)
+    runner = ScriptedRunner(
+        agent_result([{'title': '工程师'}, {'title': '经理'}]),
+        agent_result([{'title': '工程师'}, {'title': '经理'}]))
+    _, issues, rounds = await correct(
+        runner, Execution({}, [healthy, short]),
+        validator=lambda d: count_issues({'career.jobs[0].roles': 2,
+                                          'career.jobs[1].roles': 3}, d),
+        payload='p', scheduler=scheduler())
+    assert [c['scope'] for c in runner.calls] == ['r1', 'r1']
+    assert [(r.unit_path, r.item) for r in rounds] == \
+        [('career.jobs.roles', None)] * 2
+    assert [i.path for i in issues] == ['career.jobs[1].roles[2]']
 
 
 async def test_nested_field_issue_reruns_only_that_sub_entry():

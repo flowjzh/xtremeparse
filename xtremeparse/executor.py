@@ -65,6 +65,20 @@ class Call:
         return 1 if self.item is not None else None
 
     @property
+    def produced(self) -> int:
+        """Entries the call returned — the produced side of ``slots``,
+        read the way ``values_from_calls`` merges: a list's length, or
+        one entry (a per-item single's own object, or an array-shaped
+        reply that came back unwrapped). len() on a single's entry dict
+        counts keys, not instances, and read every healthy single as an
+        over-full batch (measured: phantom shortfalls then patched
+        healthy entries into junk-keyed dicts for two rounds)."""
+        if self.result is None or self.result.data is None:
+            return 0
+        data = self.result.data
+        return len(data) if self.array_shaped and isinstance(data, list) else 1
+
+    @property
     def value_path(self) -> str:
         """The merged-data path the call's result fills — the unit path,
         or the parent instance's field a lifted sub-array fills."""
