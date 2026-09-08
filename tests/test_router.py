@@ -3,8 +3,9 @@
 import pytest
 
 from xtremeparse.router import (NONE, RECOUNT_PLACEHOLDERS, ROUTE_PLACEHOLDERS,
-                                RouterError, Group, _diff_text, _name_list,
-                                _overlay_text, _resplit, route)
+                                RouterError, Group, _anchors, _codes,
+                                _diff_text, _name_list, _overlay_text,
+                                _recount_legend, _resplit, route)
 from xtremeparse.units import MISC, decompose
 from tests.helpers import ScriptedRunner, agent_result
 
@@ -188,6 +189,27 @@ async def test_missing_count_declaration_is_repaired():
     )
     await route(runner, payload=PAYLOAD, units=UNITS, chunks=CHUNKS)
     assert 'count is undeclared' in runner.calls[1]['feedback'][0].message
+
+
+def test_anchor_seek_strips_wrapping_quotation_marks():
+    # the recount is asked for verbatim openings and sometimes answers
+    # with quoted-string wrappers or the listing's own [id] prefix —
+    # the seek keeps working on the quote's own words
+    chunks = ['第一段：腾讯', '第二段：阿里']
+    assert _anchors(['"第一段：腾讯"'], [0, 1], chunks) == [0]
+    assert _anchors(['“第二段：阿里”'], [0, 1], chunks) == [1]
+    assert _anchors(['[0] 第一段：腾讯'], [0, 1], chunks) == [0]
+    assert _anchors(['第二段：阿里'], [0, 1], chunks) == [1]
+    assert _anchors(['不在文档里'], [0, 1], chunks) is None
+
+
+def test_recount_legend_scopes_chain_labels_only():
+    # the chain-scoping note rides the legend when — and only when — a
+    # chain label does: one home for the rule, every firing mode's copy
+    by_code = _codes(NESTED_UNITS)
+    legend = _recount_legend({'c': 'c', 'b.0.c': 'c'}, by_code)
+    assert 'ONE parent entry' in legend
+    assert 'ONE parent entry' not in _recount_legend({'b': 'b'}, by_code)
 
 
 async def test_absent_declaration_reads_as_zero_and_gets_recounted():
@@ -927,12 +949,14 @@ async def test_shared_range_expansion_keeps_the_undrawn_gate_open():
 
 async def test_multi_chunk_chain_range_shared_expands_like_the_flat_form():
     # the dotted-chain spelling of a comma-joined range takes the same
-    # tolerance — one rule, not two
+    # tolerance — one rule, not two. The merged chain matches its
+    # declared count chunk for chunk: the footprint arithmetic
+    # declines the recount, the inseparable draw stands confirmed as
+    # drawn
     runner = ScriptedRunner(
         agent_result('0 -\n1-2 a,b.0.c.0-1\n3 -\nb: 1\nb.0.c: 2'))
     routing = await route(runner, payload=PAYLOAD, units=NESTED_UNITS,
-                          chunks=['姓名张三', '公司甲·工程师', '公司甲·经理',
-                                  '无关页脚'])
+                          chunks=NESTED_CHUNKS[:4])
     assert len(runner.calls) == 1
     roles = [g for g in routing.groups if g.unit.path == 'jobs.roles']
     assert [(g.item, g.parent, g.chunk_ids) for g in roles] == \
@@ -1782,6 +1806,80 @@ async def test_comma_joined_nested_token_with_two_parents_stays_named():
     assert 'rides its parent' in runner.calls[1]['feedback'][0].message
 
 
+async def test_merged_nested_recount_demotes_the_sub_entries():
+    # several titles narrated inside one band are not several
+    # sub-entries: the fresh recount answers one and code re-lines the
+    # footprint — the promotion-route shape the anchored map cannot
+    # revisit (the chains ride one line, the nested recount's case)
+    runner = ScriptedRunner(
+        agent_result('0 a\n1-3 b.0.c.0-1\n4 -\nb: 1\nb.0.c: 2'),
+        agent_result('b.0.c: 1\n公司甲·工程师'))
+    routing = await route(runner, payload=PAYLOAD, units=NESTED_UNITS,
+                          chunks=NESTED_CHUNKS)
+    assert len(runner.calls) == 2
+    assert runner.calls[1]['feedback'] is None
+    assert routing.raw['nested_counts'] == {'jobs.roles': {0: 1}}
+    roles = [g for g in routing.groups if g.unit.path == 'jobs.roles']
+    assert [(g.item, g.parent, g.chunk_ids) for g in roles] == \
+        [(0, 0, [1])]
+
+
+async def test_merged_nested_recount_zero_strips_chains_and_declaration():
+    runner = ScriptedRunner(
+        agent_result('0 a\n1-3 b.0.c.0-1\n4 -\nb: 1\nb.0.c: 2'),
+        agent_result('b.0.c: 0'))
+    routing = await route(runner, payload=PAYLOAD, units=NESTED_UNITS,
+                          chunks=NESTED_CHUNKS)
+    assert len(runner.calls) == 2
+    assert routing.raw['nested_counts'] == {}
+    roles = [g for g in routing.groups if g.unit.path == 'jobs.roles']
+    assert roles == []
+    # the parent keeps its chunks
+    jobs = [g for g in routing.groups if g.unit.path == 'jobs']
+    assert [(g.item, g.chunk_ids) for g in jobs] == [(0, [1, 2, 3])]
+
+
+async def test_merged_nested_recount_cross_parent_quote_is_dropped():
+    # a recount counting look-alike material of ANOTHER parent answers
+    # 2 with one quote outside the footprint — the in-footprint opening
+    # is this parent's sub-entry, the stray is not evidence here
+    runner = ScriptedRunner(
+        agent_result('0 a\n1-3 b.0.c.0-1\n4 -\nb: 1\nb.0.c: 2'),
+        agent_result('b.0.c: 2\n公司甲·工程师\n姓名张三'))
+    routing = await route(runner, payload=PAYLOAD, units=NESTED_UNITS,
+                          chunks=NESTED_CHUNKS)
+    assert len(runner.calls) == 2
+    assert routing.raw['nested_counts'] == {'jobs.roles': {0: 1}}
+    roles = [g for g in routing.groups if g.unit.path == 'jobs.roles']
+    assert [(g.item, g.parent, g.chunk_ids) for g in roles] == \
+        [(0, 0, [1])]
+
+
+async def test_merged_nested_recount_all_openings_outside_keeps_the_lines():
+    # a recount whose openings all miss the footprint named nothing of
+    # this parent's — not evidence enough to unmake the map
+    runner = ScriptedRunner(
+        agent_result('0 a\n1-3 b.0.c.0-1\n4 -\nb: 1\nb.0.c: 2'),
+        agent_result('b.0.c: 2\n姓名张三\n无关页脚'))
+    routing = await route(runner, payload=PAYLOAD, units=NESTED_UNITS,
+                          chunks=NESTED_CHUNKS)
+    assert len(runner.calls) == 2
+    assert routing.raw['nested_counts'] == {'jobs.roles': {0: 2}}
+    roles = [g for g in routing.groups if g.unit.path == 'jobs.roles']
+    assert [(g.item, g.chunk_ids) for g in roles] == \
+        [(0, [1, 2, 3]), (1, [1, 2, 3])]
+
+
+async def test_separated_nested_chains_draw_no_recount():
+    # one chain per line at chunk boundaries is the fine partition —
+    # nothing merged, nothing to recount
+    runner = ScriptedRunner(
+        agent_result('0 a\n1 b.0.c.0\n2 b.0.c.1\n3 b.1\n4 -\nb: 2\nb.0.c: 2'))
+    routing = await route(runner, payload=PAYLOAD, units=NESTED_UNITS,
+                          chunks=NESTED_CHUNKS)
+    assert len(runner.calls) == 1
+    assert routing.raw['nested_counts'] == {'jobs.roles': {0: 2}}
+
 
 # --- declared-undrawn units: a count declared, no lines drawn ---
 # (the first-pass maps declare the numbers and skip the drawing; a
@@ -1926,3 +2024,20 @@ def test_map_text_round_trips_derived_units():
     assert not errors
     assert counts2 == counts == {'b': 2}
     assert derived2 == derived == {'c': 'b'}
+
+
+async def test_merged_nested_recount_upward_count_keeps_the_lines():
+    # a count above the declaration is no demotion — the recount read
+    # duty paragraphs as openings; the recount's only mandate is
+    # trimming, so the standing lines stay (measured 2 true stints
+    # recounted as 4 on a real multi-stint draw)
+    runner = ScriptedRunner(
+        agent_result('0 a\n1-3 b.0.c.0-1\n4 -\nb: 1\nb.0.c: 2'),
+        agent_result('b.0.c: 3\n公司甲·工程师\n公司甲·经理\n公司乙'))
+    routing = await route(runner, payload=PAYLOAD, units=NESTED_UNITS,
+                          chunks=NESTED_CHUNKS)
+    assert len(runner.calls) == 2
+    assert routing.raw['nested_counts'] == {'jobs.roles': {0: 2}}
+    roles = [g for g in routing.groups if g.unit.path == 'jobs.roles']
+    assert [(g.item, g.chunk_ids) for g in roles] == \
+        [(0, [1, 2, 3]), (1, [1, 2, 3])]

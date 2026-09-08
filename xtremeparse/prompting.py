@@ -21,12 +21,16 @@ Unit:
 
 # appended to array-shaped calls (whole runs and budget batches): left
 # alone the model summarizes a multi-instance material into one entry —
-# the collapsed-array failure mode every downstream check starts from
+# the collapsed-array failure mode every downstream check starts from.
+# The card side of the same coin: the mirror failure splits one
+# instance's own enumeration into several entries (a promotion route
+# drawn as sub-stints), so instanceship stays the card's call
 WHOLE_ARRAY_ADDENDUM = '''
 
 The output schema is an array: return every instance the assigned
 material holds as its own entry — never merge
-instances into one entry, never summarize.'''
+instances into one entry, never summarize. An entry the unit card
+would not fill is not an instance — never pad the array with one.'''
 
 SPECIALIST_PLACEHOLDERS = frozenset({'card'})
 

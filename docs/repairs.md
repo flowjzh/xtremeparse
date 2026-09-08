@@ -92,6 +92,36 @@ one fresh conversation — see the zero-count recount below):
   entry as plausibly as a merge: recounted, confirmed, and never
   adopted while thin — the recount is for the merge, not the
   spelling).
+- Merged sub-entries. A lifted sub-array's sub-entries riding one line
+  together — a ranged chain or comma-joined chains of one parent
+  instance — are the merged shape the previous bullet cannot see:
+  chain destinations are excluded there, a redraw would swallow the
+  chain. One destination per line stays out of the pool: that fine
+  partition is a legal draw, and on genuine multi-stint files its
+  chains run long — recounted there, a miscount trims real
+  sub-entries (measured: 4 true stints demoted to 3).
+  They recount in the same fresh conversation, asked per parent
+  instance, and when no top-level unit pends beside them the chunks
+  listing is the parents' own material alone — a whole-document
+  listing let a fresh count stray into another parent's look-alike
+  material. Adoption is code's and per parent: the openings that
+  anchor in the parent's footprint ARE its sub-entries — a quote
+  landing elsewhere is another parent's instance, dropped — and they
+  partition the footprint at their anchors; a recount that names none
+  of them and says zero strips the chains and the declaration together
+  (the parent keeps its chunks); openings all missing the
+  footprint beside a positive count are no evidence to unmake the map —
+  the lines stand. A count ABOVE the declaration is refused too,
+  anchored or not: an upward read is no demotion (measured: a recount
+  reading duty paragraphs as openings re-split 2 true stints into 4),
+  the recount's only mandate is trimming — the whole-array addendum's
+  card-deference clause keeps the specialist from padding the array,
+  so trimming-only stays safe. The
+  footprint arithmetic gates it: the footprint
+  must outrun the declared count, or the recount could only confirm —
+  an inseparable pair on one chunk is a legal draw. Demotion is the
+  point: the titles of a narrated
+  progression inside one band draw like sub-entries and are not.
 
 A fan-out round is a suggestion: an empty reply declines it, and so
 does an answer that fails validation — the standing map was valid
