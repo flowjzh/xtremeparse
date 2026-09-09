@@ -475,6 +475,34 @@ async def test_a_failing_patch_keeps_the_result_then_reasks_in_full():
     assert 'RFC 6902' not in runner.calls[1]['feedback'][0].message
 
 
+async def test_an_empty_baseline_reruns_fresh():
+    # a call collapsed to [] has no baseline to patch and re-declares
+    # its [] when shown it (measured live): the re-ask starts a clean
+    # conversation and takes the full value
+    runner = ScriptedRunner(agent_result(
+        [{'company': '腾讯'}, {'company': '阿里'}]))
+    data, issues, rounds = await correct(
+        runner, execution(call('jobs', [])),
+        validator=_needs_second_job, payload='p', scheduler=scheduler())
+    assert data == {'jobs': [{'company': '腾讯'}, {'company': '阿里'}]}
+    assert issues == [] and len(rounds) == 1
+    rerun = runner.calls[0]
+    assert rerun['history'] is None
+    assert not is_patch_round(rerun['result_schema'])
+    assert 'RFC 6902' not in rerun['feedback'][0].message
+
+
+async def test_a_fresh_rerun_that_stays_empty_stops_on_no_progress():
+    runner = ScriptedRunner(agent_result([]))
+    data, issues, rounds = await correct(
+        runner, execution(call('jobs', [])),
+        validator=_needs_second_job, payload='p', scheduler=scheduler())
+    # the identical path set stops the loop on no progress — one fresh
+    # ask per collapsed call, then the shortfall rides out reported
+    assert len(runner.calls) == 1
+    assert issues[0].path == 'jobs[1]'  # unresolved, reported, no raise
+
+
 # --- nested arrays: per-parent counts route into the lifted sub-array's calls ---
 
 NESTED_UNITS = {u.path: u for u in decompose({

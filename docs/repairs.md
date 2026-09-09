@@ -159,5 +159,9 @@ may be rooted at the unit path (`/jobs/2` for a bare `/2`), and a
 reply that is not a patch at all applies as the full corrected value —
 the pre-patch semantics, so a draw that ignores the protocol degrades
 gracefully. A patch that fails to apply keeps the previous result and
-the next round re-asks in full; an empty operation list is a no-op,
-never a wipe.
+the next round re-asks in full. An empty operation list is the no-fix
+declaration: the paths it was asked for are treated as absent and never
+asked again — a no-op on apply, never a wipe. One exception to the diff
+discipline: a call whose previous result is an empty array re-asks in
+full with no history — nothing to diff, and shown its own `[]` the
+model re-declares it instead of looking again (measured).

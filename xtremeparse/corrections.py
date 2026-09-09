@@ -10,7 +10,8 @@ result asks for a JSON Patch against it (see patching) — untouched
 entries cannot collapse in a rewrite, and the decode shrinks to the fix;
 a reply that is not a patch applies as the full corrected value, and a
 patch that fails to apply keeps the previous result with the next round
-asking for the full value. Stops on clean, budget (default 2 rounds), or
+asking for the full value; an empty-array baseline re-asks fresh, no
+history — nothing to diff. Stops on clean, budget (default 2 rounds), or
 no progress (a call whose issue paths repeat its previous round is not
 re-run; an empty-patch reply — the no-fix declaration — silences its
 own paths, the call still routes for a different fixable issue). Never
@@ -90,11 +91,12 @@ async def correct(runner: AgentRunner, execution: Execution, *, validator: Valid
     """Re-run failing calls with feedback until clean, budgeted, or
     stuck. Re-runs with a previous result ask for a JSON Patch against
     it; a patch that fails to apply keeps the previous result and the
-    next round for that call re-asks in full; an empty patch is the
-    call's no-fix declaration — the paths it was asked for are never
-    asked again (their issues ride out with the data), a different
-    fixable issue still reaches the call. Returns ``(data, issues,
-    rounds)`` —
+    next round for that call re-asks in full; an empty-array baseline
+    re-asks fresh — a clean conversation, nothing to diff; an empty
+    patch is the call's no-fix declaration — the paths it was asked
+    for are never asked again (their issues ride out with the data),
+    a different fixable issue still reaches the call. Returns
+    ``(data, issues, rounds)`` —
     always lenient. Call results mutate in place; re-merge from
     ``execution.calls`` rather than the now-stale ``execution.values``.
     ``specialist_instructions`` must be the same override the first
@@ -128,9 +130,9 @@ async def correct(runner: AgentRunner, execution: Execution, *, validator: Valid
             break
         rounds.extend(Round(call.unit.path, call.item, [i.path for i in feedback])
                       for call, feedback in routed)
-        # one patch decision per call, shared by the dispatch and the
+        # one remedy decision per call, shared by the dispatch and the
         # reply interpretation — they must never drift apart
-        plan = [(call, feedback, _patching(call, full_form))
+        plan = [(call, feedback, _remedy(call, full_form))
                 for call, feedback in routed]
         # every routed issue rides (a patch can fix them all at once —
         # one per round serialized the repair and burned the budget);
@@ -138,14 +140,15 @@ async def correct(runner: AgentRunner, execution: Execution, *, validator: Valid
         tasks = [await dispatch_specialist(
             runner, call, payload=payload, scheduler=scheduler,
             specialist_instructions=specialist_instructions,
-            history=call.result.history if call.result else None,
+            history=(call.result.history
+                     if call.result and remedy != 'fresh' else None),
             feedback=([*feedback[:-1], _Directed(feedback[-1])]
-                      if patching else feedback),
-            schema=_patch_schema(call) if patching else None)
-            for call, feedback, patching in plan]
-        for (call, feedback, patching), result in zip(plan,
-                                                      await asyncio.gather(*tasks)):
-            if not patching or not is_patch(result.data):
+                      if remedy == 'patch' else feedback),
+            schema=_patch_schema(call) if remedy == 'patch' else None)
+            for call, feedback, remedy in plan]
+        for (call, feedback, remedy), result in zip(plan,
+                                                    await asyncio.gather(*tasks)):
+            if remedy != 'patch' or not is_patch(result.data):
                 call.result = result  # the full corrected value replaces
                 continue
             if is_no_fix(result.data):  # empty patch: every asked value
@@ -166,10 +169,18 @@ async def correct(runner: AgentRunner, execution: Execution, *, validator: Valid
     return data, issues, rounds
 
 
-def _patching(call: Call, full_form: set) -> bool:
-    """Whether this re-run asks for a patch: the call has a previous
-    result to diff against and has not broken the protocol."""
-    return call.result is not None and id(call) not in full_form
+def _remedy(call: Call, full_form: set) -> str:
+    """How a re-run asks. 'patch': a diff against the previous result —
+    untouched entries cannot collapse. 'full': the protocol broke — the
+    whole value again, history kept. 'fresh': the previous result is an
+    empty array — nothing to diff and a poor anchor (shown its own [],
+    the model re-declares it and a present entry stays lost: measured),
+    so the re-ask starts a clean conversation."""
+    if call.result is None or id(call) in full_form:
+        return 'full'
+    if isinstance(call.result.data, list) and not call.result.data:
+        return 'fresh'
+    return 'patch'
 
 
 def _route(calls: list, issues: list) -> list:

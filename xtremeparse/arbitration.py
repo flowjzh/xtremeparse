@@ -157,12 +157,18 @@ async def arbitrate_extraction(runner: AgentRunner, *, items: list,
     and what on the list the document does not contain. No history, no
     feedback — the anchoring discipline of fresh_check. Returns
     ``(revised, raw)`` — the count revised by the anchored verdict
-    (``actual + missing - extra``), or None when the reply is unusable;
-    the caller falls back by direction then."""
+    (``actual + missing - extra``), or None when the reply is unusable
+    — including a both-empty verdict on an empty extraction; the
+    caller falls back by direction then."""
     listed = _openings(items)[:ARBITRATION_LIST_CAP]
     instructions = (_ARBITRATION_CHECK.format(
         list='\n'.join(f'- {e}' for e in listed)) + _ARBITRATION_SKELETON)
     raw = await fresh_check(runner, payload, instructions, CHECK_DESCRIPTION)
     if verdict := _parse_arbitration(raw, payload, listed):
+        if not verdict['missing'] and not actual:
+            return None, raw  # an empty list cannot bless itself: both
+            # sections empty asserts zero instances and no guard can
+            # anchor a quoteless verdict — measured live, a collapse to
+            # [] got approved and wiped entries a recount had located.
         return actual + len(verdict['missing']) - len(verdict['extra']), raw
     return None, raw

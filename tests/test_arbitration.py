@@ -73,3 +73,22 @@ async def test_arbitration_voids_extra_quotes_outside_the_list():
         ScriptedRunner(agent_result('missing:\nextra:\n编造的不存在条目')),
         items=[{'company': '腾讯'}], actual=1, payload=DOC_2)
     assert revised is None
+
+
+async def test_arbitration_voids_a_both_empty_verdict_on_an_empty_extraction():
+    # an empty extraction must not be blessed by a quoteless verdict —
+    # the case the both-empty gate (see arbitrate_extraction) exists for
+    revised, _ = await arbitrate_extraction(
+        ScriptedRunner(agent_result('missing:\n\nextra:\n')),
+        items=[], actual=0, payload=DOC_2)
+    assert revised is None
+
+
+async def test_arbitration_still_revises_an_empty_extraction_up():
+    # the void must not over-reach: missing quotes anchored to the
+    # document are evidence — they revise the collapsed count up so the
+    # mend path targets what the document holds
+    revised, _ = await arbitrate_extraction(
+        ScriptedRunner(agent_result('missing:\n第三段：美团 Deliver\nextra:\n')),
+        items=[], actual=0, payload=DOC_3)
+    assert revised == 1
