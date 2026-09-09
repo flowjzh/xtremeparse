@@ -11,7 +11,9 @@ be rooted at the unit path (``/project_experiences/81`` for a bare
 ``/81``) — the model reaches for the document root — and a reply that
 is not a patch at all reads as the full corrected value (the pre-patch
 semantics), so a draw that ignores the protocol degrades gracefully.
-An empty operation list is an empty patch (a no-op), never a wipe.
+An empty operation list is an empty patch — the model's no-fix
+declaration (the requested value does not exist in the material), a
+no-op on apply, never a wipe.
 """
 
 from __future__ import annotations
@@ -36,7 +38,14 @@ PATCH_ARRAY = {
 :func:`is_patch_round`, skipped by :func:`value_branch`. The protocol's
 prompt prose has two halves kept consistent by convention:
 ``corrections.PATCH_HOWTO`` rides the feedback tail, and each host
-adapter's output block (e.g. docspectra's) states the wire shape."""
+adapter's output block (e.g. docspectra's) states the wire shape; the
+no-fix clause they both teach is ``PATCH_NO_FIX``, shared verbatim."""
+
+PATCH_NO_FIX = ('an empty array when a requested value does not exist in '
+                'the material — never fabricate one or re-emit it as null')
+"""The no-fix clause of the patch protocol's prompt prose — one home,
+interpolated verbatim by every site that teaches the protocol
+(``corrections.PATCH_HOWTO``, each host adapter's output block)."""
 
 
 def is_patch_round(schema: dict) -> bool:
@@ -70,6 +79,14 @@ def is_patch(data: Any) -> bool:
     return (isinstance(data, list)
             and all(isinstance(o, dict) and isinstance(o.get('op'), str)
                     and isinstance(o.get('path'), str) for o in data))
+
+
+def is_no_fix(data: Any) -> bool:
+    """Whether a patch reply declares no fix — the empty patch, the
+    taught reply (``PATCH_NO_FIX``) for a value the material does not
+    carry. The correction loop honors it: the declared paths are never
+    asked again."""
+    return not data and is_patch(data)
 
 
 def apply_patch(prev: Any, ops: list, root: str = None) -> tuple:

@@ -70,6 +70,62 @@ async def test_persistent_failure_stops_on_no_progress_not_budget():
     assert issues[0].path == 'basic_info.name'  # unresolved, reported, no raise
 
 
+async def test_a_stuck_call_is_not_rerun_when_a_sibling_progresses():
+    # no progress is judged per call: item 0's identical path set must
+    # not ride a sibling's progress into another identical ask
+    runner = ScriptedRunner(agent_result({'company': ''}),
+                            agent_result({'company': '阿里'}))
+    data, issues, rounds = await correct(
+        runner, execution(call('jobs', {'company': ''}, item=0, strategy='per-item'),
+                          call('jobs', {'company': ''}, item=1, strategy='per-item')),
+        validator=_jobs_missing_company, payload='p', scheduler=scheduler(),
+        max_rounds=5)
+    assert len(runner.calls) == 2  # item 0 asked once, then dropped as stuck
+    assert data == {'jobs': [{'company': ''}, {'company': '阿里'}]}
+    assert [i.path for i in issues] == ['jobs[0].company']
+    assert [(r.unit_path, r.item) for r in rounds] == [('jobs', 0), ('jobs', 1)]
+
+
+async def test_an_empty_patch_declares_no_fix_and_ends_the_call():
+    # the outcome pinned: an empty reply burns no second ask, the data
+    # is untouched, the unresolved issue rides out
+    runner = ScriptedRunner(agent_result([]))
+    data, issues, rounds = await correct(
+        runner, execution(call('basic_info', {'age': '30'})),
+        validator=lambda data: [FakeIssue('basic_info.name')],
+        payload='p', scheduler=scheduler(), max_rounds=5)
+    assert len(runner.calls) == 1
+    assert data == {'basic_info': {'age': '30'}}
+    assert issues[0].path == 'basic_info.name'
+
+
+async def test_a_no_fix_declaration_only_silences_its_own_paths():
+    # the declaration is about values, not the call: when a later
+    # validation pass surfaces a different fixable issue on the same
+    # call, it still gets its ask
+    passes = []
+
+    def validator(data):
+        issues = [FakeIssue('jobs[0].company')]
+        if passes and not (data.get('jobs') or [{}])[0].get('title'):
+            # from the second pass on, a new fixable issue shows
+            issues.append(FakeIssue('jobs[0].title'))
+        passes.append(data)
+        return issues
+
+    runner = ScriptedRunner(agent_result([]),  # company: not in material
+                            agent_result({'company': '', 'title': '主管'}))
+    data, issues, rounds = await correct(
+        runner, execution(call('jobs', {'company': '', 'title': ''},
+                               item=0, strategy='per-item')),
+        validator=validator, payload='p', scheduler=scheduler(),
+        max_rounds=5)
+    assert data == {'jobs': [{'company': '', 'title': '主管'}]}
+    assert [i.path for i in issues] == ['jobs[0].company']
+    assert len(runner.calls) == 2
+    assert runner.calls[1]['feedback'][0].path == 'jobs[0].title'
+
+
 async def test_clean_first_validation_never_reruns():
     runner = ScriptedRunner()
     _, issues, rounds = await correct(
@@ -354,6 +410,14 @@ async def test_a_report_only_issue_does_not_mask_repairable_progress():
     assert [(i.path, i.report_only) for i in issues] == [('jobs', True)]
 
 
+def _jobs_missing_company(data):
+    """One issue per job whose company is empty — the generic-issue
+    routing behind the stuck-sibling and no-fix paths."""
+    return [FakeIssue(f'jobs[{i}].company')
+            for i, j in enumerate(data.get('jobs') or [])
+            if not j.get('company')]
+
+
 def _needs_second_job(data):
     """One missing entry fires one correction round (FakeIssue, not
     count_issues: the generic-issue routing is what reaches the patch
@@ -376,6 +440,24 @@ async def test_patch_reply_is_applied_not_replaced():
     rerun = runner.calls[0]
     assert is_patch_round(rerun['result_schema'])
     assert 'RFC 6902' in rerun['feedback'][0].message
+
+
+async def test_a_patch_round_carries_every_routed_issue():
+    # multi-field misses ride together — one patch can fix them all;
+    # only the last issue carries the protocol directive
+    runner = ScriptedRunner(agent_result([
+        {'op': 'replace', 'path': '/jobs/0/company', 'value': '腾讯'},
+        {'op': 'replace', 'path': '/jobs/1/company', 'value': '阿里'}]))
+    data, issues, rounds = await correct(
+        runner, execution(call('jobs', [{'company': ''}, {'company': ''}])),
+        validator=_jobs_missing_company, payload='p', scheduler=scheduler())
+    assert data == {'jobs': [{'company': '腾讯'}, {'company': '阿里'}]}
+    assert issues == [] and len(rounds) == 1
+    rerun = runner.calls[0]
+    assert [i.path for i in rerun['feedback']] == \
+        ['jobs[0].company', 'jobs[1].company']
+    assert 'RFC 6902' not in rerun['feedback'][0].message
+    assert 'RFC 6902' in rerun['feedback'][1].message
 
 
 async def test_a_failing_patch_keeps_the_result_then_reasks_in_full():

@@ -11,8 +11,10 @@ entries cannot collapse in a rewrite, and the decode shrinks to the fix;
 a reply that is not a patch applies as the full corrected value, and a
 patch that fails to apply keeps the previous result with the next round
 asking for the full value. Stops on clean, budget (default 2 rounds), or
-no progress (issue paths identical to the previous round). Never raises
-on bad data; unresolved issues return with the data.
+no progress (a call whose issue paths repeat its previous round is not
+re-run; an empty-patch reply — the no-fix declaration — silences its
+own paths, the call still routes for a different fixable issue). Never
+raises on bad data; unresolved issues return with the data.
 """
 
 from __future__ import annotations
@@ -27,7 +29,8 @@ from xtremeparse.evalkit import pair_at
 from xtremeparse.paths import resolve, resolve_list
 from xtremeparse.executor import Call, Execution, dispatch_specialist, values_from_calls
 from xtremeparse.merge import merge
-from xtremeparse.patching import PATCH_ARRAY, apply_patch, is_patch
+from xtremeparse.patching import (PATCH_ARRAY, PATCH_NO_FIX, apply_patch,
+                                  is_no_fix, is_patch)
 from xtremeparse.prompting import value_chars
 from xtremeparse.scheduling import TaskScheduler
 from xtremeparse.units import MISC
@@ -44,8 +47,9 @@ PATCH_HOWTO = ('\n\nFix by JSON Patch (RFC 6902): reply with an array '
                'previous result — op "add" (path "/<index>", "-" appends), '
                '"remove" or "replace"; a pointer may be rooted at the '
                'unit path. Emit only what changes; never re-emit entries '
-               'that were already correct. If the fix cannot be expressed '
-               'as a patch, reply with the full corrected value instead.')
+               'that were already correct. Reply with ' + PATCH_NO_FIX + '. '
+               'If the fix cannot be expressed as a patch, reply with the '
+               'full corrected value instead.')
 
 
 class _Directed:
@@ -86,25 +90,40 @@ async def correct(runner: AgentRunner, execution: Execution, *, validator: Valid
     """Re-run failing calls with feedback until clean, budgeted, or
     stuck. Re-runs with a previous result ask for a JSON Patch against
     it; a patch that fails to apply keeps the previous result and the
-    next round for that call re-asks in full. Returns ``(data, issues,
-    rounds)`` — always lenient. Call results mutate in place; re-merge
-    from ``execution.calls`` rather than the now-stale
-    ``execution.values``. ``specialist_instructions`` must be the same
-    override the first round ran with — a correction round continues
-    that call's conversation history."""
+    next round for that call re-asks in full; an empty patch is the
+    call's no-fix declaration — the paths it was asked for are never
+    asked again (their issues ride out with the data), a different
+    fixable issue still reaches the call. Returns ``(data, issues,
+    rounds)`` —
+    always lenient. Call results mutate in place; re-merge from
+    ``execution.calls`` rather than the now-stale ``execution.values``.
+    ``specialist_instructions`` must be the same override the first
+    round ran with — a correction round continues that call's
+    conversation history."""
     calls = execution.calls
     data = merge(values_from_calls(calls))
     issues = list(validator(data) or [])
-    rounds, seen, full_form = [], None, set()
+    rounds, seen, full_form, no_fix = [], {}, set(), {}
     for _ in range(max_rounds):
         # report-only issues carry no repair: they drive neither the
         # no-progress check nor routing, and ride out with the data
         actionable = [i for i in issues if not getattr(i, 'report_only', False)]
-        paths = {i.path for i in actionable}
-        if not paths or paths == seen:
+        if not actionable:
             break
-        seen = paths
-        routed = _route(calls, actionable)
+        # no progress is judged per call — a call whose issue paths
+        # repeat its previous round is not re-run (a sibling's progress
+        # must not drag a stuck call through another identical ask);
+        # paths a call declared absent ride the no-fix declaration, a
+        # different fixable issue on the same call still routes
+        routed = []
+        for call, feedback in _route(calls, actionable):
+            if declared := no_fix.get(id(call)):
+                feedback = [i for i in feedback if i.path not in declared]
+            if not feedback:
+                continue
+            if (paths := {i.path for i in feedback}) != seen.get(id(call)):
+                seen[id(call)] = paths
+                routed.append((call, feedback))
         if not routed:
             break
         rounds.extend(Round(call.unit.path, call.item, [i.path for i in feedback])
@@ -113,17 +132,26 @@ async def correct(runner: AgentRunner, execution: Execution, *, validator: Valid
         # reply interpretation — they must never drift apart
         plan = [(call, feedback, _patching(call, full_form))
                 for call, feedback in routed]
+        # every routed issue rides (a patch can fix them all at once —
+        # one per round serialized the repair and burned the budget);
+        # only the last is wrapped (see the PATCH_HOWTO note)
         tasks = [await dispatch_specialist(
             runner, call, payload=payload, scheduler=scheduler,
             specialist_instructions=specialist_instructions,
             history=call.result.history if call.result else None,
-            feedback=[_Directed(feedback[-1])] if patching else feedback,
+            feedback=([*feedback[:-1], _Directed(feedback[-1])]
+                      if patching else feedback),
             schema=_patch_schema(call) if patching else None)
             for call, feedback, patching in plan]
-        for (call, _, patching), result in zip(plan,
-                                               await asyncio.gather(*tasks)):
+        for (call, feedback, patching), result in zip(plan,
+                                                      await asyncio.gather(*tasks)):
             if not patching or not is_patch(result.data):
                 call.result = result  # the full corrected value replaces
+                continue
+            if is_no_fix(result.data):  # empty patch: every asked value
+                # declared absent — a re-declaration accumulates
+                no_fix.setdefault(id(call), set()).update(
+                    i.path for i in feedback)
                 continue
             patched, err = apply_patch(call.result.data, result.data,
                                        root=call.unit.path)
@@ -132,7 +160,7 @@ async def correct(runner: AgentRunner, execution: Execution, *, validator: Valid
                                           history=result.history)
             else:  # protocol broke: forget the baseline, re-ask in full
                 full_form.add(id(call))
-                seen = None
+                seen.pop(id(call), None)
         data = merge(values_from_calls(calls))
         issues = list(validator(data) or [])
     return data, issues, rounds
