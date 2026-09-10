@@ -693,10 +693,9 @@ async def route(runner: AgentRunner, *, payload: str,
         pending = resplit(shared, parsed)
         adopted = fold_merged(parsed, merged_nested)
         if len(pending) == len(shared) and not adopted:
-            return [_RouteIssue(
-                'segments', 'route_hint',
-                _split_hint(code, *shared[code]) + _DIFF_REPLY)
-                for code in pending]
+            return [_RouteIssue('segments', 'route_hint',
+                                _split_hint(code, *shared[code]))
+                    for code in pending]
         return None  # a full or partial adoption stands
 
     async def zeros_ask(zeros):
@@ -719,8 +718,7 @@ async def route(runner: AgentRunner, *, payload: str,
                                 overall_block=overall_block)
         if splice(zeros, answer):
             return None  # the recount's adoption stands
-        return [_RouteIssue('segments', 'route_invalid',
-                            zeros_note(zeros) + _DIFF_REPLY)]
+        return [_RouteIssue('segments', 'route_invalid', zeros_note(zeros))]
 
     def zeros_note(zeros):
         note = (f'{", ".join(zeros)}: a separate recount of '
@@ -751,7 +749,7 @@ async def route(runner: AgentRunner, *, payload: str,
                                      overall_block=overall_block)
         if not splice(zeros, answer):
             return False, [_RouteIssue('segments', 'route_invalid',
-                                       zeros_note(zeros) + _DIFF_REPLY)]
+                                       zeros_note(zeros))]
         parsed = _parse_shared_answer(answer, list(labels) + zeros,
                                       keep_zeros=bool(merged_nested))
         # the zero units' count lines delimit sections too — a count
@@ -957,7 +955,8 @@ async def route(runner: AgentRunner, *, payload: str,
                           'are changing, or re-emit the corrected map '
                           'in full'
                           for m in marked]
-            feedback = [_RouteIssue('segments', 'route_invalid', m + _DIFF_FIX)
+            marked[-1] += _DIFF_FIX
+            feedback = [_RouteIssue('segments', 'route_invalid', m)
                         for m in marked]
             history.append(errors)
             continue
@@ -971,6 +970,9 @@ async def route(runner: AgentRunner, *, payload: str,
             segments, counts, nested, derived, budgets, diff_base = valid
         if hint_fb := await hint_pass():
             suggestion, feedback = hint_fb
+            # the reply protocol closes the round's feedback — once,
+            # after the last hint, multi-hint rounds included
+            feedback[-1].message += _DIFF_REPLY
             continue
         return finalize()
     # exhausted: the model had its bounded repairs, and the flaws that
@@ -2300,7 +2302,7 @@ def _overrun_hint(code: str, first: int, last: int, lines: str) -> str:
     return (f'{code}: rewrite its line(s) into these blocks — one ranged '
             f'line per block, exactly as written:\n{lines}\n'
             f'If the instances truly share their chunks inseparably, '
-            f'{_DECLINE}') + _DIFF_REPLY
+            f'{_DECLINE}')
 
 
 def _adopt_blocks(text: str, code: str, first: int, last: int,

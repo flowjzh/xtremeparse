@@ -120,6 +120,9 @@ async def test_invalid_map_gets_one_repair_with_feedback():
     assert len(runner.calls) == 2
     messages = ' '.join(i.message for i in runner.calls[1]['feedback'])
     assert "unknown unit code 'x'" in messages and 'not covered' in messages
+    # several errors in one round share one diff protocol — it closes
+    # the error list instead of repeating under every bullet
+    assert messages.count('Reply with a unified diff') == 1
     assert routing.groups[1].chunk_ids == [1]
 
 
