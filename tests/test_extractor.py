@@ -4,7 +4,7 @@ from xtremeflow.scheduler import TaskScheduler
 
 from xtremeparse import Extractor, ExtractionResult
 from xtremeparse.arbitration import CHECK_DESCRIPTION
-from xtremeparse.prompting import estimate_tokens, shared_payload
+from xtremeparse.prompting import estimate_tokens, schema_head
 from tests.helpers import (FakeIssue, ScriptedRunner, agent_result,
                            plain_schema)
 
@@ -195,7 +195,7 @@ async def test_every_llm_call_is_scheduled_with_a_token_estimate():
     await Extractor(PipelineRunner(), scheduler=scheduler,
                     unit_strategy={'career.jobs': 'per-item'}).extract(
         TEXT, SCHEMA, validator)
-    assert scheduler.estimates[0] == estimate_tokens(shared_payload(TEXT, SCHEMA), TEXT)
+    assert scheduler.estimates[0] == estimate_tokens(TEXT, schema_head(SCHEMA), TEXT)
     assert all(e > 0 for e in scheduler.estimates)
     assert len(scheduler.estimates) == 5  # router + four specialists
 

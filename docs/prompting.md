@@ -39,7 +39,10 @@ Extractor(runner,
   validated at construction: a template missing one raises `ValueError`
   instead of silently rendering a prompt without its chunk listing.
 - `top` is the highest chunk id, `none` the NONE marker, `chunks` the
-  numbered chunk listing, `card` the unit's semantic card — all built by
+  schema block riding ahead of the numbered chunk listing (the one
+  place a router-plane prompt reads the field descriptions — it cannot
+  be positioned or omitted independently), `card` the unit's semantic
+  card — all built by
   code. `legend` is one `code = <unit card header>` line per unit; its
   format is fixed by code (the card header is the cue the default
   prompts rely on — an override legend interpretation is the override's
@@ -102,10 +105,13 @@ prompt produced them.
   [repairs.md](repairs.md)).
   Hosts shape what is retried via the validator's issues, never the
   reply contract.
-- The shared payload prefix (`content`) — byte-identical across every
-  call it serves (router: full text + full schema; specialists: the
-  text alone, each call's own partial schema riding beside its unit
-  card); the provider KV cache depends on the byte identity.
+- The shared payload prefix (`content`) — the document text alone,
+  byte-identical across every call it serves (router, recounts and
+  specialists alike): the provider's cache serves one common block,
+  and dashscope's explicit cache truncates only at message
+  boundaries, so a text+schema system message could never serve the
+  specialists' text-only one. The full schema rides the router-plane
+  prompts' chunks section instead (see `prompting.schema_head`).
 
 ## Stability caveat
 

@@ -59,13 +59,23 @@ def overall(schema: JSONSchema) -> str | None:
     return schema.get('description') or None
 
 
-def shared_payload(text: str, schema: JSONSchema) -> str:
-    """The byte-identical content prefix the ROUTER's call carries —
-    full text plus the full schema, whose field descriptions feed the
-    budget ratios. Specialists carry the text alone (their own partial
-    schema rides per call beside the unit card), so the schema's bytes
-    are paid once, by the one call that reads them."""
-    return f'{text}\n\n---\nJSON Schema:\n{json.dumps(schema, ensure_ascii=False, sort_keys=True)}'
+def schema_head(schema: JSONSchema) -> str:
+    """The schema block the router-plane prompts embed ahead of their
+    chunks listing — the full schema's field descriptions, which the
+    budget declarations reason over. Not carried in ``content``:
+    content is the document text alone on every call (router, recounts
+    and specialists alike), the one byte-identical system message the
+    provider's cache serves to the whole fleet — dashscope's explicit
+    cache truncates only at message boundaries, so a text+schema system
+    message could never serve the specialists' text-only one."""
+    return f'JSON Schema:\n{json.dumps(schema, ensure_ascii=False, sort_keys=True)}'
+
+
+def router_tokens(text: str, head: str) -> int:
+    """The router call's tps seed, shared by the extractor and the
+    eval probes: the text rides content and the instructions re-embed
+    it as the chunk listing, beside the schema head."""
+    return estimate_tokens(text, head, text)
 
 
 def value_chars(value) -> int:

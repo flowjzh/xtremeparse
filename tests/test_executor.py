@@ -150,7 +150,7 @@ async def test_scheduler_concurrency_cap_is_respected():
     assert runner.max_active <= 2
 
 
-async def test_specialist_calls_carry_card_scope_and_shared_payload():
+async def test_specialist_calls_carry_card_scope_and_content():
     routing_ = routing(group('basic_info', text='张三'))
     runner = ProbeRunner()
     await execute(runner, routing_, payload='shared', scheduler=TaskScheduler(1))

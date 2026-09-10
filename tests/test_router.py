@@ -7,6 +7,7 @@ from xtremeparse.router import (NONE, RECOUNT_PLACEHOLDERS, ROUTE_PLACEHOLDERS,
                                 _diff_text, _name_list, _overlay_text,
                                 _recount_legend, _resplit, route)
 from xtremeparse.units import MISC, decompose
+from xtremeparse.prompting import schema_head
 from tests.helpers import ScriptedRunner, agent_result
 
 SCHEMA = {
@@ -23,7 +24,8 @@ SCHEMA = {
 }
 UNITS = decompose(SCHEMA)
 CHUNKS = ['姓名张三', '第一段：腾讯', '第二段：阿里', '无关页脚']
-PAYLOAD = '全文\n\n---\nJSON Schema: ...'
+PAYLOAD = '全文'
+HEAD = schema_head(SCHEMA)
 BAD_MAP = agent_result('0 a\n1 b.0\n2 b.1\nb: 2')  # never covers chunk 3
 
 
@@ -36,11 +38,11 @@ async def route_with(text):
     # the DSL is queued twice: a zero-declared array unit gets one
     # verification round that re-emits it unchanged
     return await route(ScriptedRunner(*[agent_result(text)] * 2),
-                       payload=PAYLOAD, units=UNITS, chunks=CHUNKS)
+                       payload=PAYLOAD, schema_head=HEAD, units=UNITS, chunks=CHUNKS)
 
 
 async def test_groups_carry_unit_item_and_chunk_text():
-    routing = await route(runner_ok(), payload=PAYLOAD, units=UNITS, chunks=CHUNKS)
+    routing = await route(runner_ok(), payload=PAYLOAD, schema_head=HEAD, units=UNITS, chunks=CHUNKS)
     assert [(g.unit.path, g.item, g.chunk_ids) for g in routing.groups] == [
         ('basic_info', None, [0]), ('jobs', 0, [1]), ('jobs', 1, [2])]
     assert routing.groups[0].text == '姓名张三'
@@ -57,7 +59,7 @@ async def test_ranges_and_single_chunk_forms_are_equivalent():
 
 async def test_prompt_carries_legend_rules_and_numbered_chunks():
     runner = runner_ok()
-    await route(runner, payload=PAYLOAD, units=UNITS, chunks=CHUNKS)
+    await route(runner, payload=PAYLOAD, schema_head=HEAD, units=UNITS, chunks=CHUNKS)
     call = runner.calls[0]
     assert 'a = [basic_info | object] 基本信息' in call['instructions'] \
         and f'c = [{MISC} | scalar] created 创建时间' in call['instructions']
@@ -72,12 +74,23 @@ async def test_prompt_carries_legend_rules_and_numbered_chunks():
     assert call['feedback'] is None
 
 
+async def test_content_is_bare_text_and_schema_rides_the_chunks_section():
+    """The cache contract: content is the document text alone — the one
+    system message the specialists' calls share — and the schema block
+    heads the router prompt's chunks section."""
+    runner = runner_ok()
+    await route(runner, payload=PAYLOAD, schema_head=HEAD, units=UNITS, chunks=CHUNKS)
+    call = runner.calls[0]
+    assert call['content'] == PAYLOAD
+    assert f'Chunks:\n\n{HEAD}\n\n[0] 姓名张三' in call['instructions']
+
+
 @pytest.mark.parametrize('overall, present', [(None, False),
                                               ('Chinese resumes only', True)])
 async def test_overall_block_in_the_route_prompt(overall, present):
     runner = runner_ok()
     kwargs = {'overall': overall} if overall is not None else {}
-    await route(runner, payload=PAYLOAD, units=UNITS, chunks=CHUNKS, **kwargs)
+    await route(runner, payload=PAYLOAD, schema_head=HEAD, units=UNITS, chunks=CHUNKS, **kwargs)
     rendered = 'Overall Instruction:\n\nChinese resumes only'
     assert (rendered in runner.calls[0]['instructions']) is present
 
@@ -86,7 +99,7 @@ async def test_overall_instruction_renders_into_the_recount_prompt():
     runner = ScriptedRunner(
         agent_result('0 a\n1-3 -\nb: 0'),
         agent_result('b: 0'))  # the recount confirms the zero
-    await route(runner, payload=PAYLOAD, units=UNITS, chunks=CHUNKS,
+    await route(runner, payload=PAYLOAD, schema_head=HEAD, units=UNITS, chunks=CHUNKS,
                 overall='Chinese resumes only')
     assert 'Overall Instruction:\n\nChinese resumes only' \
         in runner.calls[1]['instructions']
@@ -116,7 +129,7 @@ async def test_invalid_map_gets_one_repair_with_feedback():
         agent_result('0 a\n1 x.0\n2 b.1\nb: 2'),  # unknown code + missing coverage
         agent_result('0 a\n1 b.0\n2 b.1\n3 -\nb: 2'),
     )
-    routing = await route(runner, payload=PAYLOAD, units=UNITS, chunks=CHUNKS)
+    routing = await route(runner, payload=PAYLOAD, schema_head=HEAD, units=UNITS, chunks=CHUNKS)
     assert len(runner.calls) == 2
     messages = ' '.join(i.message for i in runner.calls[1]['feedback'])
     assert "unknown unit code 'x'" in messages and 'not covered' in messages
@@ -129,7 +142,7 @@ async def test_invalid_map_gets_one_repair_with_feedback():
 async def test_still_invalid_after_repairs_raises():
     runner = ScriptedRunner(*[BAD_MAP] * 5)
     with pytest.raises(RouterError):
-        await route(runner, payload=PAYLOAD, units=UNITS, chunks=CHUNKS)
+        await route(runner, payload=PAYLOAD, schema_head=HEAD, units=UNITS, chunks=CHUNKS)
 
 
 async def test_overlap_between_segments_is_repaired():
@@ -137,7 +150,7 @@ async def test_overlap_between_segments_is_repaired():
         agent_result('0-1 a\n1 b.0\n2-3 -\nb: 1'),  # chunk 1 in two segments
         agent_result('0 a\n1 b.0\n2-3 -\nb: 1'),
     )
-    await route(runner, payload=PAYLOAD, units=UNITS, chunks=CHUNKS)
+    await route(runner, payload=PAYLOAD, schema_head=HEAD, units=UNITS, chunks=CHUNKS)
     # the conflicting line is named — range and codes — so the repair
     # can quote it instead of hunting for it
     assert 'overlaps line 0-1 (a)' in runner.calls[1]['feedback'][0].message
@@ -164,7 +177,7 @@ async def test_none_takes_no_item_index():
         agent_result('0 a\n1 b.0\n2-3 -.0\nb: 1'),
         agent_result('0 a\n1 b.0\n2-3 -\nb: 1'),
     )
-    await route(runner, payload=PAYLOAD, units=UNITS, chunks=CHUNKS)
+    await route(runner, payload=PAYLOAD, schema_head=HEAD, units=UNITS, chunks=CHUNKS)
     assert 'takes no item index' in runner.calls[1]['feedback'][0].message
 
 
@@ -189,7 +202,7 @@ async def test_declared_count_must_match_mapped_items():
         agent_result('0 a\n1-3 b.0\nb: 2'),  # declared 2, mapped only item 0
         agent_result('0 a\n1 b.0\n2-3 b.1\nb: 2'),
     )
-    routing = await route(runner, payload=PAYLOAD, units=UNITS, chunks=CHUNKS)
+    routing = await route(runner, payload=PAYLOAD, schema_head=HEAD, units=UNITS, chunks=CHUNKS)
     assert 'declared 2 items but the map uses [0]' \
         in runner.calls[1]['feedback'][0].message
     assert [g.item for g in routing.groups if g.unit.kind == 'array'] == [0, 1]
@@ -200,7 +213,7 @@ async def test_missing_count_declaration_is_repaired():
         agent_result('0 a\n1 b.0\n2-3 -'),
         agent_result('0 a\n1 b.0\n2-3 -\nb: 1'),
     )
-    await route(runner, payload=PAYLOAD, units=UNITS, chunks=CHUNKS)
+    await route(runner, payload=PAYLOAD, schema_head=HEAD, units=UNITS, chunks=CHUNKS)
     assert 'count is undeclared' in runner.calls[1]['feedback'][0].message
 
 
@@ -232,7 +245,7 @@ async def test_absent_declaration_reads_as_zero_and_gets_recounted():
     runner = ScriptedRunner(
         agent_result('0-3 -'),
         agent_result('0-3 -\nb: 0'))  # recount confirms the zero
-    routing = await route(runner, payload=PAYLOAD, units=UNITS, chunks=CHUNKS)
+    routing = await route(runner, payload=PAYLOAD, schema_head=HEAD, units=UNITS, chunks=CHUNKS)
     assert len(runner.calls) == 2
     assert routing.raw['counts'] == {'jobs': 0} and routing.groups == []
 
@@ -245,7 +258,7 @@ async def test_zero_declaration_gets_one_recount_round():
     runner = ScriptedRunner(
         agent_result('0 a\n1-3 -\nb: 0'),
         agent_result('b: 1\n1 b.0'))  # recount: one instance, its map line
-    routing = await route(runner, payload=PAYLOAD, units=UNITS, chunks=CHUNKS)
+    routing = await route(runner, payload=PAYLOAD, schema_head=HEAD, units=UNITS, chunks=CHUNKS)
     assert len(runner.calls) == 2 and runner.calls[1]['feedback'] is None
     assert routing.raw['counts'] == {'jobs': 1}
     assert [g.chunk_ids for g in routing.groups if g.unit.kind == 'array'] == [[1]]
@@ -264,7 +277,7 @@ async def test_zero_confirm_adopts_silently_on_a_chain_map():
         agent_result('0 a\n1-3 b.0\n2 b.0.c.0\n3 b.0.c.1\n4 -\n'
                      'b: 1\nb.0.c: 2\nd: 0'),
         agent_result('d: 0'))  # recount confirms the zero
-    routing = await route(runner, payload=PAYLOAD,
+    routing = await route(runner, payload=PAYLOAD, schema_head=HEAD,
                           units=decompose(schema), chunks=NESTED_CHUNKS)
     assert len(runner.calls) == 2 and runner.calls[1]['feedback'] is None
     roles = [g for g in routing.groups if g.unit.parent]
@@ -277,7 +290,7 @@ async def test_recount_adopts_a_derivation_for_a_summarizing_unit():
     runner = ScriptedRunner(
         agent_result('0 a\n1 b.0\n2-3 -\nb: 1\nc: 0'),
         agent_result('c = b'))  # recount: it only summarizes b
-    routing = await route(runner, payload=PAYLOAD, units=SHARED_UNITS,
+    routing = await route(runner, payload=PAYLOAD, schema_head=HEAD, units=SHARED_UNITS,
                           chunks=CHUNKS)
     assert len(runner.calls) == 2
     assert routing.raw['counts'] == {'jobs': 1, 'summary': 1}
@@ -291,7 +304,7 @@ async def test_unspliceable_recount_falls_back_to_a_repair_round():
         agent_result('0-1 a\n2-3 -\nb: 0'),
         agent_result('b: 1\n1 b.0'),  # claims chunk 1, routed to a
         agent_result('0-1 a\n2 b.0\n3 -\nb: 1'))
-    routing = await route(runner, payload=PAYLOAD, units=UNITS, chunks=CHUNKS)
+    routing = await route(runner, payload=PAYLOAD, schema_head=HEAD, units=UNITS, chunks=CHUNKS)
     assert 'could not be merged' in runner.calls[2]['feedback'][0].message
     assert routing.raw['counts'] == {'jobs': 1}
 
@@ -302,7 +315,7 @@ async def test_recount_ranged_claim_adopts_as_the_shared_form():
     runner = ScriptedRunner(
         agent_result('0-1 a\n2-3 -\nb: 0'),
         agent_result('b: 2\n2-3 b.0-b.1'))
-    routing = await route(runner, payload=PAYLOAD, units=UNITS, chunks=CHUNKS)
+    routing = await route(runner, payload=PAYLOAD, schema_head=HEAD, units=UNITS, chunks=CHUNKS)
     assert len(runner.calls) == 2
     assert routing.raw['counts'] == {'jobs': 2}
     jobs = [a for a in routing.raw['assignments'] if a['unit'] == 'jobs']
@@ -317,7 +330,7 @@ async def test_recount_claims_inside_one_units_items_read_as_derivation():
     runner = ScriptedRunner(
         agent_result('0 a\n1 b.0\n2 b.1\n3 -\nb: 2\nc: 0'),
         agent_result('c: 2\n1 c.0\n2 c.1'))
-    routing = await route(runner, payload=PAYLOAD, units=SHARED_UNITS,
+    routing = await route(runner, payload=PAYLOAD, schema_head=HEAD, units=SHARED_UNITS,
                           chunks=CHUNKS)
     assert len(runner.calls) == 2
     assert routing.raw['counts'] == {'jobs': 2, 'summary': 2}
@@ -332,7 +345,7 @@ async def test_recount_noise_about_other_units_is_ignored_not_fatal():
         agent_result('0 a\n1 b.0\n2-3 -\nb: 1\nc: 0'),
         agent_result('b: 1\n9-9 b.0\nc: 0'),  # b not owned; 9-9 outside
     )
-    routing = await route(runner, payload=PAYLOAD, units=SHARED_UNITS,
+    routing = await route(runner, payload=PAYLOAD, schema_head=HEAD, units=SHARED_UNITS,
                           chunks=CHUNKS)
     assert len(runner.calls) == 2  # spliced, no repair round
     assert routing.raw['counts'] == {'jobs': 1, 'summary': 0}
@@ -344,7 +357,7 @@ async def test_unusable_claims_with_a_unique_same_count_still_derive():
     runner = ScriptedRunner(
         agent_result('0 a\n1 b.0\n2 b.1\n3 -\nb: 2\nc: 0'),
         agent_result('c: 2\n0 c.0,c.1'))  # claims a non-unit's chunk
-    routing = await route(runner, payload=PAYLOAD, units=SHARED_UNITS,
+    routing = await route(runner, payload=PAYLOAD, schema_head=HEAD, units=SHARED_UNITS,
                           chunks=CHUNKS)
     assert len(runner.calls) == 2
     assert routing.raw['counts'] == {'jobs': 2, 'summary': 2}
@@ -354,7 +367,7 @@ async def test_recount_of_a_truly_absent_unit_finishes_there():
     runner = ScriptedRunner(
         agent_result('0 a\n1-3 -\nb: 0'),
         agent_result('b: 0'))  # recount confirms the zero
-    routing = await route(runner, payload=PAYLOAD, units=UNITS, chunks=CHUNKS)
+    routing = await route(runner, payload=PAYLOAD, schema_head=HEAD, units=UNITS, chunks=CHUNKS)
     assert len(runner.calls) == 2
     assert routing.raw['counts'] == {'jobs': 0}
     assert [g.unit.path for g in routing.groups] == ['basic_info']
@@ -365,7 +378,7 @@ async def test_count_before_map_is_rejected_and_non_array_count_ignored():
         agent_result('a: 2\n0 a\n1 b.0\n2-3 -\nb: 1\nc: 1'),
         agent_result('0 a\n1 b.0\n2-3 -\nb: 1'),
     )
-    await route(runner, payload=PAYLOAD, units=UNITS, chunks=CHUNKS)
+    await route(runner, payload=PAYLOAD, schema_head=HEAD, units=UNITS, chunks=CHUNKS)
     messages = ' '.join(i.message for i in runner.calls[1]['feedback'])
     assert 'follow the map' in messages and 'not a repeating unit' not in messages
 
@@ -374,7 +387,7 @@ async def test_non_text_output_is_invalid():
     bad = agent_result({'assignments': []})
     runner = ScriptedRunner(*[bad] * 5)
     with pytest.raises(RouterError):
-        await route(runner, payload=PAYLOAD, units=UNITS, chunks=CHUNKS)
+        await route(runner, payload=PAYLOAD, schema_head=HEAD, units=UNITS, chunks=CHUNKS)
 
 
 def test_group_is_a_plain_dataclass():
@@ -403,7 +416,7 @@ SHARED_UNITS = decompose(SHARED_SCHEMA)  # a=basic_info, b=jobs, c=summary
 
 async def route_shared(text):
     return await route(ScriptedRunner(*[agent_result(text)] * 2),
-                       payload=PAYLOAD, units=SHARED_UNITS, chunks=CHUNKS)
+                       payload=PAYLOAD, schema_head=HEAD, units=SHARED_UNITS, chunks=CHUNKS)
 
 
 async def test_shared_run_feeds_both_units():
@@ -437,7 +450,7 @@ async def test_code_twice_on_a_line_dedupes_instead_of_erroring():
         agent_result('0 a\n1 b.0,b.0\n2-3 -\nb: 1\nc: 1'),
         agent_result('c: 1\n不存在的行'),  # recount quotes anchor nowhere
         agent_result('0 a\n1 b.0,c.0\n2-3 -\nb: 1\nc: 1'))
-    await route(runner, payload=PAYLOAD, units=SHARED_UNITS, chunks=CHUNKS)
+    await route(runner, payload=PAYLOAD, schema_head=HEAD, units=SHARED_UNITS, chunks=CHUNKS)
     assert len(runner.calls) == 3
     messages = ' '.join(i.message for i in runner.calls[2]['feedback'])
     assert 'appears twice' not in messages
@@ -458,7 +471,7 @@ async def test_none_cannot_be_comma_joined():
     runner = ScriptedRunner(
         agent_result('0 a\n1 b.0,-\n2-3 -\nb: 1\nc: 1'),
         agent_result('0 a\n1 b.0,c.0\n2-3 -\nb: 1\nc: 1'))
-    await route(runner, payload=PAYLOAD, units=SHARED_UNITS, chunks=CHUNKS)
+    await route(runner, payload=PAYLOAD, schema_head=HEAD, units=SHARED_UNITS, chunks=CHUNKS)
     assert "'1 b.0,-'" in runner.calls[1]['feedback'][0].message  # format-level reject
 
 
@@ -466,14 +479,14 @@ async def test_shared_unit_count_still_cross_checked():
     runner = ScriptedRunner(
         agent_result('0 a\n1 b.0,c.0\n2-3 -\nb: 1\nc: 2'),
         agent_result('0 a\n1 b.0,c.0\n2-3 -\nb: 1\nc: 1'))
-    await route(runner, payload=PAYLOAD, units=SHARED_UNITS, chunks=CHUNKS)
+    await route(runner, payload=PAYLOAD, schema_head=HEAD, units=SHARED_UNITS, chunks=CHUNKS)
     assert 'declared 2 items but the map uses [0]' \
         in runner.calls[1]['feedback'][0].message
 
 
 async def test_prompt_carries_sharing_rule():
     runner = ScriptedRunner(agent_result('0 a\n1 b.0,c.0\n2-3 -\nb: 1\nc: 1'))
-    await route(runner, payload=PAYLOAD, units=SHARED_UNITS, chunks=CHUNKS)
+    await route(runner, payload=PAYLOAD, schema_head=HEAD, units=SHARED_UNITS, chunks=CHUNKS)
     assert 'comma-join' in runner.calls[0]['instructions']
     assert '5 x.0,y.0' in runner.calls[0]['instructions']
     assert '3 x.0,x.1,x.2' in runner.calls[0]['instructions']
@@ -506,7 +519,7 @@ async def test_bare_declaration_without_count_or_source_is_rejected():
     runner = ScriptedRunner(
         agent_result('0 a\n1 b.0\n2-3 -\nb: 1\nc'),
         agent_result('0 a\n1 b.0\n2-3 -\nb: 1\nc = b'))
-    await route(runner, payload=PAYLOAD, units=SHARED_UNITS, chunks=CHUNKS)
+    await route(runner, payload=PAYLOAD, schema_head=HEAD, units=SHARED_UNITS, chunks=CHUNKS)
     assert 'must declare a count' in runner.calls[1]['feedback'][0].message
 
 
@@ -526,7 +539,7 @@ async def test_derived_source_must_be_directly_mapped():
     runner = ScriptedRunner(
         agent_result('0 a\n1 b.0\n2-3 -\nb: 1\nc = d'),
         agent_result('0 a\n1 b.0\n2-3 -\nb: 1\nc = b'))
-    await route(runner, payload=PAYLOAD, units=SHARED_UNITS, chunks=CHUNKS)
+    await route(runner, payload=PAYLOAD, schema_head=HEAD, units=SHARED_UNITS, chunks=CHUNKS)
     assert 'is not a unit code' in runner.calls[1]['feedback'][0].message
 
 
@@ -534,7 +547,7 @@ async def test_derived_source_needs_its_own_count():
     runner = ScriptedRunner(
         agent_result('0 a\n1 b.0\n2-3 -\nc = b'),  # b itself undeclared
         agent_result('0 a\n1 b.0\n2-3 -\nb: 1\nc = b'))
-    await route(runner, payload=PAYLOAD, units=SHARED_UNITS, chunks=CHUNKS)
+    await route(runner, payload=PAYLOAD, schema_head=HEAD, units=SHARED_UNITS, chunks=CHUNKS)
     messages = ' '.join(i.message for i in runner.calls[1]['feedback'])
     assert 'needs b\'s own count declared first' in messages
 
@@ -543,7 +556,7 @@ async def test_multiline_chunks_list_one_line_each():
     # embedded newlines would make the listing's line count disagree
     # with the chunk ids and break the model's index arithmetic
     runner = ScriptedRunner(*[agent_result('0-1 -\nb: 0')] * 2)
-    await route(runner, payload=PAYLOAD, units=UNITS,
+    await route(runner, payload=PAYLOAD, schema_head=HEAD, units=UNITS,
                 chunks=['两行\n的块', 'x'])
     assert '[0] 两行 ¶ 的块' in runner.calls[0]['instructions']
 
@@ -572,7 +585,7 @@ async def test_none_comma_joined_gets_a_specific_hint():
         agent_result('0 a\n1 b.0\n2-3 c.0,-\nb: 1'),
         agent_result('0 a\n1 b.0\n2-3 -\nb: 1'),
     )
-    await route(runner, payload=PAYLOAD, units=UNITS, chunks=CHUNKS)
+    await route(runner, payload=PAYLOAD, schema_head=HEAD, units=UNITS, chunks=CHUNKS)
     assert 'may not be comma-joined' in runner.calls[1]['feedback'][0].message
 
 
@@ -632,7 +645,7 @@ async def test_budget_without_digits_is_dropped_not_fatal():
 async def test_budget_on_a_map_line_is_rejected():
     runner = ScriptedRunner(*[agent_result('0 a\n1 b.0 @50\n2-3 -\nb: 1')] * 5)
     with pytest.raises(RouterError):
-        await route(runner, payload=PAYLOAD, units=UNITS, chunks=CHUNKS)
+        await route(runner, payload=PAYLOAD, schema_head=HEAD, units=UNITS, chunks=CHUNKS)
 
 
 def test_name_list_predicate():
@@ -659,7 +672,7 @@ def test_name_list_predicate():
 
 async def test_prompt_carries_the_budget_rule():
     runner = runner_ok()
-    await route(runner, payload=PAYLOAD, units=UNITS, chunks=CHUNKS)
+    await route(runner, payload=PAYLOAD, schema_head=HEAD, units=UNITS, chunks=CHUNKS)
     assert '"x: 3 @100%,80%,50%"' in runner.calls[0]['instructions']
     assert '"x: 3 @300"' in runner.calls[0]['instructions']  # the abs example
     assert '"@<n>%"' in runner.calls[0]['instructions']
@@ -676,7 +689,7 @@ async def test_a_repaired_error_that_reappears_is_called_out():
         agent_result('0 a\n1 b.0\n2 x.0\nb: 1'),          # unknown code back
         agent_result('0 a\n1 b.0\n2-3 -\nb: 1'),
     )
-    await route(runner, payload=PAYLOAD, units=UNITS, chunks=CHUNKS)
+    await route(runner, payload=PAYLOAD, schema_head=HEAD, units=UNITS, chunks=CHUNKS)
     fourth_call = ' '.join(i.message for i in runner.calls[3]['feedback'])
     assert 'already fixed in an earlier round' in fourth_call
 
@@ -686,7 +699,7 @@ async def test_deriving_from_a_non_repeating_unit_is_explained():
         agent_result('0 a\n1-3 -\nb: 0\nc = a'),
         agent_result('0 a\n1-3 -\nb: 0\nc = b'),
         agent_result('0 a\n1-3 -\nb: 0\nc = b'))  # verification round
-    routing = await route(runner, payload=PAYLOAD, units=SHARED_UNITS, chunks=CHUNKS)
+    routing = await route(runner, payload=PAYLOAD, schema_head=HEAD, units=SHARED_UNITS, chunks=CHUNKS)
     assert 'is not a repeating unit' in runner.calls[1]['feedback'][0].message
     assert routing.raw['counts'] == {'jobs': 0, 'summary': 0}
 
@@ -703,7 +716,7 @@ async def test_lazy_single_instance_gets_recounted_and_resplit():
     # (count plus quoted openings) and code re-splits the run at the
     # anchored chunks; the anchored model never sees the map
     runner = ScriptedRunner(agent_result(LAZY), agent_result('b: 2\nc5\nc30'))
-    routing = await route(runner, payload=PAYLOAD, units=UNITS,
+    routing = await route(runner, payload=PAYLOAD, schema_head=HEAD, units=UNITS,
                           chunks=LAZY_CHUNKS)
     recount = runner.calls[1]
     assert 'were left merged as one' in recount['instructions'] \
@@ -721,7 +734,7 @@ async def test_resplit_keeps_co_riding_destinations():
     runner = ScriptedRunner(
         agent_result('0 a\n1-37 b.0,c.0\n38-39 -\na: 1\nb: 1'),
         agent_result('b: 2\nc5\nc30'))
-    routing = await route(runner, payload=PAYLOAD, units=UNITS,
+    routing = await route(runner, payload=PAYLOAD, schema_head=HEAD, units=UNITS,
                           chunks=LAZY_CHUNKS)
     misc = [a for a in routing.raw['assignments'] if a['unit'] == MISC]
     assert sorted(c for a in misc for c in a['chunks']) == list(range(1, 38))
@@ -736,7 +749,7 @@ async def test_unusable_recount_falls_back_to_the_diff_hint():
         agent_result('0 a\n1-37 b.0,b.1,b.2,b.3\n38-39 -\na: 1\nb: 4'),
         agent_result('b: 4'),
         agent_result(''))
-    routing = await route(runner, payload=PAYLOAD, units=UNITS,
+    routing = await route(runner, payload=PAYLOAD, schema_head=HEAD, units=UNITS,
                           chunks=LAZY_CHUNKS)
     hint = runner.calls[2]['feedback'][0]
     assert hint.code == 'route_hint' and 'one line per instance' in hint.message
@@ -750,7 +763,7 @@ async def test_per_item_multi_chunk_map_skips_the_shared_hint():
     # chunks — the correct form for career sections): no round at all
     runner = ScriptedRunner(
         agent_result('0 a\n1-20 b.0\n21-37 b.1\n38-39 -\na: 1\nb: 2'))
-    routing = await route(runner, payload=PAYLOAD, units=UNITS,
+    routing = await route(runner, payload=PAYLOAD, schema_head=HEAD, units=UNITS,
                           chunks=LAZY_CHUNKS)
     assert len(runner.calls) == 1
     assert routing.raw['counts'] == {'jobs': 2}
@@ -761,7 +774,7 @@ async def test_short_shared_runs_skip_the_shared_hint():
     # a round would cost more than the split could save
     runner = ScriptedRunner(
         agent_result('0 a\n1-6 b.0,b.1\n7-8 -\na: 1\nb: 2'))
-    routing = await route(runner, payload=PAYLOAD, units=UNITS,
+    routing = await route(runner, payload=PAYLOAD, schema_head=HEAD, units=UNITS,
                           chunks=LAZY_CHUNKS[:9])
     assert len(runner.calls) == 1
     assert routing.raw['counts']['jobs'] == 2
@@ -773,7 +786,7 @@ async def test_decomposed_band_skips_the_recount_below_the_load_bar():
     # decode-shaving only, not worth a round this thin
     runner = ScriptedRunner(
         agent_result('0 a\n1-8 b.0,b.1\n9-39 -\na: 1\nb: 2'))
-    routing = await route(runner, payload=PAYLOAD, units=UNITS,
+    routing = await route(runner, payload=PAYLOAD, schema_head=HEAD, units=UNITS,
                           chunks=LAZY_CHUNKS)
     assert len(runner.calls) == 1
     assert routing.raw['counts']['jobs'] == 2
@@ -786,7 +799,7 @@ async def test_thin_count_one_run_skips_the_shared_recount():
     # every decomposed line instead of recounting on its say-so
     runner = ScriptedRunner(
         agent_result('0 a\n1-6 b.0\n7-8 -\na: 1\nb: 1'))
-    routing = await route(runner, payload=PAYLOAD, units=UNITS,
+    routing = await route(runner, payload=PAYLOAD, schema_head=HEAD, units=UNITS,
                           chunks=LAZY_CHUNKS[:9])
     assert len(runner.calls) == 1
     assert routing.raw['counts']['jobs'] == 1
@@ -806,7 +819,7 @@ async def test_overrun_shared_run_adopts_its_blocks_without_a_round():
     # it into the map itself — the ask round typed the block lines
     # verbatim every time, a round spent re-taking code's dictation
     runner = ScriptedRunner(agent_result(OVER_MAP))
-    routing = await route(runner, payload=PAYLOAD, units=UNITS,
+    routing = await route(runner, payload=PAYLOAD, schema_head=HEAD, units=UNITS,
                           chunks=OVER_CHUNKS)
     assert len(runner.calls) == 1  # adopted, never asked
     blocks = [g for g in routing.groups if g.unit.path == 'jobs']
@@ -823,7 +836,7 @@ async def test_ranged_run_is_the_compact_shared_form_without_overflow():
     # nothing asks and the executor-facing shape is one shared slice
     runner = ScriptedRunner(
         agent_result('0 a\n1-2 b.0-1\n3 -\na: 1\nb: 2'))
-    routing = await route(runner, payload=PAYLOAD, units=UNITS,
+    routing = await route(runner, payload=PAYLOAD, schema_head=HEAD, units=UNITS,
                           chunks=['姓名张三', '第一段：腾讯', '第二段：阿里', '无关页脚'])
     assert len(runner.calls) == 1
     (group,) = [g for g in routing.groups if g.unit.path == 'jobs']
@@ -838,7 +851,7 @@ async def test_item_range_may_repeat_the_code():
     # normalized so the ranged draw survives round one instead of
     # cascading into per-instance enumeration
     runner = ScriptedRunner(agent_result('0 a\n1-2 b.0-b.1\n3 -\nb: 2'))
-    routing = await route(runner, payload=PAYLOAD, units=UNITS, chunks=CHUNKS)
+    routing = await route(runner, payload=PAYLOAD, schema_head=HEAD, units=UNITS, chunks=CHUNKS)
     assert len(runner.calls) == 1
     (group,) = [g for g in routing.groups if g.unit.path == 'jobs']
     assert group.items == (0, 1) and group.chunk_ids == [1, 2]
@@ -849,7 +862,7 @@ async def test_spaced_item_range_gets_a_named_hint():
         agent_result('0 a\n1-2 b.0 - b.1\n3 -\nb: 2'),
         agent_result('0 a\n1-2 b.0-1\n3 -\nb: 2'),
     )
-    await route(runner, payload=PAYLOAD, units=UNITS, chunks=CHUNKS)
+    await route(runner, payload=PAYLOAD, schema_head=HEAD, units=UNITS, chunks=CHUNKS)
     assert 'never repeats the code' in runner.calls[1]['feedback'][0].message
 
 
@@ -859,7 +872,7 @@ async def test_sub_numbered_item_folds_to_its_parent():
     # role) — the parent index is the claim; rejecting the spelling
     # sent a canary repair loop circling to exhaustion
     runner = ScriptedRunner(agent_result('0 a\n1-2 b.0.0\n3 b.0.1\nb: 1'))
-    routing = await route(runner, payload=PAYLOAD, units=UNITS, chunks=CHUNKS)
+    routing = await route(runner, payload=PAYLOAD, schema_head=HEAD, units=UNITS, chunks=CHUNKS)
     assert len(runner.calls) == 1
     jobs = [a for a in routing.raw['assignments'] if a['unit'] == 'jobs']
     assert [(a['item'], a['chunks']) for a in jobs] == \
@@ -875,7 +888,7 @@ async def test_shape_failure_names_the_dotted_tail_not_the_drop():
         agent_result('0 a\n1-2 b.0.0-c\n3 -\nb: 2'),
         agent_result('0 a\n1 b.0\n2 b.1\n3 -\nb: 2'),
     )
-    await route(runner, payload=PAYLOAD, units=UNITS, chunks=CHUNKS)
+    await route(runner, payload=PAYLOAD, schema_head=HEAD, units=UNITS, chunks=CHUNKS)
     fb = runner.calls[1]['feedback'][0].message
     assert 'drop the line' not in fb
     assert 'first index' in fb
@@ -886,7 +899,7 @@ async def test_bare_none_line_still_gets_the_drop_hint():
         agent_result('0 a\n-\n2 b.1\n3 -\nb: 2'),
         agent_result('0 a\n1 b.0\n2 b.1\n3 -\nb: 2'),
     )
-    await route(runner, payload=PAYLOAD, units=UNITS, chunks=CHUNKS)
+    await route(runner, payload=PAYLOAD, schema_head=HEAD, units=UNITS, chunks=CHUNKS)
     assert 'drop the line' in runner.calls[1]['feedback'][0].message
 
 
@@ -912,7 +925,7 @@ async def test_diff_rewriting_every_line_keeps_counts_after_the_map():
         agent_result('0 a\n1 b.0\n1 b.1\n3 -\nb: 2'),
         agent_result('-0 a\n+0 a\n-1 b.0\n+1 b.0\n-1 b.1\n+2 b.1\n-3 -\n+3 -\nb: 2'),
     )
-    routing = await route(runner, payload=PAYLOAD, units=UNITS, chunks=CHUNKS)
+    routing = await route(runner, payload=PAYLOAD, schema_head=HEAD, units=UNITS, chunks=CHUNKS)
     assert len(runner.calls) == 2
     assert not any(a['unit'] == 'jobs' and a['item'] == 1
                    and 1 in a['chunks'] for a in routing.raw['assignments'])
@@ -926,7 +939,7 @@ async def test_single_chunk_range_may_share_its_line():
     # canary repair loop circling to exhaustion
     runner = ScriptedRunner(
         agent_result('0 a\n1 a.0,b.0-b.1\n2-3 -\na: 2\nb: 2'))
-    routing = await route(runner, payload=PAYLOAD, units=UNITS, chunks=CHUNKS)
+    routing = await route(runner, payload=PAYLOAD, schema_head=HEAD, units=UNITS, chunks=CHUNKS)
     assert len(runner.calls) == 1
     jobs = [a for a in routing.raw['assignments'] if a['unit'] == 'jobs']
     assert [(a['item'], a['chunks']) for a in jobs] == \
@@ -937,7 +950,7 @@ async def test_multi_chunk_range_shared_with_other_destinations_expands():
     # the co-chunked shared form spelled compactly on any line length
     runner = ScriptedRunner(
         agent_result('0 a\n1 b.0\n2-3 b.0,b.1-2\n4 -\nb: 3'))
-    routing = await route(runner, payload=PAYLOAD, units=UNITS,
+    routing = await route(runner, payload=PAYLOAD, schema_head=HEAD, units=UNITS,
                           chunks=CHUNKS + ['无关页脚二'])
     assert len(runner.calls) == 1
     jobs = [g for g in routing.groups if g.unit.kind == 'array']
@@ -952,7 +965,7 @@ async def test_shared_range_expansion_keeps_the_undrawn_gate_open():
     runner = ScriptedRunner(
         agent_result('0 -\n1-2 a,b.0-1\n3 -\nb: 2\nb.0.c: 2'),
         agent_result('b.0.c: 2\n公司甲·工程师\n公司甲·经理'))
-    routing = await route(runner, payload=PAYLOAD, units=NESTED_UNITS,
+    routing = await route(runner, payload=PAYLOAD, schema_head=HEAD, units=NESTED_UNITS,
                           chunks=chunks)
     assert len(runner.calls) == 2
     roles = [g for g in routing.groups if g.unit.path == 'jobs.roles']
@@ -968,7 +981,7 @@ async def test_multi_chunk_chain_range_shared_expands_like_the_flat_form():
     # drawn
     runner = ScriptedRunner(
         agent_result('0 -\n1-2 a,b.0.c.0-1\n3 -\nb: 1\nb.0.c: 2'))
-    routing = await route(runner, payload=PAYLOAD, units=NESTED_UNITS,
+    routing = await route(runner, payload=PAYLOAD, schema_head=HEAD, units=NESTED_UNITS,
                           chunks=NESTED_CHUNKS[:4])
     assert len(runner.calls) == 1
     roles = [g for g in routing.groups if g.unit.path == 'jobs.roles']
@@ -981,7 +994,7 @@ async def test_ranged_instances_cannot_repeat_across_lines():
         agent_result('0 a\n1-2 b.0-1\n3-4 b.1-2\n5 -\na: 1\nb: 3'),
         agent_result('0 a\n1-2 b.0-1\n3-4 b.2\n5 -\na: 1\nb: 3'),
     )
-    routing = await route(runner, payload=PAYLOAD, units=UNITS,
+    routing = await route(runner, payload=PAYLOAD, schema_head=HEAD, units=UNITS,
                           chunks=CHUNKS + ['无关页脚', '无关页脚二'])
     messages = ' '.join(i.message for i in runner.calls[1]['feedback'])
     assert 'ranged twice' in messages
@@ -995,7 +1008,7 @@ async def test_ranged_initial_draw_adopts_its_blocks_without_a_round():
     # the short ranged line that once made the ask's diff quotable now
     # makes the adoption lossless
     runner = ScriptedRunner(agent_result('0 a\n1-7 b.0-5\n8 -\na: 1\nb: 6'))
-    routing = await route(runner, payload=PAYLOAD, units=UNITS,
+    routing = await route(runner, payload=PAYLOAD, schema_head=HEAD, units=UNITS,
                           chunks=OVER_CHUNKS)
     assert 'NEVER enumerate' in runner.calls[0]['instructions']
     assert len(runner.calls) == 1
@@ -1011,7 +1024,7 @@ async def test_thin_shared_run_skips_the_split_ask():
     # same shared shape, material under SPLIT_MATERIAL_CAP: one whole
     # call decodes it in seconds — no round
     runner = ScriptedRunner(agent_result(OVER_MAP))
-    routing = await route(runner, payload=PAYLOAD, units=UNITS,
+    routing = await route(runner, payload=PAYLOAD, schema_head=HEAD, units=UNITS,
                           chunks=['姓名张三'] + ['x' * 10] * 7 + ['无关页脚'])
     assert len(runner.calls) == 1
     jobs = [a for a in routing.raw['assignments'] if a['unit'] == 'jobs']
@@ -1025,7 +1038,7 @@ async def test_split_ask_on_a_riding_line_falls_back_to_the_round():
     runner = ScriptedRunner(
         agent_result(RIDER_MAP),
         agent_result(''))
-    routing = await route(runner, payload=PAYLOAD, units=UNITS,
+    routing = await route(runner, payload=PAYLOAD, schema_head=HEAD, units=UNITS,
                           chunks=OVER_CHUNKS)
     ask = runner.calls[1]['feedback'][0]
     assert ask.code == 'route_hint' \
@@ -1044,7 +1057,7 @@ async def test_botched_split_reply_declines_to_the_standing_map():
     runner = ScriptedRunner(
         agent_result(RIDER_MAP),
         agent_result('0 a\n1-2 b.0-2\n3-4 b.1-3\n5-7 b.4-5\n8 -\na: 1\nb: 6'))
-    routing = await route(runner, payload=PAYLOAD, units=UNITS,
+    routing = await route(runner, payload=PAYLOAD, schema_head=HEAD, units=UNITS,
                           chunks=OVER_CHUNKS)
     assert len(runner.calls) == 2  # declined — no repair round
     jobs = [a for a in routing.raw['assignments'] if a['unit'] == 'jobs']
@@ -1063,7 +1076,7 @@ async def test_partial_block_adoption_rebases_the_ask_round():
         agent_result('0 a\n1-7 b.0,b.1,b.2,b.3,b.4\n8 -\n'
                      '9-15 c.0,c.1,c.2,c.3,c.4,d.0\n16 -\na: 1\nb: 5\nc: 5'),
         agent_result(''))
-    routing = await route(runner, payload=PAYLOAD, units=TWO_ARRAYS,
+    routing = await route(runner, payload=PAYLOAD, schema_head=HEAD, units=TWO_ARRAYS,
                           chunks=chunks)
     ask = runner.calls[1]['feedback'][0]
     assert ask.code == 'route_hint' and ask.message.startswith('c:')
@@ -1085,7 +1098,7 @@ async def test_split_ask_precedes_the_lazy_recount():
         agent_result('0 a\n1-3 b.0,b.1,b.2,b.3,b.4\n4 -\n5-37 c.0\n38-39 -\n'
                      'a: 1\nb: 5\nc: 1'),
         agent_result('c: 2\nc12\nc30'))
-    routing = await route(runner, payload=PAYLOAD, units=TWO_ARRAYS,
+    routing = await route(runner, payload=PAYLOAD, schema_head=HEAD, units=TWO_ARRAYS,
                           chunks=chunks)
     assert 'RECOUNT' in runner.calls[1]['instructions']
     assert len(runner.calls) == 2
@@ -1114,7 +1127,7 @@ async def test_two_merged_units_recount_in_one_conversation():
         agent_result('0 a\n1-18 b.0\n19 -\n20-37 c.0\n38-39 -\n'
                      'a: 1\nb: 1\nc: 1'),
         agent_result('b: 2\nc5\nc15\nc: 2\nc25\nc35'))
-    routing = await route(runner, payload=PAYLOAD, units=TWO_ARRAYS,
+    routing = await route(runner, payload=PAYLOAD, schema_head=HEAD, units=TWO_ARRAYS,
                           chunks=LAZY_CHUNKS)
     assert 'b = [jobs | array] 工作经历 RECOUNT' \
         in runner.calls[1]['instructions'] \
@@ -1139,7 +1152,7 @@ async def test_partial_adoption_skips_the_fallback_round():
         agent_result('0 a\n1-18 b.0\n19 -\n20-37 c.0\n38-39 -\n'
                      'a: 1\nb: 1\nc: 1'),
         agent_result('b: 2\nc5\nc15'))
-    routing = await route(runner, payload=PAYLOAD, units=TWO_ARRAYS,
+    routing = await route(runner, payload=PAYLOAD, schema_head=HEAD, units=TWO_ARRAYS,
                           chunks=LAZY_CHUNKS)
     assert len(runner.calls) == 2
     assert routing.raw['counts'] == {'jobs': 2, 'projects': 1}
@@ -1171,7 +1184,7 @@ async def test_merged_and_zero_units_recount_in_one_conversation():
     runner = ScriptedRunner(
         agent_result(BOTH_MAP),
         agent_result('b: 2\nc5\nc15\nd: 0'))
-    routing = await route(runner, payload=PAYLOAD, units=BOTH_UNITS,
+    routing = await route(runner, payload=PAYLOAD, schema_head=HEAD, units=BOTH_UNITS,
                           chunks=LAZY_CHUNKS)
     recount = runner.calls[1]
     assert len(runner.calls) == 2 and recount['feedback'] is None
@@ -1196,7 +1209,7 @@ async def test_combined_recount_zeros_fallback_leaves_the_map_standing():
         agent_result(BOTH_MAP),
         agent_result('b: 2\nc5\nc15\nd: 3\n19 d.0,d.1,d.2'),
         agent_result(''))
-    routing = await route(runner, payload=PAYLOAD, units=BOTH_UNITS,
+    routing = await route(runner, payload=PAYLOAD, schema_head=HEAD, units=BOTH_UNITS,
                           chunks=LAZY_CHUNKS)
     assert len(runner.calls) == 3
     assert 'could not be merged' \
@@ -1211,7 +1224,7 @@ async def test_recount_instructions_override_keeps_the_two_asks_apart():
         agent_result(BOTH_MAP),
         agent_result('b: 2\nc5\nc15'),
         agent_result('d: 0'))
-    routing = await route(runner, payload=PAYLOAD, units=BOTH_UNITS,
+    routing = await route(runner, payload=PAYLOAD, schema_head=HEAD, units=BOTH_UNITS,
                           chunks=LAZY_CHUNKS,
                           recount_instructions='Units:\n{legend}\n\n{chunks}')
     assert len(runner.calls) == 3
@@ -1230,7 +1243,7 @@ async def test_a_repair_round_diffs_against_the_previous_answer():
         agent_result('0 a\n1 b.0\n2-3 -\nb: 2'),  # b.1 unmapped
         agent_result('-2-3 -\n+2 b.1\n+3 -'),
     )
-    routing = await route(runner, payload=PAYLOAD, units=UNITS, chunks=CHUNKS)
+    routing = await route(runner, payload=PAYLOAD, schema_head=HEAD, units=UNITS, chunks=CHUNKS)
     assert len(runner.calls) == 2
     assert 'unified diff' in runner.calls[1]['feedback'][0].message
     assert [g.item for g in routing.groups if g.unit.kind == 'array'] == [0, 1]
@@ -1241,7 +1254,7 @@ async def test_an_empty_repair_reply_keeps_the_errors():
     # stands, the same errors come back, and the loop stays bounded
     runner = ScriptedRunner(BAD_MAP, agent_result(''), BAD_MAP, BAD_MAP, BAD_MAP)
     with pytest.raises(RouterError):
-        await route(runner, payload=PAYLOAD, units=UNITS, chunks=CHUNKS)
+        await route(runner, payload=PAYLOAD, schema_head=HEAD, units=UNITS, chunks=CHUNKS)
     assert len(runner.calls) == 5
 
 
@@ -1253,7 +1266,7 @@ async def test_a_missed_diff_quote_cannot_duplicate_a_line():
         agent_result('0 a\n1 b.0\nb: 1'),  # chunks 2-3 uncovered
         agent_result('-9 z\n+b: 1\n+2-3 -'),
     )
-    routing = await route(runner, payload=PAYLOAD, units=UNITS, chunks=CHUNKS)
+    routing = await route(runner, payload=PAYLOAD, schema_head=HEAD, units=UNITS, chunks=CHUNKS)
     assert len(runner.calls) == 2  # no "b declared twice" repair chain
     assert [g.item for g in routing.groups if g.unit.kind == 'array'] == [0]
 
@@ -1266,7 +1279,7 @@ async def test_a_still_invalid_diff_keeps_its_base_map():
     junk_diff, hopeless = agent_result('+4 -'), agent_result('-4 -')
     runner = ScriptedRunner(BAD_MAP, junk_diff, hopeless, hopeless, hopeless)
     with pytest.raises(RouterError):
-        await route(runner, payload=PAYLOAD, units=UNITS, chunks=CHUNKS)
+        await route(runner, payload=PAYLOAD, schema_head=HEAD, units=UNITS, chunks=CHUNKS)
     assert len(runner.calls) == 5
     assert 'not covered' in runner.calls[4]['feedback'][0].message
 
@@ -1282,7 +1295,7 @@ async def test_a_lazy_attach_line_lands_as_an_addition():
         agent_result('b: 2\n不存在的内容'),  # the recount anchors nowhere
         agent_result('- 1-3 -\n1 b.0\n2 b.1\n3 -'),
     )
-    routing = await route(runner, payload=PAYLOAD, units=UNITS, chunks=CHUNKS)
+    routing = await route(runner, payload=PAYLOAD, schema_head=HEAD, units=UNITS, chunks=CHUNKS)
     assert len(runner.calls) == 3
     assert [g.chunk_ids for g in routing.groups
             if g.unit.kind == 'array'] == [[1], [2]]
@@ -1334,7 +1347,7 @@ NESTED_CHUNKS = ['姓名张三', '公司甲·工程师', '公司甲·经理', '�
 
 async def route_nested(text):
     return await route(ScriptedRunner(*[agent_result(text)] * 2),
-                       payload=PAYLOAD, units=NESTED_UNITS, chunks=NESTED_CHUNKS)
+                       payload=PAYLOAD, schema_head=HEAD, units=NESTED_UNITS, chunks=NESTED_CHUNKS)
 
 
 async def test_chain_line_feeds_parent_and_sub_entry():
@@ -1376,7 +1389,7 @@ async def test_bare_nested_code_rides_its_parent():
     runner = ScriptedRunner(
         agent_result('0 a\n1 c.0\n2-3 -\nb: 0'),
         agent_result('0 a\n1-2 b.0.c.0\n3 b.1\n4 -\nb: 2\nb.0.c: 1'))
-    await route(runner, payload=PAYLOAD, units=NESTED_UNITS, chunks=NESTED_CHUNKS)
+    await route(runner, payload=PAYLOAD, schema_head=HEAD, units=NESTED_UNITS, chunks=NESTED_CHUNKS)
     assert 'rides its parent' in runner.calls[1]['feedback'][0].message
 
 
@@ -1384,7 +1397,7 @@ async def test_top_level_count_on_a_nested_unit_is_named():
     runner = ScriptedRunner(
         agent_result('0 a\n1-2 b.0.c.0\n3 b.1\n4 -\nb: 2\nc: 1'),
         agent_result('0 a\n1-2 b.0.c.0\n3 b.1\n4 -\nb: 2\nb.0.c: 1'))
-    await route(runner, payload=PAYLOAD, units=NESTED_UNITS, chunks=NESTED_CHUNKS)
+    await route(runner, payload=PAYLOAD, schema_head=HEAD, units=NESTED_UNITS, chunks=NESTED_CHUNKS)
     assert 'counts per parent' in runner.calls[1]['feedback'][0].message
 
 
@@ -1397,7 +1410,7 @@ async def test_nested_units_bare_zero_still_hides_no_real_mismatch():
     runner = ScriptedRunner(
         agent_result('0 a\n1-2 b.0.c.0\n3 b.1\n4 -\nb: 2\nc: 0'),
         agent_result('0 a\n1-2 b.0.c.0\n3 b.1\n4 -\nb: 2\nb.0.c: 1'))
-    await route(runner, payload=PAYLOAD, units=NESTED_UNITS, chunks=NESTED_CHUNKS)
+    await route(runner, payload=PAYLOAD, schema_head=HEAD, units=NESTED_UNITS, chunks=NESTED_CHUNKS)
     assert 'sub-entries used' in runner.calls[1]['feedback'][0].message
 
 
@@ -1411,7 +1424,7 @@ async def test_replayed_count_mismatch_passes_through():
     runner = ScriptedRunner(
         agent_result('0 a\n1 b.0\n2-3 -\nb: 2'),
         agent_result(replay))
-    routing = await route(runner, payload=PAYLOAD, units=UNITS,
+    routing = await route(runner, payload=PAYLOAD, schema_head=HEAD, units=UNITS,
                           chunks=CHUNKS)
     assert len(runner.calls) == 2  # replay seen once, pass-through, final
     assert routing.raw['counts'] == {'jobs': 2}
@@ -1424,7 +1437,7 @@ async def test_replayed_nested_mismatch_passes_through():
         agent_result('-0 a\n-1-2 b.0.c.0\n-3 b.1\n-4 -\n-\n-b: 2\n'
                      '-b.0.c: 2\n+0 a\n+1-2 b.0.c.0\n+3 b.1\n+4 -\n+\n'
                      '+b: 2\n+b.0.c: 2'))
-    routing = await route(runner, payload=PAYLOAD, units=NESTED_UNITS,
+    routing = await route(runner, payload=PAYLOAD, schema_head=HEAD, units=NESTED_UNITS,
                           chunks=NESTED_CHUNKS)
     assert len(runner.calls) == 2
     assert routing.raw['counts'] == {'jobs': 2}
@@ -1437,14 +1450,14 @@ async def test_replayed_blocking_errors_still_exhaust():
     # burns the budget — the pass-through is for mismatches only
     runner = ScriptedRunner(*[agent_result('0 a\n1 b.0\n3 -\nb: 1')] * 5)
     with pytest.raises(RouterError):
-        await route(runner, payload=PAYLOAD, units=UNITS, chunks=CHUNKS)
+        await route(runner, payload=PAYLOAD, schema_head=HEAD, units=UNITS, chunks=CHUNKS)
 
 
 async def test_chain_without_sub_item_is_named():
     runner = ScriptedRunner(
         agent_result('0 a\n1-2 b.0.c\n3 b.1\n4 -\nb: 2\nb.0.c: 1'),
         agent_result('0 a\n1-2 b.0.c.0\n3 b.1\n4 -\nb: 2\nb.0.c: 1'))
-    await route(runner, payload=PAYLOAD, units=NESTED_UNITS, chunks=NESTED_CHUNKS)
+    await route(runner, payload=PAYLOAD, schema_head=HEAD, units=NESTED_UNITS, chunks=NESTED_CHUNKS)
     assert 'needs its sub-item' in runner.calls[1]['feedback'][0].message
 
 
@@ -1452,7 +1465,7 @@ async def test_chain_under_a_childless_parent_is_named():
     runner = ScriptedRunner(
         agent_result('0-1 a.0.c.0\n2 b.0\n3-4 -\nb: 1\nb.0.c: 1'),
         agent_result('0 a\n1 b.0.c.0\n2 b.0\n3-4 -\nb: 1\nb.0.c: 1'))
-    await route(runner, payload=PAYLOAD, units=NESTED_UNITS, chunks=NESTED_CHUNKS)
+    await route(runner, payload=PAYLOAD, schema_head=HEAD, units=NESTED_UNITS, chunks=NESTED_CHUNKS)
     assert 'does not nest under a' in runner.calls[1]['feedback'][0].message
 
 
@@ -1460,7 +1473,7 @@ async def test_nested_chain_count_line_for_a_foreign_unit_is_named():
     runner = ScriptedRunner(
         agent_result('0 a\n1-2 b.0.c.0\n3 b.1\n4 -\nb: 2\nb.0.a: 1'),
         agent_result('0 a\n1-2 b.0.c.0\n3 b.1\n4 -\nb: 2\nb.0.c: 1'))
-    await route(runner, payload=PAYLOAD, units=NESTED_UNITS, chunks=NESTED_CHUNKS)
+    await route(runner, payload=PAYLOAD, schema_head=HEAD, units=NESTED_UNITS, chunks=NESTED_CHUNKS)
     assert 'not a nested unit chain' in runner.calls[1]['feedback'][0].message
 
 
@@ -1468,7 +1481,7 @@ async def test_nested_declared_count_must_match_mapped_sub_items():
     runner = ScriptedRunner(
         agent_result('0 a\n1-2 b.0.c.0\n3 b.1\n4 -\nb: 2\nb.0.c: 2'),
         agent_result('0 a\n1-2 b.0.c.0\n3 b.0.c.1\n4 -\nb: 1\nb.0.c: 2'))
-    await route(runner, payload=PAYLOAD, units=NESTED_UNITS, chunks=NESTED_CHUNKS)
+    await route(runner, payload=PAYLOAD, schema_head=HEAD, units=NESTED_UNITS, chunks=NESTED_CHUNKS)
     assert 'declared 2 items under b.0' in runner.calls[1]['feedback'][0].message
 
 
@@ -1476,7 +1489,7 @@ async def test_sub_item_beyond_the_declaration_names_the_fold():
     runner = ScriptedRunner(
         agent_result('0 a\n1 b.0.c.0\n2 b.0.c.1\n3 b.0.c.2\n4 -\nb: 1\nb.0.c: 2'),
         agent_result('0 a\n1 b.0.c.0\n2-3 b.0.c.1\n4 -\nb: 1\nb.0.c: 2'))
-    await route(runner, payload=PAYLOAD, units=NESTED_UNITS, chunks=NESTED_CHUNKS)
+    await route(runner, payload=PAYLOAD, schema_head=HEAD, units=NESTED_UNITS, chunks=NESTED_CHUNKS)
     messages = ' '.join(i.message for i in runner.calls[1]['feedback'])
     assert ("sub-item 2 under b.0 is beyond the declared 2 (0..1) — extend "
             "the previous sub-entry's line over its chunks (\"2-3 b.0.c.1\")"
@@ -1487,7 +1500,7 @@ async def test_coverage_hole_after_a_line_names_the_extension():
     runner = ScriptedRunner(
         agent_result('0 a\n1-2 b.0\n4 -\nb: 1'),
         agent_result('0 a\n1-3 b.0\n4 -\nb: 1'))
-    await route(runner, payload=PAYLOAD, units=NESTED_UNITS, chunks=NESTED_CHUNKS)
+    await route(runner, payload=PAYLOAD, schema_head=HEAD, units=NESTED_UNITS, chunks=NESTED_CHUNKS)
     messages = ' '.join(i.message for i in runner.calls[1]['feedback'])
     assert 'chunks not covered: [3]' in messages
     assert 'extend the preceding line over them ("1-3 b.0")' in messages
@@ -1498,7 +1511,7 @@ async def test_nested_declaration_without_map_lines_is_named():
         agent_result('0 a\n1 b.0\n2 b.1\n3-4 -\nb: 2\nb.0.c: 2'),
         agent_result('b.0.c: 2\n无此内容'),  # recount quotes anchor nowhere
         agent_result('0 a\n1 b.0\n2 b.1\n3-4 -\nb: 2'))
-    await route(runner, payload=PAYLOAD, units=NESTED_UNITS, chunks=NESTED_CHUNKS)
+    await route(runner, payload=PAYLOAD, schema_head=HEAD, units=NESTED_UNITS, chunks=NESTED_CHUNKS)
     messages = ' '.join(i.message for i in runner.calls[2]['feedback'])
     assert 'declared 2 items under b.0 but the map assigns none' in messages
     assert '("b.0.c.0", "b.0.c.1")' in messages
@@ -1510,7 +1523,7 @@ async def test_a_split_of_an_undropped_line_names_the_removal():
     runner = ScriptedRunner(
         agent_result('0 a\n1-3 b.0.c.1\n1-2 b.0.c.1\n4 -\nb: 1\nb.0.c: 2'),
         agent_result('0 a\n1-2 b.0.c.1\n3 b.0.c.0\n4 -\nb: 1\nb.0.c: 2'))
-    await route(runner, payload=PAYLOAD, units=NESTED_UNITS, chunks=NESTED_CHUNKS)
+    await route(runner, payload=PAYLOAD, schema_head=HEAD, units=NESTED_UNITS, chunks=NESTED_CHUNKS)
     messages = ' '.join(i.message for i in runner.calls[1]['feedback'])
     assert 'add "- 1-3 b.0.c.1" and the slices replace it' in messages
 
@@ -1523,7 +1536,7 @@ async def test_a_removal_uncovering_chunks_names_the_re_add():
         agent_result('b.0.c: 1\n无此内容'),  # recount quotes anchor nowhere
         agent_result('- 1-3 -\n+ 1-2 b.0.c.0'),
         agent_result('0 a\n1-2 b.0.c.0\n3-4 -\nb: 1\nb.0.c: 1'))
-    await route(runner, payload=PAYLOAD, units=NESTED_UNITS, chunks=NESTED_CHUNKS)
+    await route(runner, payload=PAYLOAD, schema_head=HEAD, units=NESTED_UNITS, chunks=NESTED_CHUNKS)
     messages = ' '.join(i.message for i in runner.calls[3]['feedback'])
     assert 'chunks not covered: [3]' in messages
     assert 'your removal of "1-3 -" uncovered these' in messages
@@ -1537,7 +1550,7 @@ async def test_removal_blame_wins_over_the_neighbour_fold():
         agent_result('b: 1\n无此内容'),  # recount quotes anchor nowhere
         agent_result('- 1-3 -\n+ 1-2 b.0'),
         agent_result('0 a\n1-2 b.0\n3-4 -\nb: 1'))
-    await route(runner, payload=PAYLOAD, units=NESTED_UNITS, chunks=NESTED_CHUNKS)
+    await route(runner, payload=PAYLOAD, schema_head=HEAD, units=NESTED_UNITS, chunks=NESTED_CHUNKS)
     messages = ' '.join(i.message for i in runner.calls[3]['feedback'])
     assert 'your removal of "1-3 -" uncovered these' in messages
     assert 'extend the preceding line' not in messages
@@ -1547,7 +1560,7 @@ async def test_chain_parent_index_out_of_range_is_named():
     runner = ScriptedRunner(
         agent_result('0 a\n1-2 b.0\n3 b.2.c.0\n4 -\nb: 2\nb.2.c: 1'),
         agent_result('0 a\n1-2 b.0\n3 b.1\n4 -\nb: 2'))
-    await route(runner, payload=PAYLOAD, units=NESTED_UNITS, chunks=NESTED_CHUNKS)
+    await route(runner, payload=PAYLOAD, schema_head=HEAD, units=NESTED_UNITS, chunks=NESTED_CHUNKS)
     messages = ' '.join(i.message for i in runner.calls[1]['feedback'])
     assert 'chained under b.2 but b declares 2 items' in messages
 
@@ -1556,7 +1569,7 @@ async def test_nested_declaration_before_the_map_is_rejected():
     runner = ScriptedRunner(
         agent_result('b.0.c: 1\n0 a\n1-2 b.0.c.0\n3 b.1\n4 -\nb: 2'),
         agent_result('0 a\n1-2 b.0.c.0\n3 b.1\n4 -\nb: 2\nb.0.c: 1'))
-    await route(runner, payload=PAYLOAD, units=NESTED_UNITS, chunks=NESTED_CHUNKS)
+    await route(runner, payload=PAYLOAD, schema_head=HEAD, units=NESTED_UNITS, chunks=NESTED_CHUNKS)
     assert 'follow the map' in runner.calls[1]['feedback'][0].message
 
 
@@ -1584,7 +1597,7 @@ async def test_chain_fragment_repair_keeps_the_map_head():
         agent_result('0 a\n1-2 b.0\n3 b.1\n4 -\nb: 2\nb.0.c: 2'),
         agent_result('b.0.c: 2\n公司甲·工程师'),  # count vs quotes mismatch
         agent_result('1 b.0.c.0\n2 b.0.c.1'))
-    routing = await route(runner, payload=PAYLOAD, units=NESTED_UNITS,
+    routing = await route(runner, payload=PAYLOAD, schema_head=HEAD, units=NESTED_UNITS,
                           chunks=NESTED_CHUNKS)
     assert 'declared 2 items under b.0' in runner.calls[2]['feedback'][0].message
     assert len(runner.calls) == 3
@@ -1597,7 +1610,7 @@ async def test_chain_fragment_repair_keeps_the_map_head():
 async def test_prompt_teaches_the_chain():
     runner = ScriptedRunner(agent_result(
         '0 a\n1-2 b.0.c.0\n3 b.1\n4 -\nb: 2\nb.0.c: 1'))
-    await route(runner, payload=PAYLOAD, units=NESTED_UNITS, chunks=NESTED_CHUNKS)
+    await route(runner, payload=PAYLOAD, schema_head=HEAD, units=NESTED_UNITS, chunks=NESTED_CHUNKS)
     text = runner.calls[0]['instructions']
     assert 'c = [jobs.roles | array]' in text  # the legend names the parent path
     assert 'nests inside' in text
@@ -1702,7 +1715,7 @@ async def test_chain_line_overlapping_another_units_run_is_named():
     runner = ScriptedRunner(
         agent_result('0 a\n1-3 b.1\n2 b.0.c.0\n4 -\nb: 2\nb.0.c: 1'),
         agent_result('0 a\n1 b.1\n2-3 b.0.c.0\n4 -\nb: 2\nb.0.c: 1'))
-    await route(runner, payload=PAYLOAD, units=NESTED_UNITS,
+    await route(runner, payload=PAYLOAD, schema_head=HEAD, units=NESTED_UNITS,
                 chunks=NESTED_CHUNKS)
     assert 'overlaps line' \
         in runner.calls[1]['feedback'][0].message
@@ -1715,7 +1728,7 @@ async def test_parent_line_overlapping_its_chains_names_the_remedy():
     runner = ScriptedRunner(
         agent_result('0 a\n1-3 b.0-1\n2 b.0.c.0\n4 -\nb: 2\nb.0.c: 1'),
         agent_result('0 a\n1 b.0\n2 b.0.c.0\n3 b.1\n4 -\nb: 2\nb.0.c: 1'))
-    await route(runner, payload=PAYLOAD, units=NESTED_UNITS,
+    await route(runner, payload=PAYLOAD, schema_head=HEAD, units=NESTED_UNITS,
                 chunks=NESTED_CHUNKS)
     message = runner.calls[1]['feedback'][0].message
     assert 'outside its chains (1, 3)' in message
@@ -1728,7 +1741,7 @@ async def test_sub_slice_overlapping_its_sibling_names_the_boundary():
     runner = ScriptedRunner(
         agent_result('0 a\n1-2 b.0\n1-2 b.0.c.0\n2 b.0.c.1\n3 -\n4 -\nb: 1\nb.0.c: 2'),
         agent_result('0 a\n1 b.0.c.0\n2 b.0.c.1\n3 -\n4 -\nb: 1\nb.0.c: 2'))
-    await route(runner, payload=PAYLOAD, units=NESTED_UNITS,
+    await route(runner, payload=PAYLOAD, schema_head=HEAD, units=NESTED_UNITS,
                 chunks=NESTED_CHUNKS)
     assert 'end the earlier one at 1, where b.0.c.1 begins' \
         in runner.calls[1]['feedback'][0].message
@@ -1741,7 +1754,7 @@ async def test_a_no_op_rewrite_is_named_on_the_next_repair():
     noop = agent_result('- 1 b.0\n+ 1 b.0')
     runner = ScriptedRunner(BAD_MAP, noop, noop, noop, noop)
     with pytest.raises(RouterError):
-        await route(runner, payload=PAYLOAD, units=UNITS, chunks=CHUNKS)
+        await route(runner, payload=PAYLOAD, schema_head=HEAD, units=UNITS, chunks=CHUNKS)
     assert 'changed nothing' in runner.calls[2]['feedback'][0].message
     assert 'changed nothing' not in runner.calls[1]['feedback'][0].message
 
@@ -1754,7 +1767,7 @@ async def test_exhaustion_with_a_valid_earlier_round_settles_on_it():
         agent_result('0 a\n1-3 -\nb: 0'),
         agent_result('b: 2\n0 b.0,b.1'),  # recount claims chunk 0: unspliceable
         agent_result('x'), agent_result('y'), agent_result('x'), agent_result('y'))
-    routing = await route(runner, payload=PAYLOAD, units=UNITS, chunks=CHUNKS)
+    routing = await route(runner, payload=PAYLOAD, schema_head=HEAD, units=UNITS, chunks=CHUNKS)
     assert len(runner.calls) == 6
     assert routing.raw['counts'] == {'jobs': 0}
 
@@ -1770,7 +1783,7 @@ async def test_exhaustion_passes_count_flaws_to_the_arbitration():
         agent_result('0 a\n1 b.0\n2-3 -\nb: 5'),
         agent_result('1 b.0\n2-3 -\n0 a\nb: 3'),
     )
-    routing = await route(runner, payload=PAYLOAD, units=UNITS, chunks=CHUNKS)
+    routing = await route(runner, payload=PAYLOAD, schema_head=HEAD, units=UNITS, chunks=CHUNKS)
     assert len(runner.calls) == 5
     assert routing.raw['counts'] == {'jobs': 3}
 
@@ -1814,7 +1827,7 @@ async def test_comma_joined_nested_token_with_two_parents_stays_named():
         agent_result('0 a\n1 b.0,b.1,c.0-1\n2-4 -\nb: 2\nb.0.c: 2'),
         agent_result('0 a\n1-2 b.0.c.0,b.0.c.1\n3 b.1\n4 -\n'
                      'b: 2\nb.0.c: 2'))
-    await route(runner, payload=PAYLOAD, units=NESTED_UNITS,
+    await route(runner, payload=PAYLOAD, schema_head=HEAD, units=NESTED_UNITS,
                 chunks=NESTED_CHUNKS)
     assert 'rides its parent' in runner.calls[1]['feedback'][0].message
 
@@ -1827,7 +1840,7 @@ async def test_merged_nested_recount_demotes_the_sub_entries():
     runner = ScriptedRunner(
         agent_result('0 a\n1-3 b.0.c.0-1\n4 -\nb: 1\nb.0.c: 2'),
         agent_result('b.0.c: 1\n公司甲·工程师'))
-    routing = await route(runner, payload=PAYLOAD, units=NESTED_UNITS,
+    routing = await route(runner, payload=PAYLOAD, schema_head=HEAD, units=NESTED_UNITS,
                           chunks=NESTED_CHUNKS)
     assert len(runner.calls) == 2
     assert runner.calls[1]['feedback'] is None
@@ -1841,7 +1854,7 @@ async def test_merged_nested_recount_zero_strips_chains_and_declaration():
     runner = ScriptedRunner(
         agent_result('0 a\n1-3 b.0.c.0-1\n4 -\nb: 1\nb.0.c: 2'),
         agent_result('b.0.c: 0'))
-    routing = await route(runner, payload=PAYLOAD, units=NESTED_UNITS,
+    routing = await route(runner, payload=PAYLOAD, schema_head=HEAD, units=NESTED_UNITS,
                           chunks=NESTED_CHUNKS)
     assert len(runner.calls) == 2
     assert routing.raw['nested_counts'] == {}
@@ -1859,7 +1872,7 @@ async def test_merged_nested_recount_cross_parent_quote_is_dropped():
     runner = ScriptedRunner(
         agent_result('0 a\n1-3 b.0.c.0-1\n4 -\nb: 1\nb.0.c: 2'),
         agent_result('b.0.c: 2\n公司甲·工程师\n姓名张三'))
-    routing = await route(runner, payload=PAYLOAD, units=NESTED_UNITS,
+    routing = await route(runner, payload=PAYLOAD, schema_head=HEAD, units=NESTED_UNITS,
                           chunks=NESTED_CHUNKS)
     assert len(runner.calls) == 2
     assert routing.raw['nested_counts'] == {'jobs.roles': {0: 1}}
@@ -1874,7 +1887,7 @@ async def test_merged_nested_recount_all_openings_outside_keeps_the_lines():
     runner = ScriptedRunner(
         agent_result('0 a\n1-3 b.0.c.0-1\n4 -\nb: 1\nb.0.c: 2'),
         agent_result('b.0.c: 2\n姓名张三\n无关页脚'))
-    routing = await route(runner, payload=PAYLOAD, units=NESTED_UNITS,
+    routing = await route(runner, payload=PAYLOAD, schema_head=HEAD, units=NESTED_UNITS,
                           chunks=NESTED_CHUNKS)
     assert len(runner.calls) == 2
     assert routing.raw['nested_counts'] == {'jobs.roles': {0: 2}}
@@ -1888,7 +1901,7 @@ async def test_separated_nested_chains_draw_no_recount():
     # nothing merged, nothing to recount
     runner = ScriptedRunner(
         agent_result('0 a\n1 b.0.c.0\n2 b.0.c.1\n3 b.1\n4 -\nb: 2\nb.0.c: 2'))
-    routing = await route(runner, payload=PAYLOAD, units=NESTED_UNITS,
+    routing = await route(runner, payload=PAYLOAD, schema_head=HEAD, units=NESTED_UNITS,
                           chunks=NESTED_CHUNKS)
     assert len(runner.calls) == 1
     assert routing.raw['nested_counts'] == {'jobs.roles': {0: 2}}
@@ -1907,7 +1920,7 @@ async def test_declared_undrawn_unit_is_recounted_and_adopted():
     runner = ScriptedRunner(
         agent_result('0 a\n1-3 -\nb: 2'),
         agent_result('b: 2\n第一段：腾讯\n第二段：阿里\nc: 0'))
-    routing = await route(runner, payload=PAYLOAD, units=SHARED_UNITS,
+    routing = await route(runner, payload=PAYLOAD, schema_head=HEAD, units=SHARED_UNITS,
                           chunks=CHUNKS)
     assert len(runner.calls) == 2  # the recount adopted — no repair round
     assert runner.calls[1]['feedback'] is None  # a fresh conversation
@@ -1925,7 +1938,7 @@ async def test_undrawn_instances_sharing_one_chunk_claim_it_together():
     runner = ScriptedRunner(
         agent_result('0 a\n1-2 -\nb: 2'),
         agent_result('b: 2\n腾讯\n阿里\nc: 0'))
-    routing = await route(runner, payload=PAYLOAD, units=SHARED_UNITS,
+    routing = await route(runner, payload=PAYLOAD, schema_head=HEAD, units=SHARED_UNITS,
                           chunks=chunks)
     assert len(runner.calls) == 2
     jobs = [g for g in routing.groups if g.unit.path == 'jobs']
@@ -1939,7 +1952,7 @@ async def test_nested_undrawn_chains_partition_the_parent_run():
     runner = ScriptedRunner(
         agent_result('0 a\n1-2 b.0\n3 b.1\n4 -\nb: 2\nb.0.c: 2'),
         agent_result('b.0.c: 2\n公司甲·工程师\n公司甲·经理'))
-    routing = await route(runner, payload=PAYLOAD, units=NESTED_UNITS,
+    routing = await route(runner, payload=PAYLOAD, schema_head=HEAD, units=NESTED_UNITS,
                           chunks=NESTED_CHUNKS)
     assert len(runner.calls) == 2
     roles = [g for g in routing.groups if g.unit.path == 'jobs.roles']
@@ -1954,7 +1967,7 @@ async def test_undrawn_chains_leave_the_parent_runs_own_head_and_tail():
     runner = ScriptedRunner(
         agent_result('0 a\n1-4 b.0\n5 -\nb: 1\nb.0.c: 2'),
         agent_result('b.0.c: 2\n公司甲·工程师\n公司甲·经理'))
-    routing = await route(runner, payload=PAYLOAD, units=NESTED_UNITS,
+    routing = await route(runner, payload=PAYLOAD, schema_head=HEAD, units=NESTED_UNITS,
                           chunks=chunks)
     assert len(runner.calls) == 2
     roles = [g for g in routing.groups if g.unit.path == 'jobs.roles']
@@ -1969,7 +1982,7 @@ async def test_undrawn_recount_number_overrides_the_declaration():
     runner = ScriptedRunner(
         agent_result('0 a\n1-3 -\nb: 2'),
         agent_result('b: 1\n第一段：腾讯\nc: 0'))
-    routing = await route(runner, payload=PAYLOAD, units=SHARED_UNITS,
+    routing = await route(runner, payload=PAYLOAD, schema_head=HEAD, units=SHARED_UNITS,
                           chunks=CHUNKS)
     assert len(runner.calls) == 2
     assert routing.raw['counts'] == {'jobs': 1, 'summary': 0}
@@ -1983,7 +1996,7 @@ async def test_geometry_errors_keep_the_undrawn_family_on_diff_rounds():
     runner = ScriptedRunner(
         agent_result('0-1 a\n1-3 -\nb: 2'),  # overlap + declared-undrawn
         agent_result('0 a\n1 b.0\n2 b.1\n3 -\nb: 2'))
-    await route(runner, payload=PAYLOAD, units=UNITS, chunks=CHUNKS)
+    await route(runner, payload=PAYLOAD, schema_head=HEAD, units=UNITS, chunks=CHUNKS)
     assert len(runner.calls) == 2
     assert 'overlaps' in runner.calls[1]['feedback'][0].message
     assert runner.calls[1]['instructions'] == ''  # a repair, not a recount
@@ -1997,7 +2010,7 @@ async def test_undrawn_merged_opening_quote_claims_the_chunk_for_all():
     runner = ScriptedRunner(
         agent_result('0 a\n1-2 -\nb: 2'),
         agent_result('b: 2\n已取得律师执业资格、证券从业资格'))
-    routing = await route(runner, payload=PAYLOAD, units=SHARED_UNITS,
+    routing = await route(runner, payload=PAYLOAD, schema_head=HEAD, units=SHARED_UNITS,
                           chunks=chunks)
     assert len(runner.calls) == 2
     jobs = [g for g in routing.groups if g.unit.path == 'jobs']
@@ -2047,7 +2060,7 @@ async def test_merged_nested_recount_upward_count_keeps_the_lines():
     runner = ScriptedRunner(
         agent_result('0 a\n1-3 b.0.c.0-1\n4 -\nb: 1\nb.0.c: 2'),
         agent_result('b.0.c: 3\n公司甲·工程师\n公司甲·经理\n公司乙'))
-    routing = await route(runner, payload=PAYLOAD, units=NESTED_UNITS,
+    routing = await route(runner, payload=PAYLOAD, schema_head=HEAD, units=NESTED_UNITS,
                           chunks=NESTED_CHUNKS)
     assert len(runner.calls) == 2
     assert routing.raw['nested_counts'] == {'jobs.roles': {0: 2}}

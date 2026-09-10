@@ -64,8 +64,10 @@ class AgentRunner(Protocol):
     The host adapts this to its agent framework (PydanticAI today, anything
     else tomorrow). Prompt layout is frozen for cache reasons:
     ``instructions`` carries the unit's semantic card and ``content`` the
-    shared, byte-identical payload (full text + full schema) that makes the
-    provider's KV cache hit across every call of one extraction;
+    document text alone — the one byte-identical system message every
+    call of one extraction shares, the provider cache's common block
+    (the router-plane schema rides the prompts' chunks section instead
+    — see prompting.schema_head);
     ``scope`` carries this call's private slice — the routed chunks of one
     group (None for the router). On ``history`` rounds the transcript
     already carries the card and scope, so the caller passes ``''`` for

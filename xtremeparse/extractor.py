@@ -16,7 +16,7 @@ from xtremeparse.executor import execute, values_from_calls, values_key
 from xtremeparse.merge import merge
 from xtremeparse.prompting import (SPECIALIST_PLACEHOLDERS, check_placeholders,
                                    estimate_tokens, overall, provenance,
-                                   shared_payload)
+                                   router_tokens, schema_head)
 from xtremeparse.router import (RECOUNT_PLACEHOLDERS, ROUTE_PLACEHOLDERS,
                                 route)
 from xtremeparse.scheduling import TaskScheduler
@@ -76,7 +76,7 @@ class Extractor:
                       validator: Validator) -> ExtractionResult:
         """Best-effort structured extraction; never raises on bad data."""
         text = normalize_newlines(text)
-        payload = shared_payload(text, schema)
+        head = schema_head(schema)
         chunks = chunk_text(text, max_chars=self.max_chars)
         units = decompose(schema)
         routing = execution = None
@@ -87,10 +87,10 @@ class Extractor:
             # below resolves the same fallback pair
             runner = self.router_runner or self.runner
             scheduler = self.router_scheduler or self.scheduler
-            tokens = estimate_tokens(payload, text)  # payload + text:
-            # router instructions re-embed the chunk listing
+            tokens = router_tokens(text, head)
             route_task = await scheduler.start_task(
-                route(runner, payload=payload, units=units, chunks=chunks,
+                route(runner, payload=text, schema_head=head, units=units,
+                      chunks=chunks,
                       instructions=self.router_instructions,
                       recount_instructions=self.recount_instructions,
                       overall=overall(schema)),
@@ -127,13 +127,13 @@ class Extractor:
                 # declared count, the mend path stands. Every check
                 # starts before the first one returns: the calls are
                 # independent, the scheduler exists to overlap them
-                arb_tokens = estimate_tokens(payload)
+                arb_tokens = estimate_tokens(text)
                 pending = []
                 for unit_path, (declared, actual) in sorted(
                         mismatches.items()):
                     task = arbitrate_extraction(
                         runner, items=values.get(unit_path) or [],
-                        actual=actual, payload=payload)
+                        actual=actual, payload=text)
                     # the check prompt is payload + bounded openings
                     # (ARBITRATION_LIST_CAP), not the full document again
                     pending.append((unit_path, declared, actual,
