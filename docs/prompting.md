@@ -46,7 +46,15 @@ Extractor(runner,
   to keep consistent).
 - The default router and recount templates carry one optional slot,
   `{overall}`: the schema's root `description`, rendered as an
-  "Overall Instruction" block before the rules. It is not in the
+  "Overall Instruction" block at the prompt's very end, so a
+  document-selection constraint out-shouts the chunk listing it
+  governs (above the rules it lost rounds to that listing's pull,
+  measured). Wording a root description must satisfy (measured, same
+  A/B): no template self-reference — the sentence is read out of
+  context, as this block and inside the payload's schema JSON — and a
+  positional discriminator ("the contiguous … resume") that keeps a
+  merged bilingual document's parallel half out of the route. It is
+  not in the
   required placeholder sets — an override without it never shows the
   block. The extractor fills it from the schema automatically; direct
   `route()` callers pass `overall=`.

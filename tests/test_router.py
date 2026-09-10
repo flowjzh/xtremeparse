@@ -101,6 +101,16 @@ def test_default_prompts_carry_all_placeholders():
     check_placeholders(router._CHECK, RECOUNT_PLACEHOLDERS, 'recount')
 
 
+def test_overall_block_rides_last_in_every_default_prompt():
+    # placement is the measured fix (docs/prompting.md): a layout edit
+    # that drops the slot back mid-prompt must fail here, not silently
+    # revert the routing behavior
+    from xtremeparse import router
+    for template in (router._INSTRUCTIONS, router._CHECK,
+                     router._SHARED_CHECK, router._BOTH_CHECK):
+        assert template.rstrip().endswith('{overall}')
+
+
 async def test_invalid_map_gets_one_repair_with_feedback():
     runner = ScriptedRunner(
         agent_result('0 a\n1 x.0\n2 b.1\nb: 2'),  # unknown code + missing coverage

@@ -137,7 +137,7 @@ one: 0 only for a unit truly absent, and a unit with no text of its
 own that only summarizes another declares its source ("x = y")
 instead.
 
-{overall}Rules:
+Rules:
 - As you write the map, number a repeating unit's instances in the
   order you meet them across the WHOLE document — a new item index per
   instance, early and late instances alike; the count line after the
@@ -264,7 +264,8 @@ Chunks:
 
 Unit codes (legend lines are definitions for reference — the map and
 count lines name codes only):
-{legend}'''
+{legend}
+{overall}'''
 
 
 _DIFF_HOWTO = '''
@@ -284,7 +285,7 @@ listed at the end were left at zero; recount their instances in the
 DOCUMENT — read the whole chunk list; a brief mention inside an
 otherwise irrelevant run is still an instance.
 
-{overall}For each unit answer one line only, <code> being that unit's code
+For each unit answer one line only, <code> being that unit's code
 from the list at the end:
 - its count, "<code>: <n>", when the unit has its own text in the
   chunks — then add its map lines in the routing DSL
@@ -297,7 +298,8 @@ Chunks:
 {chunks}
 
 Units left at zero (code = unit card):
-{legend}'''
+{legend}
+{overall}'''
 
 
 class RouterError(Exception):
@@ -495,9 +497,11 @@ def _listing(chunks: list[str]) -> str:
 
 
 def _overall_block(overall: str) -> str:
-    """The block an overall instruction renders as, or '' — the templates
-    glue `{overall}` onto the following line and the block carries its
-    own trailing newlines, so the prompts read the same either way."""
+    """The block an overall instruction renders as, or '' — every default
+    template glues `{overall}` at its very end, the prompt's last line;
+    docs/prompting.md records why the slot sits there (measured). The
+    block carries its own trailing newlines, so the prompts read the
+    same either way."""
     return f'Overall Instruction:\n\n{overall}\n\n' if overall else ''
 
 
@@ -1015,7 +1019,7 @@ async def _recount(runner: AgentRunner, payload: str, by_code: dict,
 _SHARED_CHECK = '''A document's chunks are listed below. Some repeating units' instances
 were left merged as one; recount them.
 
-{overall}For each unit marked RECOUNT answer:
+For each unit marked RECOUNT answer:
 1. a count line "<code>: <n>" — how many instances the DOCUMENT holds;
 2. then exactly n lines, one per instance, each
    quoting VERBATIM the opening text of that instance as it stands in
@@ -1027,7 +1031,7 @@ Units:
 Chunks:
 
 {chunks}
-'''
+{overall}'''
 
 
 async def _recount_shared(runner: AgentRunner, payload: str,
@@ -1076,7 +1080,7 @@ shared run, the ZERO ones were written off as absent. Recount them in
 the DOCUMENT — read the whole chunk list; a brief mention inside an
 otherwise irrelevant run is still an instance.
 
-{overall}For each unit marked RECOUNT answer a count line "<code>: <n>" — how
+For each unit marked RECOUNT answer a count line "<code>: <n>" — how
 many instances the DOCUMENT holds — then, per its tag:
 
 - a MERGED unit: exactly n lines, one per instance, each quoting
@@ -1095,7 +1099,7 @@ Units:
 Chunks:
 
 {chunks}
-'''
+{overall}'''
 
 
 async def _recount_both(runner: AgentRunner, payload: str, shared: dict,
