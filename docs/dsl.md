@@ -44,7 +44,9 @@ repeating (array) unit.
     (`c.0.d.0-d.2`) normalizes like the flat form. A nested unit is
     never written bare (`d.0`, `d: 2`, `d = c.0.d`) — validation names
     the chain instead; a bare `d: 0` is tolerated as the silence it
-    restates, and a sub-entry takes no count line of its own.
+    restates, an identical repeat of the chain count as the restatement
+    it is (the model re-declares it after the chain lines to attach the
+    budget), and a sub-entry takes no count line of its own.
     A chain line drawn inside the parent instance's own run
     becomes the fine partition of that run: the parent's line stays
     the one carrying the coverage, and each sub-entry keeps its own

@@ -1538,7 +1538,14 @@ def _splice(segments, counts, nested, derived, answer, zeros, by_code: dict,
             else:
                 counts = {**counts, code: int(declared or 0)}
             continue
-        if not (m := _LINE.match(line.strip())):
+        stripped = line.strip()
+        # the recount answers the template's quoted example form
+        # ("4 <code>.0") with the quotes on — a claim the quotes hide
+        # is the recount's whole point, so fall back to the module's
+        # quote-wrapper set when the bare line fails (measured on live
+        # draws)
+        if not (m := _LINE.match(stripped)
+                or _LINE.match(stripped.strip(_QUOTE_WRAP))):
             continue
         start, end = int(m.group(1)), int(m.group(2) or m.group(1))
         dests = []
@@ -1966,8 +1973,16 @@ def _parse(text, by_code: dict, n: int, lenient: set | None = None):
                     else:
                         sub_decls.setdefault((chain[3], int(chain[2])), {})[
                             int(chain[4])] = int(declared or 0)
-                elif (chain[3], int(chain[2])) in nested:
-                    errors.append(f'line {i + 1}: {code} declared twice')
+                elif (key := (chain[3], int(chain[2]))) in nested:
+                    # an identical restatement is noise: the model
+                    # re-declares the count after its chain lines to
+                    # attach the budget (measured on live draws), and the
+                    # restated line's budget prices last-wins below —
+                    # only a contradicting number is an error
+                    prior = nested[key]
+                    if declared is None or int(declared) != prior:
+                        errors.append(f'line {i + 1}: {code} declared twice '
+                                      f'— {prior} stands, drop this line')
                 elif source is not None:
                     errors.append(f'line {i + 1}: {code} counts per parent — '
                                   f'declare a count ("{code}: <n>"), no '

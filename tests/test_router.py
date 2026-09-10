@@ -264,6 +264,19 @@ async def test_zero_declaration_gets_one_recount_round():
     assert [g.chunk_ids for g in routing.groups if g.unit.kind == 'array'] == [[1]]
 
 
+async def test_the_recounts_quoted_map_line_still_splices():
+    # the recount answers the template's quoted example form
+    # ("4 <code>.0") with the quotes on — unquoted, the claim never
+    # parses and a clean adoption decays into two repair rounds
+    runner = ScriptedRunner(
+        agent_result('0 a\n1-3 -\nb: 0'),
+        agent_result('b: 1\n"2 b.0"'))  # same claim, quoted
+    routing = await route(runner, payload=PAYLOAD, schema_head=HEAD, units=UNITS, chunks=CHUNKS)
+    assert len(runner.calls) == 2 and runner.calls[1]['feedback'] is None
+    assert routing.raw['counts'] == {'jobs': 1}
+    assert [g.chunk_ids for g in routing.groups if g.unit.kind == 'array'] == [[2]]
+
+
 async def test_zero_confirm_adopts_silently_on_a_chain_map():
     # the covering chain form (parent line over its chains) must
     # round-trip the adoption tail — see _cover
@@ -1475,6 +1488,31 @@ async def test_nested_chain_count_line_for_a_foreign_unit_is_named():
         agent_result('0 a\n1-2 b.0.c.0\n3 b.1\n4 -\nb: 2\nb.0.c: 1'))
     await route(runner, payload=PAYLOAD, schema_head=HEAD, units=NESTED_UNITS, chunks=NESTED_CHUNKS)
     assert 'not a nested unit chain' in runner.calls[1]['feedback'][0].message
+
+
+async def test_an_identical_chain_count_restatement_is_noise():
+    # the model re-declares the chain count after its chain lines to
+    # attach the budget — an identical restatement parses with no
+    # repair round, the restated budget pricing last-wins
+    runner = ScriptedRunner(
+        agent_result('0 a\n1-2 b.0.c.0\n3 b.1\n4 -\nb: 2'
+                     '\nb.0.c: 1\nb.0.c: 1 @100'))
+    routing = await route(runner, payload=PAYLOAD, schema_head=HEAD,
+                          units=NESTED_UNITS, chunks=NESTED_CHUNKS)
+    assert len(runner.calls) == 1
+    assert routing.raw['nested_counts'] == {'jobs.roles': {0: 1}}
+    assert routing.budgets == {'jobs.roles': 100}
+
+
+async def test_a_contradicting_chain_count_restatement_is_named():
+    runner = ScriptedRunner(
+        agent_result('0 a\n1-2 b.0.c.0\n3 b.1\n4 -\nb: 2'
+                     '\nb.0.c: 1\nb.0.c: 2 @100'),
+        agent_result('0 a\n1-2 b.0.c.0\n3 b.1\n4 -\nb: 2\nb.0.c: 1'))
+    await route(runner, payload=PAYLOAD, schema_head=HEAD,
+                units=NESTED_UNITS, chunks=NESTED_CHUNKS)
+    assert 'declared twice — 1 stands, drop this line' \
+        in runner.calls[1]['feedback'][0].message
 
 
 async def test_nested_declared_count_must_match_mapped_sub_items():

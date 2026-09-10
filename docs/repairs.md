@@ -147,7 +147,10 @@ would be lost. A confirming answer costs no round: the splice
 re-segments through the per-chunk cover, which keeps a parent's
 destinations beneath the chain chunks nesting in its run, so even the
 covering form (parent line drawn over its chains) round-trips the
-adoption and the zero is accepted as counted.
+adoption and the zero is accepted as counted. The recount sometimes
+answers the template's quoted example form with the quotes on
+(`"2 b.0"`) — a claim is read through a wrapping quote pair when
+unquoting makes it parse.
 
 ## Executor corrections
 
