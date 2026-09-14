@@ -87,7 +87,11 @@ class Extractor:
             # below resolves the same fallback pair
             runner = self.router_runner or self.runner
             scheduler = self.router_scheduler or self.scheduler
-            tokens = router_tokens(text, head)
+            # the seed covers the instructions' variable parts too — the
+            # schema head and the legend's full cards (the usage report
+            # corrects the estimate either way)
+            tokens = router_tokens(text, head) + estimate_tokens(
+                *(u.card for u in units))
             route_task = await scheduler.start_task(
                 route(runner, payload=text, schema_head=head, units=units,
                       chunks=chunks,

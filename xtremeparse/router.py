@@ -138,138 +138,122 @@ own that only summarizes another declares its source ("x = y")
 instead.
 
 Rules:
-- As you write the map, number a repeating unit's instances in the
-  order you meet them across the WHOLE document — a new item index per
-  instance, early and late instances alike; the count line after the
-  map reports the highest index plus one, 0 for a unit the document
-  does not contain at all. A unit with no
-  text of its own that only summarizes another unit declares just
-  its source and takes NO map lines:
-  "x = y @30%" — its items (and its count) mirror the source's
-  material, but its budget is its own: set it for the lines the
-  summary will emit — a ratio scales against the source material it
-  summarizes, so a terse summary sits well below 100%.
-- A declaration line ends with an output-budget suffix — one entry per
-  item in item-index order ("x: 3 @100%,80%,50%", or "x: 3 @100%" when
-  items share one): an estimate of the characters the item's extracted
-  VALUES run to — the values' own text, never key names, punctuation,
-  or JSON structure. A ratio, "@<n>%", is the DEFAULT form — the
-  values as a percentage of ALL the text the item's mapped lines
-  carry, the parts no field can hold included — never just the
-  relevant-looking parts. It fits
-  every item whose output mirrors the material field by field: the
-  same facts, carried into the schema's fields. Set the ratio from
-  the field descriptions in the JSON Schema (the shared context):
-  fields told to keep every listed entry or every figure keep their
-  fields' own content; a verbatim copy of the whole material is
-  "@100%". An item whose lines are mostly narration no field can
-  hold sits well under half; an item whose lines are all
-  field-bound content stays near full — when items differ like
+- As you write the map, number a repeating unit's instances in the order you
+  meet them across the WHOLE document — a new item index per instance, early
+  and late instances alike; the count line after the map reports the highest
+  index plus one, 0 for a unit the document does not contain at all. A unit
+  with no text of its own that only summarizes another unit declares just
+  its source and takes NO map lines: "x = y @30%" — its items (and its
+  count) mirror the source's material, but its budget is its own: set it for
+  the lines the summary will emit — a ratio scales against the source
+  material it summarizes, so a terse summary sits well below 100%.
+- A declaration line ends with an output-budget suffix — one entry per item
+  in item-index order ("x: 3 @100%,80%,50%", or "x: 3 @100%" when items
+  share one): an estimate of the characters the item's extracted VALUES run
+  to — the values' own text, never key names, punctuation, or JSON
+  structure. A ratio, "@<n>%", is the DEFAULT form — the values as a
+  percentage of ALL the text the item's mapped lines carry, the parts no
+  field can hold included — never just the relevant-looking parts. It fits
+  every item whose output mirrors the material field by field: the same
+  facts, carried into the card's fields. Set the ratio from the field
+  descriptions in the unit cards (the legend): fields told to keep
+  every listed entry or every figure keep their fields' own content; a
+  verbatim copy of the whole material is "@100%". An item whose lines are
+  mostly narration no field can hold sits well under half; an item whose
+  lines are all field-bound content stays near full — when items differ like
   that, give each its own percentage instead of one shared number
-  ("@30%,90%"). Fields told to summarize or compress sit well
-  below (say 30-50%). A card saying an entry holds only certain
-  fields prices THOSE fields. And fields that will restate one
-  clause of the material (a name distilled beside a description
-  carrying the same sentence) run that clause once PER field —
-  their sum can exceed the material's own length; price the
-  fields, not the source. Two
-  shapes take a non-ratio form instead:
-  - a list of names: average the entries' own lengths as they
-    stand in the assigned chunks, and multiply by the number of
-    entries the document holds. An entry's length is the field
-    value's own text — the name alone, not the labels, headings,
-    or grades printed beside it in the chunk. The length counts
-    CHARACTERS, never words — word counts understate a name
+  ("@30%,90%"). Fields told to summarize or compress sit well below (say
+  30-50%). A card saying an entry holds only certain fields prices THOSE
+  fields. And fields that will restate one clause of the material (a name
+  distilled beside a description carrying the same sentence) run that clause
+  once PER field — their sum can exceed the material's own length; price the
+  fields, not the source. Two shapes take a non-ratio form instead:
+  - a list of names: average the entries' own lengths as they stand in the
+    assigned chunks, and multiply by the number of entries the document
+    holds. An entry's length is the field value's own text — the name alone,
+    not the labels, headings, or grades printed beside it in the chunk. The
+    length counts CHARACTERS, never words — word counts understate a name
     badly;
-  - a fixed-length summary — the card or schema pins the output size
-    ("one line", "about 100 characters") — or an item whose output
-    does not mirror the material at all: a plain character estimate,
-    "@<n>" ("x: 3 @300"). A value's cost is its own text alone:
-    a date ≈7, a name ≈10, a one-line title ≈20.
+  - a fixed-length summary — the card pins the output size ("one
+    line", "about 100 characters") — or an item whose output does not mirror
+    the material at all: a plain character estimate, "@<n>" ("x: 3 @300"). A
+    value's cost is its own text alone: a date ≈7, a name ≈10, a one-line
+    title ≈20.
   Every declaration line carries one.
-- Map lines ascend, never overlap, and together cover EVERY chunk id in 0..{top}.
-- A run may feed several DIFFERENT units at once: comma-join their
-  codes ("5 x.0,y.0") — a summary or cross-cutting unit rides the lines
-  of the unit whose text it shares, item by item:
+- Map lines ascend, never overlap, and together cover EVERY chunk id in
+  0..{top}.
+- A run may feed several DIFFERENT units at once: comma-join their codes ("5
+  x.0,y.0") — a summary or cross-cutting unit rides the lines of the unit
+  whose text it shares, item by item:
       5 x.0,y.0
       6 x.1,y.1
-  An instance whose own text sits inside another unit's run rides that
-  line too, even when its unit's other instances get lines of their
-  own ("0-1 e.0,a.0" then "2 a.1"): a chunk holding two units'
-  material is ONE line carrying both codes — two lines claiming the
-  same chunk are never legal.
-- A unit whose legend line shows another unit's path ("<code> =
+  An instance whose own text sits inside another unit's run rides that line
+  too, even when its unit's other instances get lines of their own ("0-1
+  e.0,a.0" then "2 a.1"): a chunk holding two units' material is ONE line
+  carrying both codes — two lines claiming the same chunk are never legal.
+- A unit whose legend entry shows another unit's path ("<code> =
   [parent.field | array]") nests inside that unit's instances. Its
-  sub-entries never ride a parent's plain line — each gets its own
-  chain line THROUGH the parent instance
-  ("<parent>.<item>.<code>.<sub>", e.g. "3-15 c.0.d.0" — parent
-  instance 0's first sub-entry), one line per sub-entry where chunk
-  boundaries allow. A parent line plus a count line maps no
-  sub-entries: only chain lines do. Every chain line also feeds its
-  parent instance the chunks it covers, so those chunks take no
-  separate parent line:
+  sub-entries never ride a parent's plain line — each gets its own chain
+  line THROUGH the parent instance ("<parent>.<item>.<code>.<sub>", e.g.
+  "3-15 c.0.d.0" — parent instance 0's first sub-entry), one line per
+  sub-entry where chunk boundaries allow. A parent line plus a count line
+  maps no sub-entries: only chain lines do. Every chain line also feeds its
+  parent instance the chunks it covers, so those chunks take no separate
+  parent line:
       12-14 c.0
       15-20 c.0.d.0
       21-26 c.0.d.1
       c.0.d: 2
-  After the map, each parent instance holding sub-entries declares
-  their count ("c.0.d: 2", budget suffix as for any unit); a parent
-  holding none declares nothing. That count line is the lifted
-  sub-array's ONLY declaration — never a top-level count ("d: 2"),
-  never a source ("d = c.0.d"), and a sub-entry takes no count line
-  of its own.
-- Items of the SAME unit that separable chunk boundaries CAN separate
-  MUST each get their own line ("5-9 x.0" then "10-11 x.1"): each
-  item's budget then scales against its own material. Sharing one line
-  ("3 x.0,x.1,x.2") is ONLY for a
-  run whose chunk boundaries cannot separate the instances — one chunk
-  holding material of two or more instances; that material is then
+  After the map, each parent instance holding sub-entries declares their
+  count ("c.0.d: 2", budget suffix as for any unit); a parent holding none
+  declares nothing. That count line is the lifted sub-array's ONLY
+  declaration — never a top-level count ("d: 2"), never a source ("d =
+  c.0.d"), and a sub-entry takes no count line of its own.
+- Items of the SAME unit that separable chunk boundaries CAN separate MUST
+  each get their own line ("5-9 x.0" then "10-11 x.1"): each item's budget
+  then scales against its own material. Sharing one line ("3 x.0,x.1,x.2")
+  is ONLY for a run whose chunk boundaries cannot separate the instances —
+  one chunk holding material of two or more instances; that material is then
   extracted once, whole.
-- A long run whose chunks carry one unit's instances IN ORDER — an
-  entry list too dense for chunk boundaries to separate (roughly one
-  instance to a chunk) — MUST be ONE ranged line ("12-93 x.0-84": name
-  the exact index span the chunks carry). NEVER enumerate that many
-  indexes comma-joined ("12 x.0,x.1,x.2,..." is a broken draw). One
-  unit, one shape: when chunk boundaries CAN separate the instances,
-  each takes its own line and no ranged line may cover them — drawing
-  the ranged form and per-instance lines for the same instances
-  overlaps and is invalid. Short runs (a few instances) stay per-item
-  lines. Length alone never makes a ranged line — density does; and a
-  parent whose sub-entries take chain lines takes plain per-item
-  lines for its own chunks, never a ranged parent line beside its
+- A long run whose chunks carry one unit's instances IN ORDER — an entry
+  list too dense for chunk boundaries to separate (roughly one instance to a
+  chunk) — MUST be ONE ranged line ("12-93 x.0-84": name the exact index
+  span the chunks carry). NEVER enumerate that many indexes comma-joined
+  ("12 x.0,x.1,x.2,..." is a broken draw). One unit, one shape: when chunk
+  boundaries CAN separate the instances, each takes its own line and no
+  ranged line may cover them — drawing the ranged form and per-instance
+  lines for the same instances overlaps and is invalid. Short runs (a few
+  instances) stay per-item lines. Length alone never makes a ranged line —
+  density does; and a parent whose sub-entries take chain lines takes plain
+  per-item lines for its own chunks, never a ranged parent line beside its
   chain lines (the chains feed the parent those chunks).
-- Every declared item receives at least one chunk. A unit sharing
-  another's run may repeat one item across several lines (one instance
-  spanning what another unit splits into many).
-- Each item is ONE instance of the repeating unit — a complete entry.
-  Start a new item whenever the text moves to the next instance; never
-  merge distinct instances into one, and never split one instance
-  across items.
-- Code {none} on its own (no item) marks chunks irrelevant to every
-  unit, always ranged ("42-43 {none}"), never a bare {none} line.
-  A chunk that is only a label — a section heading or title introducing
-  the entries around it, no instance and no field-bound text of its own —
-  takes {none}, never a unit's item line.
-- Before answering, verify: every repeating unit has a declaration line
-  (its count "x: <n>" or its source "x = y") and every parent instance
-  holding a nested unit's sub-entries declares its count ("x.0.y: <n>"),
-  the map covers 0..{top}
-  exactly once in ascending non-overlapping lines, item indexes of
-  each unit run 0..used-1 with no gaps, every count line matches
+- Every declared item receives at least one chunk. A unit sharing another's
+  run may repeat one item across several lines (one instance spanning what
+  another unit splits into many).
+- Each item is ONE instance of the repeating unit — a complete entry. Start
+  a new item whenever the text moves to the next instance; never merge
+  distinct instances into one, and never split one instance across items.
+- Code {none} on its own (no item) marks chunks irrelevant to every unit,
+  always ranged ("42-43 {none}"), never a bare {none} line. A chunk that is
+  only a label — a section heading or title introducing the entries around
+  it, no instance and no field-bound text of its own — takes {none}, never a
+  unit's item line.
+- Before answering, verify: every repeating unit has a declaration line (its
+  count "x: <n>" or its source "x = y") and every parent instance holding a
+  nested unit's sub-entries declares its count ("x.0.y: <n>"), the map
+  covers 0..{top} exactly once in ascending non-overlapping lines, item
+  indexes of each unit run 0..used-1 with no gaps, every count line matches
   the map.
-
-Chunks:
 
 {chunks}
 
-Unit codes (legend lines are definitions for reference — the map and
-count lines name codes only):
+Unit codes (each entry below is that unit's card, a definition for
+reference — the map and count lines name codes only):
 {legend}
 {overall}'''
 
 
-_DIFF_HOWTO = '''
-Reply with a unified diff against your previous map: "-" lines removed,
+_DIFF_HOWTO = '''Reply with a unified diff against your previous map: "-" lines removed,
 "+" lines added, one edit per line — never re-emit an unchanged line.
 The full map is also accepted; a partial fragment is not — a reply
 without "-" or "+" lines replaces the whole map, so every line left
@@ -287,17 +271,14 @@ otherwise irrelevant run is still an instance.
 
 For each unit answer one line only, <code> being that unit's code
 from the list at the end:
-- its count, "<code>: <n>", when the unit has its own text in the
-  chunks — then add its map lines in the routing DSL
-  ("4 <code>.0", "5 <code>.1"), one item per instance, covering
-  exactly its material;
+- its count, "<code>: <n>", when the unit has its own text in the chunks —
+  then add its map lines in the routing DSL ("4 <code>.0", "5 <code>.1"),
+  one item per instance, covering exactly its material;
 - "<code>: 0" alone when the document truly does not contain the unit.
-
-Chunks:
 
 {chunks}
 
-Units left at zero (code = unit card):
+Units left at zero (code = unit header):
 {legend}
 {overall}'''
 
@@ -497,11 +478,28 @@ def _listing(chunks: list[str]) -> str:
 
 
 def _chunks_section(schema_head: str, chunks: list[str]) -> str:
-    """The {chunks} substitution — the schema block riding ahead of the
-    listing, the one place every router-plane prompt reads the field
-    descriptions. Content stays the document text alone: the one system
-    message every call shares (see prompting.schema_head)."""
-    return f'{schema_head}\n\n{_listing(chunks)}'
+    """The {chunks} substitution — the schema block, then the Chunks:
+    heading directly over its numbered listing (the schema is not
+    chunks; the heading must not cover it). Content stays the document
+    text alone: the one system message every call shares (see
+    prompting.schema_head)."""
+    return f'{schema_head}\n\nChunks:\n\n{_listing(chunks)}'
+
+
+_NAMED_MARKER = (' — a list of names: its budget is the keyword form '
+                 '"@<avg>x<count>", never a percentage')
+
+
+def _legend_entry(code: str, unit: Unit) -> str:
+    """One legend entry — the full card: the unit header plus its field
+    descriptions (the schema block ahead of the Chunks: heading carries
+    them a second time; both carriers are measured, see
+    docs/prompting.md). The name-list marker rides the header line — the
+    legend is a scan surface, so the form verdict must sit on the line
+    the model scans (the pricing how-to stays in the budget rule)."""
+    if not _name_list(unit):
+        return f'{code} = {unit.card}'
+    return f'{code} = {unit.header}{_NAMED_MARKER}{unit.card[len(unit.header):]}'
 
 
 def _overall_block(overall: str) -> str:
@@ -552,7 +550,7 @@ async def route(runner: AgentRunner, *, payload: str,
     its declared-vs-used mismatches through: the extraction's count
     arbitration owns the number. ``payload`` is the document text, the
     byte-identical system message every call shares. ``schema_head``
-    is the schema block embedded ahead of the chunks listing (see
+    is the schema block rendered ahead of the Chunks: heading (see
     prompting.schema_head). ``instructions``/``recount_instructions``
     replace the default prompt templates; they must carry their
     placeholders (ROUTE_PLACEHOLDERS / RECOUNT_PLACEHOLDERS — the
@@ -566,10 +564,7 @@ async def route(runner: AgentRunner, *, payload: str,
         # card headers (not bare paths): the description is the cue for
         # what a unit collects — and for recognizing a unit that only
         # summarizes another (its card names the unit it mirrors)
-        legend='\n'.join(f'{code} = {unit.header}'
-                         + (' — a list of names: its budget is the keyword '
-                            'form "@<avg>x<count>", never a percentage'
-                            if _name_list(unit) else '')
+        legend='\n'.join(_legend_entry(code, unit)
                          for code, unit in by_code.items()),
         chunks=_chunks_section(schema_head, chunks))
     schema: JSONSchema = {'type': 'string',
@@ -1038,14 +1033,12 @@ were left merged as one; recount them.
 
 For each unit marked RECOUNT answer:
 1. a count line "<code>: <n>" — how many instances the DOCUMENT holds;
-2. then exactly n lines, one per instance, each
-   quoting VERBATIM the opening text of that instance as it stands in
-   the chunk listing — enough text to locate its chunk, no commentary.
+2. then exactly n lines, one per instance, each quoting VERBATIM the opening
+   text of that instance as it stands in the chunk listing — enough text to
+   locate its chunk, no commentary.
 
 Units:
 {units}
-
-Chunks:
 
 {chunks}
 {overall}'''
@@ -1101,20 +1094,17 @@ otherwise irrelevant run is still an instance.
 For each unit marked RECOUNT answer a count line "<code>: <n>" — how
 many instances the DOCUMENT holds — then, per its tag:
 
-- a MERGED unit: exactly n lines, one per instance, each quoting
-  VERBATIM the opening text of that instance as
-  it stands in the chunk listing — enough text to locate its chunk,
-  no commentary;
-- a ZERO unit with its own text: its map lines in the routing DSL
-  ("4 <code>.0", "5 <code>.1"), one item per instance, covering
-  exactly its material;
-- a ZERO unit the document truly does not contain: the count line
-  "<code>: 0" alone.
+- a MERGED unit: exactly n lines, one per instance, each quoting VERBATIM
+  the opening text of that instance as it stands in the chunk listing —
+  enough text to locate its chunk, no commentary;
+- a ZERO unit with its own text: its map lines in the routing DSL ("4
+  <code>.0", "5 <code>.1"), one item per instance, covering exactly its
+  material;
+- a ZERO unit the document truly does not contain: the count line "<code>:
+  0" alone.
 
 Units:
 {units}
-
-Chunks:
 
 {chunks}
 {overall}'''

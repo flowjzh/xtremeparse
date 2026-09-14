@@ -60,8 +60,8 @@ def overall(schema: JSONSchema) -> str | None:
 
 
 def schema_head(schema: JSONSchema) -> str:
-    """The schema block the router-plane prompts embed ahead of their
-    chunks listing — the full schema's field descriptions, which the
+    """The schema block the router-plane prompts render ahead of the
+    Chunks: heading — the full schema's field descriptions, which the
     budget declarations reason over. Not carried in ``content``:
     content is the document text alone on every call (router, recounts
     and specialists alike), the one byte-identical system message the

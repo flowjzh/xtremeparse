@@ -39,11 +39,13 @@ Extractor(runner,
   validated at construction: a template missing one raises `ValueError`
   instead of silently rendering a prompt without its chunk listing.
 - `top` is the highest chunk id, `none` the NONE marker, `chunks` the
-  schema block riding ahead of the numbered chunk listing (the one
-  place a router-plane prompt reads the field descriptions — it cannot
-  be positioned or omitted independently), `card` the unit's semantic
+  schema block, the `Chunks:` heading, and the numbered listing under
+  it (the schema rides ahead of the heading — it cannot be positioned
+  or omitted independently), `card` the unit's semantic
   card — all built by
-  code. `legend` is one `code = <unit card header>` line per unit; its
+  code. `legend` is one `code = <unit card>` block per unit — the card
+  header plus its field descriptions, the only field-level context the
+  router-plane prompts carry; its
   format is fixed by code (the card header is the cue the default
   prompts rely on — an override legend interpretation is the override's
   to keep consistent).
@@ -54,7 +56,8 @@ Extractor(runner,
   governs (above the rules it lost rounds to that listing's pull,
   measured). Wording a root description must satisfy (measured, same
   A/B): no template self-reference — the sentence is read out of
-  context, as this block and inside the payload's schema JSON — a
+  context, as this block and inside the JSON Schema block the chunks
+  section renders — a
   positional discriminator ("the contiguous … resume") that keeps a
   merged bilingual document's parallel half out of the route, and a
   dismissal that names a parallel version — vaguer "discontiguous
@@ -110,8 +113,11 @@ prompt produced them.
   specialists alike): the provider's cache serves one common block,
   and dashscope's explicit cache truncates only at message
   boundaries, so a text+schema system message could never serve the
-  specialists' text-only one. The full schema rides the router-plane
-  prompts' chunks section instead (see `prompting.schema_head`).
+  specialists' text-only one. The router plane reads the full schema
+  in its chunks section (the block ahead of the `Chunks:` heading) and
+  the same field descriptions again in the legend's unit cards — both
+  measured: dropping the block from the prompts cost ~30% more router
+  rounds at unchanged count quality (K=5, full corpus), so it stays.
 
 ## Stability caveat
 

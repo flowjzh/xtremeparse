@@ -2,6 +2,7 @@
 
 import pytest
 
+from xtremeparse.arbitration import norm
 from xtremeparse.router import (NONE, RECOUNT_PLACEHOLDERS, ROUTE_PLACEHOLDERS,
                                 RouterError, Group, _anchors, _codes,
                                 _diff_text, _name_list, _overlay_text,
@@ -63,10 +64,10 @@ async def test_prompt_carries_legend_rules_and_numbered_chunks():
     call = runner.calls[0]
     assert 'a = [basic_info | object] 基本信息' in call['instructions'] \
         and f'c = [{MISC} | scalar] created 创建时间' in call['instructions']
-    assert 'cover EVERY chunk id in 0..3' in call['instructions']
-    assert 'order you meet them across the WHOLE document' \
-        in call['instructions']
-    assert 'distinct instances into one' in call['instructions']
+    flat = norm(call['instructions'])  # line-break-proof
+    assert 'cover EVERY chunk id in 0..3.' in flat
+    assert 'order you meet them across the WHOLE document' in flat
+    assert 'distinct instances into one' in flat
     assert '[0] 姓名张三' in call['instructions']
     assert '4-9 x.1' in call['instructions']  # inline format anchor
     assert 'one job' not in call['instructions']  # no domain leakage
@@ -74,15 +75,16 @@ async def test_prompt_carries_legend_rules_and_numbered_chunks():
     assert call['feedback'] is None
 
 
-async def test_content_is_bare_text_and_schema_rides_the_chunks_section():
+async def test_content_is_bare_text_and_schema_precedes_the_chunks_heading():
     """The cache contract: content is the document text alone — the one
     system message the specialists' calls share — and the schema block
-    heads the router prompt's chunks section."""
+    rides ahead of the Chunks: heading, never under it."""
     runner = runner_ok()
     await route(runner, payload=PAYLOAD, schema_head=HEAD, units=UNITS, chunks=CHUNKS)
     call = runner.calls[0]
     assert call['content'] == PAYLOAD
-    assert f'Chunks:\n\n{HEAD}\n\n[0] 姓名张三' in call['instructions']
+    rendered = call['instructions']
+    assert rendered.index(HEAD) < rendered.index('Chunks:\n\n[0] 姓名张三')
 
 
 @pytest.mark.parametrize('overall, present', [(None, False),
