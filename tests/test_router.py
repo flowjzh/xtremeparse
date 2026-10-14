@@ -388,14 +388,17 @@ async def test_recount_of_a_truly_absent_unit_finishes_there():
     assert [g.unit.path for g in routing.groups] == ['basic_info']
 
 
-async def test_count_before_map_is_rejected_and_non_array_count_ignored():
+async def test_count_before_map_is_rejected_and_a_scalar_claim_checked():
     runner = ScriptedRunner(
         agent_result('a: 2\n0 a\n1 b.0\n2-3 -\nb: 1\nc: 1'),
         agent_result('0 a\n1 b.0\n2-3 -\nb: 1'),
     )
     await route(runner, payload=PAYLOAD, schema_head=HEAD, units=UNITS, chunks=CHUNKS)
     messages = ' '.join(i.message for i in runner.calls[1]['feedback'])
-    assert 'follow the map' in messages and 'not a repeating unit' not in messages
+    assert 'follow the map' in messages
+    # the non-repeating unit's declaration is checked like a repeating
+    # unit's: declared 1, drawn nowhere, it reports to the repair round
+    assert 'c: declared 1 items but no line draws it' in messages
 
 
 async def test_non_text_output_is_invalid():
@@ -2042,6 +2045,62 @@ async def test_geometry_errors_keep_the_undrawn_family_on_diff_rounds():
     assert runner.calls[1]['instructions'] == ''  # a repair, not a recount
 
 
+async def test_declared_undrawn_non_array_is_recounted_and_adopted():
+    # the misc group declared present with no line drawing it: the same
+    # family's recount claims the chunks holding its fields — the silent
+    # loss this closes (a header the map wrote off as irrelevant while
+    # its name field rode there)
+    runner = ScriptedRunner(
+        agent_result('0 a\n1 b.0\n2 b.1\n3 -\nb: 2\nc: 1 @100%'),
+        agent_result('c: 1\n姓名张三'))  # the recount quotes its opening
+    routing = await route(runner, payload=PAYLOAD, schema_head=HEAD, units=UNITS,
+                          chunks=CHUNKS)
+    assert len(runner.calls) == 2 and runner.calls[1]['feedback'] is None
+    # a fresh recount conversation, the unit labeled in its legend
+    assert 'c = [$misc | scalar]' in runner.calls[1]['instructions']
+    assert routing.raw['counts'] == {'jobs': 2}  # no non-array count published
+    assert [(g.unit.path, g.chunk_ids) for g in routing.groups] == [
+        ('basic_info', [0]), ('$misc', [0]), ('jobs', [1]), ('jobs', [2])]
+
+
+async def test_a_settled_non_array_claim_stays_out_of_the_counts():
+    # the model stuck on a scalar it declares but never draws: the last
+    # valid round stands (a settled 200 beats a 500), and its internal
+    # present-or-absent reading stays out of the published counts — the
+    # extraction side reconciles repeating units only
+    runner = ScriptedRunner(*[agent_result('0-3 -\nb: 0\nc: 1')] * 5)
+    routing = await route(runner, payload=PAYLOAD, schema_head=HEAD, units=UNITS,
+                          chunks=CHUNKS)
+    assert routing.raw['counts'] == {'jobs': 0}
+    assert routing.raw['assignments'] == []
+
+
+async def test_an_unplaceable_non_array_recount_keeps_the_repair_path():
+    runner = ScriptedRunner(
+        agent_result('0 a\n1 b.0\n2 b.1\n3 -\nb: 2\nc: 1'),
+        agent_result('c: 1\n不在文档里'),  # the quote anchors nowhere
+        agent_result('0 a,c.0\n1 b.0\n2 b.1\n3 -\nb: 2\nc: 1'),
+    )
+    routing = await route(runner, payload=PAYLOAD, schema_head=HEAD, units=UNITS,
+                          chunks=CHUNKS)
+    assert len(runner.calls) == 3  # recount unusable, one repair round
+    assert 'no line draws it' in runner.calls[2]['feedback'][0].message
+    assert [g.unit.path for g in routing.groups if g.unit.path == '$misc'] == ['$misc']
+
+
+async def test_a_non_array_count_beside_its_own_line_is_noise():
+    # "c: 1 @100%" beside the line drawing it is the model's habit (the
+    # budget needs a carrier): no round is spent, and the count never
+    # reaches the extraction side's repeating-unit contract
+    runner = ScriptedRunner(
+        agent_result('0 a,c.0\n1 b.0\n2 b.1\n3 -\nb: 2\nc: 1 @100%'))
+    routing = await route(runner, payload=PAYLOAD, schema_head=HEAD, units=UNITS,
+                          chunks=CHUNKS)
+    assert len(runner.calls) == 1 and runner.calls[0]['feedback'] is None
+    assert routing.raw['counts'] == {'jobs': 2}
+    assert [g.unit.path for g in routing.groups if g.unit.path == '$misc'] == ['$misc']
+
+
 async def test_undrawn_merged_opening_quote_claims_the_chunk_for_all():
     # the recount may answer one quote for several instances whose
     # openings the chunk listing holds on one line (the dense list) —
@@ -2063,7 +2122,7 @@ def test_map_text_round_trips_through_the_parser():
     # round trip is pinned here: parse → render → parse reproduces the
     # state exactly (segments, counts, nested, budgets included)
     from xtremeparse.router import _codes, _map_text, _parse
-    text = ('0 a\n1-2 b.0\n2 b.0.c.0\n3 b.1\n4 -\n'
+    text = ('0 a\n1-2 b.0\n2 b.0.c.0\n3 b.1\n4 d\n'
             'b: 2 @90%,90%\nb.0.c: 1 @100%\nd: 1 @15%')
     by_code = _codes(NESTED_UNITS)
     errors, counts, nested, derived, segments, budgets = \

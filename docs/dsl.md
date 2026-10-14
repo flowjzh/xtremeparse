@@ -99,7 +99,10 @@ and a nested unit gets one per parent instance that holds sub-entries:
 
 - `x: <count>` — the document holds `<count>` instances of the unit.
   Item indexes used in the map must run exactly `0..count-1` with no
-  gaps, and every declared item must receive at least one chunk.
+  gaps, and every declared item must receive at least one chunk. On a
+  non-repeating unit the count is present-or-absent instead: `x: 1`
+  (with its budget suffix) declares the unit has material — and then a
+  line must draw it — `x: 0` that the document holds nothing for it.
 - `x.<item>.<y>: <count>` — parent instance `<item>` holds `<count>`
   sub-entries of the nested unit `y`; its sub-item indexes in the map
   must run exactly `0..count-1`. A parent holding no sub-entries
@@ -131,9 +134,14 @@ Violations are fed back as repair errors (bounded rounds, then
   which triggers a separate fresh-conversation recount before it is
   trusted); every parent instance claiming a nested unit's sub-entries
   declares their count
+- a non-repeating unit's declaration matches its drawing: `x: 1` with
+  no line drawing it is a declared-undrawn error — the same fresh
+  recount claims the chunks holding its fields — while a drawn one
+  carries no count (its declaration falls away), and `x: 0` reads as
+  absent
 - a derivation's `source` is itself a directly mapped repeating unit
 
-Tolerated noise: counts on non-array units are ignored; two map lines
+Tolerated noise: two map lines
 claiming the SAME chunk range union their destinations into one line —
 the model lines a parent's run and its sub-entries' chains up as
 separate same-range lines, and one chunk set is one line's semantics;

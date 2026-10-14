@@ -827,7 +827,13 @@ async def route(runner: AgentRunner, *, payload: str,
         for (cc, p), k in nested.items():
             nested_counts.setdefault(by_code[cc].path, {})[p] = k
         return Routing(_groups(segments, by_code, chunks, derived),
-                       {'counts': {by_code[c].path: k for c, k in counts.items()}
+                       # the published counts are the repeating units'
+                       # declarations: a non-repeating unit's present-or-
+                       # absent reading stays internal (a map that
+                       # settled leniently on one must not hand the
+                       # extraction side a count to reconcile)
+                       {'counts': {by_code[c].path: k for c, k in counts.items()
+                                   if by_code[c].kind == 'array'}
                                   | {by_code[d].path: counts[s]
                                      for d, s in derived.items()},
                         'nested_counts': nested_counts,
@@ -1160,16 +1166,21 @@ def _pending_zeros(by_code, counts, derived) -> list:
             and counts.get(c) == 0]
 
 
+def _drawn_pairs(segments) -> set:
+    """The (code, parent) pairs any map line claims — the one reading of
+    drawn-ness: `_map_errors` validates a non-repeating unit's
+    declaration against it and `_undrawn_pool` builds the recount pool
+    from it, so a unit one site calls undrawn the other must too."""
+    return {(dd[0], dd[2]) for _, _, dests in segments for dd in dests}
+
+
 def _undrawn_pool(segments, counts, nested) -> list:
     """The declared-undrawn units of a parsed map — counts declared but
     no lines drawn: ``[(code, None)]`` top-level, ``[(sub-code, parent
     index)]`` chained — the same state `_map_errors` reads when it
     writes the assigns-none errors, read from the source, not the
     prose."""
-    used = set()
-    for _, _, dests in segments:
-        for dd in dests:
-            used.add((dd[0], None) if dd[2] is None else (dd[0], dd[2]))
+    used = _drawn_pairs(segments)
     return [(code, None) for code, declared in counts.items()
             if declared and (code, None) not in used] + \
         [(code, parent) for (code, parent), declared in nested.items()
@@ -2000,7 +2011,11 @@ def _parse(text, by_code: dict, n: int, lenient: set | None = None):
                               f'declare "{_parent_code(unit, by_code)}.'
                               f'<item>.{code}: <n>", no count of its own')
             elif unit.kind != 'array':
-                pass  # a count on a non-repeating unit is noise, ignored
+                # a non-repeating unit's count is present-or-absent: 0
+                # says the document holds nothing for it, a positive
+                # number says it has material — and then a line must
+                # draw it (_map_errors owns that check)
+                counts[code] = int(declared or 0)
             elif code in counts or code in derived:
                 errors.append(f'line {i + 1}: {code} declared twice')
             elif source == code:
@@ -2631,8 +2646,29 @@ def _map_errors(segments, counts, nested, derived, by_code: dict,
         elif source not in counts:
             errors.append(f'{code}: = {source} needs {source}\'s own count '
                           f'declared first')
+    drawn = _drawn_pairs(segments)
     for code, unit in by_code.items():
-        if unit.kind != 'array' or code in derived:
+        if code in derived:
+            continue
+        if unit.kind != 'array':
+            if (code, None) in drawn:
+                # a drawn non-repeating unit carries no count: it is
+                # present exactly where a line claims it — and the pop
+                # lives in the validator, the one function every
+                # constructor passes (text parse and the code-authored
+                # folds alike), ahead of the hint passes reading counts
+                counts.pop(code, None)
+            elif (declared := counts.get(code)) \
+                    and code not in (lenient or ()):
+                # declared present with no line drawing it — the
+                # declared-undrawn family's error shape, so the fresh
+                # recount that carries that family claims the chunks
+                # holding the unit's fields
+                errors.append(
+                    f'{code}: declared {declared} items but no line '
+                    f'draws it — give the unit its own line over the '
+                    f'chunks holding its fields, or declare '
+                    f'"{code}: 0" if the document holds nothing for it')
             continue
         if unit.parent is not None:
             errors += _nested_errors(code, unit, segments, counts, nested,
