@@ -231,11 +231,11 @@ def _count_calls(calls: list, issue) -> list:
 def _owner(calls: list, path: str):
     covering = [c for c in calls
                 if c.unit.path != MISC and _under(path, c.value_path)]
-    exact = [c for c in covering if c.item is None and not c.batch
-             or c.item is not None
-             and _under(path, f'{c.value_path}[{c.item}]')
-             or c.batch and (_item_index(path, c.value_path) or -1)
-             in c.batch]
+    exact = [c for c in covering if (c.item is None and not c.batch)
+             or (c.item is not None
+                 and _under(path, f'{c.value_path}[{c.item}]'))
+             or (c.batch and (idx := _item_index(path, c.value_path)) is not None
+                 and idx in c.batch)]
     pool = exact or [c for c in calls if c.unit.path == MISC]
     return max(pool, key=lambda c: len(c.unit.path), default=None)
 

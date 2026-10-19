@@ -155,6 +155,17 @@ async def test_double_digit_item_does_not_match_single_digit_call():
     assert runner.calls == []  # jobs[12] is not under jobs[1]: nothing routable
 
 
+async def test_item_zero_issue_routes_to_its_batched_call():
+    runner = ScriptedRunner(agent_result([{'company': '腾讯修复'}, {'company': '阿里'}]))
+    calls = [call('jobs', [{'company': '腾讯'}, {'company': '阿里'}],
+                  strategy='per-item', batch=(0, 1))]
+    _, _, rounds = await correct(
+        runner, execution(*calls),
+        validator=lambda data: [FakeIssue('jobs[0].company')],
+        payload='p', scheduler=scheduler())
+    assert [(r.unit_path, r.item) for r in rounds] == [('jobs', None)]
+
+
 async def test_toplevel_scalar_issue_falls_back_to_misc():
     runner = ScriptedRunner(agent_result({'created': '2026-01-01'}))
     calls = [call('basic_info', {'name': '张三'}), call(MISC, {})]

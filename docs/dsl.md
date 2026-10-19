@@ -184,7 +184,36 @@ trace's router budgets verbatim. Budgets shape output through batch
 accumulated budget fits the per-call capacity) and are never enforced
 on the output. Overruns are accepted — a retry would cost a full
 extra decode. A host's `output_budgets={'path': n | [n, ...]}`
-overrides the router's declarations per path.
+overrides the router's declarations per path — except on the marked
+paths of the @verbatim section below, where a derived pricing
+outranks both.
+
+## The @verbatim contract
+
+A docxcast Tag ending in `@verbatim` (optionally `@verbatim=<ratio>`;
+a bare marker means 0.9, `=85` reads as 85%) declares the field's
+string content verbatim copies of the document text. docxcast owns the
+directive — it is stripped off the Tag at derive (the remark never
+carries it) and emitted as the JSON Schema extension keyword
+`x-verbatim`, the resolved tolerance as a float; see docxcast's
+SYNTAX.md. Hand-written schemas set the keyword directly. The library
+then enforces the contract without host wiring:
+
+- **Budget**: units carrying marked fields get their output budget
+  computed from the routed material (a verbatim echo costs what its
+  source costs), discarding the router's declared estimate and a host
+  pin for those paths. An item whose echo exceeds the per-call
+  capacity keeps its own call — the collapse-prevention this exists
+  for.
+- **Validation**: after merge, every extracted value (an array's
+  entries, or the field's own value) must be a whitespace- and
+  markdown-insensitive substring of the document and must not open
+  with a sibling field's heading line (label + colon — a line merely
+  opening with the label word is description text). Breaches — with a
+  best-window coverage pardoning parser noise at the field's tolerance
+  — return as repairable issues the correction loop patches in place;
+  the specialist holds the document in its transcript, so a round can
+  re-copy.
 
 ## Repair rounds
 

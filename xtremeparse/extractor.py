@@ -21,6 +21,8 @@ from xtremeparse.router import (RECOUNT_PLACEHOLDERS, ROUTE_PLACEHOLDERS,
                                 route)
 from xtremeparse.scheduling import TaskScheduler
 from xtremeparse.units import decompose
+from xtremeparse.verbatim import (normalize_text, verbatim_budgets,
+                                  verbatim_issues)
 
 DEFAULT_CONCURRENCY = 8
 
@@ -100,7 +102,10 @@ class Extractor:
                       overall=overall(schema)),
                 estimated_tokens=tokens)
             routing = await route_task
-            budgets = {**(routing.budgets or {}), **self.output_budgets}
+            # verbatim pricing merges last: the template contract
+            # outruns router declarations and host pins
+            budgets = {**(routing.budgets or {}), **self.output_budgets,
+                       **verbatim_budgets(schema, units, routing)}
             execution = await execute(self.runner, routing, payload=text,
                                       scheduler=self.scheduler,
                                       unit_strategy=self.unit_strategy,
@@ -156,11 +161,13 @@ class Extractor:
                     recounts.append({'unit': unit_path, 'declared': declared,
                                      'actual': actual, 'revised': revised,
                                      'answer': raw})
+            source_norm = normalize_text(text)
             data, issues, rounds = await correct(
                 self.runner, execution, payload=text,
                 scheduler=self.scheduler, max_rounds=self.max_rounds,
                 specialist_instructions=self.specialist_instructions,
                 validator=lambda d: list(validator(d) or [])
+                + verbatim_issues(schema, d, source_norm)
                 + count_issues(counts, d, soft=disputed))
         else:  # nothing routable: skip the agent fleet entirely
             data, issues, rounds = {}, list(validator({}) or []), []

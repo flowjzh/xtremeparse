@@ -170,3 +170,10 @@ def _pack(pieces: list[str], max_chars: int) -> list[str]:
     if current:
         chunks.append(current)
     return chunks
+
+
+def content_len(text: str) -> int:
+    """Non-blank characters — the unit all material and verbatim-output
+    pricing counts in. split() eats every Unicode blank (space, tab,
+    newline, CJK full-width) in one C pass."""
+    return sum(map(len, text.split()))

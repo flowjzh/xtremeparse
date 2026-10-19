@@ -1,5 +1,7 @@
 """Scripted end-to-end through the facade: every stage driven by a fake runner."""
 
+import copy
+
 from xtremeflow.scheduler import TaskScheduler
 
 from xtremeparse import Extractor, ExtractionResult
@@ -407,3 +409,92 @@ async def test_unanchored_verdict_keeps_the_shortfall_repair():
     result = await Extractor(UnanchoredRunner()).extract(TEXT, SCHEMA, validator)
     assert result.trace.recounts[-1]['revised'] is None
     assert [i.path for i in result.issues] == ['career.jobs[2]']
+
+
+VERBATIM_SCHEMA = {
+    'type': 'object',
+    'properties': {
+        'career': {'type': 'object', 'properties': {
+            'jobs': {'type': 'array', 'description': '经历', 'items': {'type': 'object', 'properties': {
+                'company': {'type': 'string', 'description': '公司'},
+                'detail': {'type': 'object', 'description': '职位详情', 'properties': {
+                    'description': {'type': 'array', 'description': '职责描述',
+                                    'x-verbatim': 0.9,
+                                    'items': {'type': 'string'}},
+                }},
+            }}},
+        }},
+    },
+}
+
+VERBATIM_TEXT = '''## 工作经历
+- 腾讯 后端
+- 负责线下渠道的营销活动策划与执行。
+- 阿里 高级专家
+- 负责支付系统的架构设计工作。'''
+
+VERBATIM_DSL = '0 -\n1 a.0\n2 a.0\n3 a.1\n4 a.1\na: 2'
+
+
+class VerbatimRunner(PipelineRunner):
+    """The batched jobs call paraphrases one marked item, then mends."""
+
+    def __init__(self):
+        super().__init__()
+        self._fixed = False
+
+    async def run(self, **kwargs):
+        self.calls.append(kwargs)
+        schema = plain_schema(kwargs['result_schema'])
+        if schema.get('type') == 'string':
+            return agent_result(VERBATIM_DSL)
+        if schema.get('type') == 'array':
+            if not self._fixed:
+                self._fixed = True
+                return agent_result([
+                    {'company': '腾讯',
+                     'detail': {'description': ['负责渠道营销活动的统筹规划与落地。']}},
+                    {'company': '阿里',
+                     'detail': {'description': ['负责支付系统的架构设计工作。']}}])
+            return agent_result([
+                {'company': '腾讯',
+                 'detail': {'description': ['负责线下渠道的营销活动策划与执行。']}},
+                {'company': '阿里',
+                 'detail': {'description': ['负责支付系统的架构设计工作。']}}])
+        return await super().run(**kwargs)
+
+
+async def test_verbatim_breach_triggers_a_repair_round():
+    runner = VerbatimRunner()
+    result = await Extractor(runner).extract(
+        VERBATIM_TEXT, VERBATIM_SCHEMA, lambda d: [])
+    assert [j['detail']['description'] for j in result.data['career']['jobs']] == [
+        ['负责线下渠道的营销活动策划与执行。'],
+        ['负责支付系统的架构设计工作。']]
+    assert result.issues == []
+    assert result.trace.corrections[0]['issue_paths'] == \
+        ['career.jobs[0].detail.description[0]']
+    (correction,) = [c for c in runner.calls
+                     if c.get('feedback')]  # history rounds carry feedback
+    (issue,) = correction['feedback']
+    assert issue.path == 'career.jobs[0].detail.description[0]'
+    assert 're-copy' in issue.message  # the repair instruction + patch howto
+
+
+async def test_verbatim_units_price_budgets_from_the_material():
+    # the contract outruns the router's @20 and the host's 18: a verbatim
+    # echo costs what its source costs (23 + 22 non-blank chars here)
+    runner = BudgetedRunner(VERBATIM_DSL + ' @20')
+    result = await Extractor(runner, output_budgets={'career.jobs': 18}).extract(
+        VERBATIM_TEXT, VERBATIM_SCHEMA, lambda d: [])
+    assert [(g['batch'], g['budget']) for g in result.trace.groups
+            if g['unit'] == 'career.jobs'] == [((0, 1), [23, 22])]
+
+
+async def test_unmarked_fields_escape_the_verbatim_check():
+    unmarked = copy.deepcopy(VERBATIM_SCHEMA)
+    del unmarked['properties']['career']['properties']['jobs']['items'][
+        'properties']['detail']['properties']['description']['x-verbatim']
+    result = await Extractor(VerbatimRunner()).extract(
+        VERBATIM_TEXT, unmarked, lambda d: [])
+    assert result.trace.corrections == []  # the paraphrase survives

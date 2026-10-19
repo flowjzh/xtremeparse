@@ -53,6 +53,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 from xtremeparse.arbitration import fresh_check, norm, sectioned
+from xtremeparse.chunking import content_len
 from xtremeparse.contracts import AgentRunner, BATCH_BUDGET_CAP, JSONSchema
 from xtremeparse.units import Unit, type_set, value_branches
 
@@ -1845,12 +1846,6 @@ def _fold_nested_merged(segments, counts, nested, derived, merged, parsed,
     return rebuilt, nested
 
 
-def _content_len(chunk: str) -> int:
-    """The chunk's non-blank characters — split() eats every Unicode
-    blank (space, tab, newline, CJK full-width) in one C pass."""
-    return sum(map(len, chunk.split()))
-
-
 def _material(assignments, chunks, derived: dict) -> dict:
     """Per unit path, per item: the char count of the mapped material,
     whitespace stripped — a ratio budget scales against the content it
@@ -1867,7 +1862,7 @@ def _material(assignments, chunks, derived: dict) -> dict:
     for a in base:
         runs.setdefault((a['unit'], tuple(a['chunks'])), []).append(a['item'])
         for c in a['chunks']:
-            lens.setdefault(c, _content_len(chunks[c]))
+            lens.setdefault(c, content_len(chunks[c]))
     claims = {}  # (unit path, chunk) → rows claiming it, across runs —
     # a chunk two differently-bounded instances touch splits between them
     for (unit, cs), items in runs.items():
