@@ -55,7 +55,8 @@ from typing import Optional
 from xtremeparse.arbitration import fresh_check, norm, sectioned
 from xtremeparse.chunking import content_len
 from xtremeparse.contracts import AgentRunner, BATCH_BUDGET_CAP, JSONSchema
-from xtremeparse.units import Unit, type_set, value_branches
+from xtremeparse.schema import type_set, value_branches
+from xtremeparse.units import Unit
 
 NONE = '-'
 HINT_MIN = 5  # below this a shared whole call costs seconds — the

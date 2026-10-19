@@ -4,12 +4,12 @@ import copy
 from types import SimpleNamespace
 
 from xtremeparse.router import Group
+from xtremeparse.schema import heading_label
 from xtremeparse.units import Unit, decompose
 from xtremeparse.verbatim import (VERBATIM_DEFAULT_RATIO, check_item,
-                                  find_violations, heading_label,
-                                  marker_ratio, normalize_text,
-                                  verbatim_budgets, verbatim_issues,
-                                  verbatim_paths)
+                                  find_violations, marker_ratio,
+                                  normalize_text, verbatim_budgets,
+                                  verbatim_issues, verbatim_paths)
 
 SRC = ('### 汇报对象：总部 HRD\n·负责线下渠道的\n营销活动策划与执行。\n'
        '**关键成果** 达成率 105%。\n汇报对象调整需与总部对齐。')

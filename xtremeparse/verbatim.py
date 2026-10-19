@@ -13,12 +13,11 @@ loop as patchable issues.
 
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass
 from difflib import SequenceMatcher
 
 from xtremeparse.chunking import content_len
-from xtremeparse.units import type_set
+from xtremeparse.schema import heading_label, type_set
 
 VERBATIM_DEFAULT_RATIO = 0.9  # the protocol default; docxcast resolves the bare marker
 VERBATIM_KEY = 'x-verbatim'  # the schema extension keyword consumers read
@@ -45,15 +44,6 @@ def normalize_text(s: str) -> str:
     """Whitespace- and markdown-insensitive form: the source wraps lines
     mid-word and bolds labels, and a faithful extractor heals both."""
     return ''.join(s.translate(_MD_MARKS).split())
-
-
-def heading_label(prop: dict) -> str | None:
-    """A string field's heading label — its description up to the first
-    colon; whole descriptions make hopeless prefixes."""
-    desc = prop.get('description') or ''
-    if prop.get('type') != 'string':
-        return None
-    return re.split('[：:]', desc, maxsplit=1)[0].strip()
 
 
 def verbatim_paths(schema: dict) -> list[str]:

@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 from xtremeparse.contracts import JSONSchema
+from xtremeparse.schema import type_set
 
 MISC = '$misc'  # sentinel path for the top-level scalar group; a real
 # object/array property named '$misc' would collide
@@ -45,24 +46,6 @@ class Unit:
         """The parent's property this unit fills — the path's last
         segment, which for a nested unit is the parent item's field."""
         return self.path.rsplit('.', 1)[-1]
-
-
-def type_set(prop: JSONSchema) -> set:
-    """The property's JSON type names. docxcast marks an optional
-    section with a type list ('object' / 'null'); a plain property
-    carries one name."""
-    t = prop.get('type')
-    return set(t) if isinstance(t, list) else {t}
-
-
-def value_branches(prop: JSONSchema) -> list:
-    """The property's value subschemas. docxcast marks an optional
-    field as anyOf over the value and an empty-string alternative;
-    plain properties (and type-listed sections) carry the value at
-    the top level."""
-    if isinstance(prop.get('anyOf'), list):
-        return prop['anyOf']
-    return [prop]
 
 
 def decompose(schema: JSONSchema) -> list[Unit]:
