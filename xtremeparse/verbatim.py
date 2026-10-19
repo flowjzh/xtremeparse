@@ -16,7 +16,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from difflib import SequenceMatcher
 
-from xtremeparse.chunking import content_len
 from xtremeparse.schema import heading_label, type_set
 
 VERBATIM_DEFAULT_RATIO = 0.9  # the protocol default; docxcast resolves the bare marker
@@ -190,37 +189,32 @@ def verbatim_issues(schema: dict, data: dict,
 
 
 def verbatim_budgets(schema: dict, units, routing) -> dict:
-    """Chunk-derived output budgets for units carrying marked fields —
-    the routed material's non-blank char count, per item list for array
-    items (gaps inherit the previous item), a lone number for
-    whole-shaped units. A verbatim echo costs what its source costs, so
-    the router's declared estimate — and any host pin — is discarded
-    for these paths; the estimate errs high — headings and JSON syntax
-    are not echoed — the safe direction for batching. Which units are
-    marked is read from the declared schema, not the decomposed units:
-    a lift removes the nested array property, its keyword included, from
-    the units. {} when nothing is marked."""
+    """Output budgets for units carrying marked fields, read from the
+    routing's material — the one per-unit, per-item non-blank char
+    count every pricer shares (co-chunked instances split their shared
+    run). Array items get a per-item list (gaps inherit the previous
+    item), whole-shaped units a lone number. A verbatim echo costs what
+    its source costs, so the router's declared estimate — and any host
+    pin — is discarded for these paths; the estimate errs high —
+    headings and JSON syntax are not echoed — the safe direction for
+    batching. Which units are marked is read from the declared schema,
+    not the decomposed units: a lift removes the nested array property,
+    its keyword included, from the units. {} when nothing is marked."""
     if not (marked := _marked_units(schema, units)):
         return {}
-    per_item: dict[str, dict[int, int]] = {}
-    whole: dict[str, int] = {}
-    for g in routing.groups:
-        if (path := g.unit.path) not in marked:
-            continue
-        chars = content_len(g.text)
-        if g.item is None:
-            whole[path] = whole.get(path, 0) + chars
-        else:
-            row = per_item.setdefault(path, {})
-            row[g.item] = row.get(g.item, 0) + chars
+    material = routing.material or {}
     out = {}
-    for path, vals in per_item.items():
+    for path in marked:
+        if not (vals := material.get(path)):
+            continue
+        if None in vals:
+            out[path] = round(vals[None])
+            continue
         row, last = [], 0
         for i in range(max(vals) + 1):
             last = vals.get(i, last)
-            row.append(last)
+            row.append(round(last))
         out[path] = row
-    out.update(whole)
     return out
 
 

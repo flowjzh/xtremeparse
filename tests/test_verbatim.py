@@ -3,13 +3,16 @@
 import copy
 from types import SimpleNamespace
 
-from xtremeparse.router import Group
+from xtremeparse.chunking import content_len
+from xtremeparse.prompting import schema_head
+from xtremeparse.router import route
 from xtremeparse.schema import heading_label
 from xtremeparse.units import Unit, decompose
 from xtremeparse.verbatim import (VERBATIM_DEFAULT_RATIO, check_item,
                                   find_violations, marker_ratio,
                                   normalize_text, verbatim_budgets,
                                   verbatim_issues, verbatim_paths)
+from tests.helpers import ScriptedRunner, agent_result
 
 SRC = ('### 汇报对象：总部 HRD\n·负责线下渠道的\n营销活动策划与执行。\n'
        '**关键成果** 达成率 105%。\n汇报对象调整需与总部对齐。')
@@ -150,30 +153,24 @@ BUDGET_SCHEMA = {'type': 'object', 'properties': {
             'company': {'type': 'string', 'description': '公司'}}}}}}}}
 
 
-def group(path: str, item, text: str) -> Group:
-    return Group(Unit(path, 'array', {}, ''), item, [], text)
-
-
-def test_verbatim_budgets_derive_from_routed_material():
+def test_verbatim_budgets_read_the_routings_material():
     units = [Unit('career.jobs', 'array', {}, ''),
              Unit('misc.things', 'array', {}, '')]
-    routing = SimpleNamespace(groups=[
+    routing = SimpleNamespace(material={
         # '- 腾讯 后端\n- 负责渠道营销。' → 1+2+2+1+7 non-blank chars
-        group('career.jobs', 0, '- 腾讯 后端\n- 负责渠道营销。'),
-        group('career.jobs', 1, '- 阿里'),
-        group('misc.things', 0, '- 某某公司'),
-    ])
+        'career.jobs': {0: 13, 1: 3},
+        'misc.things': {0: 5},
+    })
     assert verbatim_budgets(BUDGET_SCHEMA, units, routing) == {'career.jobs': [13, 3]}
 
 
 def test_verbatim_budgets_cover_whole_units_and_inherit_gaps():
     unit = Unit('career.jobs', 'array', {}, '')
-    whole = verbatim_budgets(BUDGET_SCHEMA, [unit], SimpleNamespace(
-        groups=[group('career.jobs', None, '整段 材料')]))
+    whole = verbatim_budgets(BUDGET_SCHEMA, [unit],
+                             SimpleNamespace(material={'career.jobs': {None: 4}}))
     assert whole == {'career.jobs': 4}
-    gap = verbatim_budgets(BUDGET_SCHEMA, [unit], SimpleNamespace(groups=[
-        group('career.jobs', 0, '甲乙'),
-        group('career.jobs', 2, '丙丁')]))
+    gap = verbatim_budgets(BUDGET_SCHEMA, [unit], SimpleNamespace(
+        material={'career.jobs': {0: 2, 2: 2}}))
     assert gap == {'career.jobs': [2, 2, 2]}  # item 1 inherits item 0's value
 
 
@@ -187,11 +184,60 @@ def test_verbatim_budgets_reach_lifted_marked_arrays():
                          'x-verbatim': 0.9,
                          'items': {'type': 'string'}}}}}}}
     units = decompose(lifted)
-    routing = SimpleNamespace(groups=[group('work.tasklist', 0, '材料')])
+    routing = SimpleNamespace(material={'work.tasklist': {0: 2}})
     assert verbatim_budgets(lifted, units, routing) == {'work.tasklist': [2]}
 
 
 def test_verbatim_budgets_empty_for_unmarked_schemas():
     unit = Unit('misc.things', 'array', {}, '')
     assert verbatim_budgets(BUDGET_SCHEMA, [unit], SimpleNamespace(
-        groups=[group('misc.things', 0, '材料')])) == {}
+        material={'misc.things': {0: 2}})) == {}
+
+
+SHARED_BUDGET_SCHEMA = {'type': 'object', 'properties': {
+    'jobs': {'type': 'array', 'items': {'type': 'object', 'properties': {
+        'company': {'type': 'string'},
+        'note': {'type': 'string', 'x-verbatim': 0.9}}}},
+    'certs': {'type': 'array', 'items': {'type': 'object', 'properties': {
+        'name': {'type': 'string'}}}},
+    'summary': {'type': 'array', 'items': {'type': 'object', 'properties': {
+        'text': {'type': 'string', 'x-verbatim': 0.9}}}}}}
+SHARED_CHUNKS = ['甲甲 乙', '丙 丁丁', '戊']
+
+
+def _group_budgets(schema, units, routing) -> dict:
+    """The pre-refactor group-text computation, kept as the reference
+    the routing material must reproduce on a shared run."""
+    marked = {u.path for u in units
+              if any(p == u.path or p.startswith(u.path + '.')
+                     for p in verbatim_paths(schema))}
+    per_item, whole = {}, {}
+    for g in routing.groups:
+        if g.unit.path not in marked:
+            continue
+        chars = content_len(g.text)
+        if g.item is None:
+            whole[g.unit.path] = whole.get(g.unit.path, 0) + chars
+        else:
+            row = per_item.setdefault(g.unit.path, {})
+            row[g.item] = row.get(g.item, 0) + chars
+    out = {}
+    for path, vals in per_item.items():
+        row, last = [], 0
+        for i in range(max(vals) + 1):
+            last = vals.get(i, last)
+            row.append(last)
+        out[path] = row
+    out.update(whole)
+    return out
+
+
+async def test_verbatim_budgets_and_group_text_agree_on_a_shared_run():
+    units = decompose(SHARED_BUDGET_SCHEMA)
+    routing = await route(
+        ScriptedRunner(agent_result('0-1 a.0,b.0\n2 a.1\na: 2\nb: 1\nc = a')),
+        payload='全文', schema_head=schema_head(SHARED_BUDGET_SCHEMA),
+        units=units, chunks=SHARED_CHUNKS)
+    expected = _group_budgets(SHARED_BUDGET_SCHEMA, units, routing)
+    assert expected == {'jobs': [6, 1], 'summary': [6, 1]}
+    assert verbatim_budgets(SHARED_BUDGET_SCHEMA, units, routing) == expected

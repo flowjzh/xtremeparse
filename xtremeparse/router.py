@@ -437,6 +437,8 @@ class Routing:
     raw: dict  # normalized assignments, counts, budgets and code legend, for the trace
     budgets: dict = None  # unit path → resolved per-item value-char
     # estimate (the declared forms ride in raw['budgets'])
+    material: dict = None  # unit path → {item | None: non-blank chars},
+    # the one reading of routed material every pricer consumes
 
 
 @dataclass(frozen=True)
@@ -816,12 +818,11 @@ async def route(runner: AgentRunner, *, payload: str,
                          'chunks': a['chunks']}
                         for d, s in derived.items()
                         for a in by_unit.get(by_code[s].path, [])]
+        material = _material(assignments, chunks,
+                             {by_code[d].path: by_code[s].path
+                              for d, s in derived.items()})
         budgets_by_path = {by_code[c].path: b for c, b in budgets.items()}
-        by_path = _resolved(
-            budgets_by_path,
-            _material(assignments, chunks,
-                      {by_code[d].path: by_code[s].path
-                       for d, s in derived.items()}) if budgets_by_path else {})
+        by_path = _resolved(budgets_by_path, material) if budgets_by_path else {}
         nested_counts = {}
         for (cc, p), k in nested.items():
             nested_counts.setdefault(by_code[cc].path, {})[p] = k
@@ -839,7 +840,7 @@ async def route(runner: AgentRunner, *, payload: str,
                         'assignments': assignments,
                         'budgets': {p: _budget_text(b)
                                     for p, b in budgets_by_path.items()},
-                        'maps': maps}, by_path)
+                        'maps': maps}, by_path, material)
 
     feedback, last, history = None, None, []
     asked = set()  # hint passes already spent — each ask fires at most
@@ -1944,15 +1945,17 @@ def _fold_nested_merged(segments, counts, nested, derived, merged, claims,
 
 def _material(assignments, chunks, derived: dict) -> dict:
     """Per unit path, per item: the char count of the mapped material,
-    whitespace stripped — a ratio budget scales against the content it
-    will mirror, and aligned source text pads its columns with blanks
-    (tables, line-broken layouts). Co-chunked items ("2-3 b.0,b.1")
-    share one run but each mirrors its own slice: the shared material
-    splits across the items. Rows sharing an identical chunk list (a
-    ranged run's instances) are one run priced once, its material split
-    evenly — not one full-chunk-list dict per instance. Derived units
-    mirror their source's material — their own map lines (a
-    contradictory but tolerated combo) are ignored."""
+    whitespace stripped — the one reading every pricer consumes (ratio
+    budgets and the verbatim contract alike), so the numbers cannot
+    drift apart. Aligned source text pads its columns with blanks
+    (tables, line-broken layouts), which a ratio budget must not pay
+    for. Co-chunked items ("2-3 b.0,b.1") share one run but each
+    mirrors its own slice: the shared material splits across the items.
+    Rows sharing an identical chunk list (a ranged run's instances) are
+    one run priced once, its material split evenly — not one
+    full-chunk-list dict per instance. Derived units mirror their
+    source's material — their own map lines (a contradictory but
+    tolerated combo) are ignored."""
     base = [a for a in assignments if a['unit'] not in derived]
     runs, lens = {}, {}  # (unit path, chunk tuple) → [item indexes]
     for a in base:
