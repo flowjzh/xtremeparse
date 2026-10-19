@@ -7,6 +7,7 @@ import json
 from string import Formatter
 
 from xtremeparse.contracts import JSONSchema
+from xtremeparse.verbatim import VERBATIM_CUE, VERBATIM_KEY
 
 
 SPECIALIST_INSTRUCTIONS = '''You are a structured-extraction specialist. Extract this unit's fields
@@ -61,23 +62,45 @@ def overall(schema: JSONSchema) -> str | None:
     return schema.get('description') or None
 
 
+def _with_verbatim_cues(node):
+    """Copy the schema with each ``x-verbatim`` marker folded into its
+    description. Models read the prompt's descriptions, not extension
+    keywords: the structural marker alone measurably shifted instance
+    counting on a multi-entry source, while the inline cue keeps it
+    stable. The caller's schema is untouched and the keyword remains in
+    the rendered block."""
+    if isinstance(node, dict):
+        out = {k: _with_verbatim_cues(v) for k, v in node.items()}
+        if VERBATIM_KEY in out:
+            desc = out.get('description', '')
+            if VERBATIM_CUE not in desc:
+                out['description'] = f'{desc} {VERBATIM_CUE}'.strip()
+        return out
+    if isinstance(node, list):
+        return [_with_verbatim_cues(v) for v in node]
+    return node
+
+
 def schema_head(schema: JSONSchema) -> str:
     """The schema block the router-plane prompts render ahead of the
-    Chunks: heading — the full schema's field descriptions, which the
-    budget declarations reason over. Not carried in ``content``:
-    content is the document text alone on every call (router, recounts
-    and specialists alike), the one byte-identical system message the
-    provider's cache serves to the whole fleet — dashscope's explicit
-    cache truncates only at message boundaries, so a text+schema system
-    message could never serve the specialists' text-only one."""
-    return f'JSON Schema:\n{json.dumps(schema, ensure_ascii=False, sort_keys=True)}'
+    Chunks: heading — the full schema serialized as JSON, field
+    descriptions included; the router-plane calls read it beside the
+    unit-card legend. Not carried in ``content``: content is the
+    document text alone on every call (router, recounts and specialists
+    alike), the one byte-identical system message the provider's cache
+    serves to the whole fleet — dashscope's explicit cache truncates
+    only at message boundaries, so a text+schema system message could
+    never serve the specialists' text-only one."""
+    return ('JSON Schema:\n'
+            + json.dumps(_with_verbatim_cues(schema), ensure_ascii=False,
+                         sort_keys=True))
 
 
-def router_tokens(text: str, head: str) -> int:
-    """The router call's tps seed, shared by the extractor and the
-    eval probes: the text rides content and the instructions re-embed
-    it as the chunk listing, beside the schema head."""
-    return estimate_tokens(text, head, text)
+def router_tokens(text: str, head: str, units=()) -> int:
+    """The router call's tps seed, shared by the extractor and the eval
+    probes: the text rides content and the instructions re-embed it as
+    the chunk listing, beside the schema head and the unit cards."""
+    return estimate_tokens(text, head, text, *(u.card for u in units))
 
 
 def value_chars(value) -> int:

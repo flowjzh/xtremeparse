@@ -199,6 +199,14 @@ carries it) and emitted as the JSON Schema extension keyword
 SYNTAX.md. Hand-written schemas set the keyword directly. The library
 then enforces the contract without host wiring:
 
+- **Prompt cue**: the router-plane schema block folds each marker
+  into its field description as an inline `@verbatim` cue. The
+  structured keyword alone is easy for the model to skip: moving the
+  marker out of the description shifted the router's declared count on
+  a bilingual same-company multi-entry source (3 → 4 in about a third
+  of draws), and the rendered cue restored the expected count in 20/20
+  draws. The schema object is untouched; enforcement still reads the
+  keyword.
 - **Budget**: units carrying marked fields get their output budget
   computed from the routed material (a verbatim echo costs what its
   source costs), discarding the router's declared estimate and a host

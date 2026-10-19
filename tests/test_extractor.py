@@ -1,6 +1,7 @@
 """Scripted end-to-end through the facade: every stage driven by a fake runner."""
 
 import copy
+import json
 
 from xtremeflow.scheduler import TaskScheduler
 
@@ -224,6 +225,20 @@ async def test_router_scheduler_gives_the_slice_model_its_own_quota():
 
 def test_estimate_tokens_calibrates_chars_per_token():
     assert estimate_tokens('ab', 'cdef') == 4  # 6 chars / 1.6, rounded
+
+
+def test_schema_head_renders_verbatim_cues_without_touching_the_schema():
+    detail = {'type': 'string', 'description': '照抄原文', 'x-verbatim': 0.9}
+    schema = {'type': 'object', 'properties': {'detail': detail}}
+    rendered = json.loads(schema_head(schema).removeprefix('JSON Schema:\n'))
+    prop = rendered['properties']['detail']
+    assert prop['description'] == '照抄原文 @verbatim'
+    assert prop['x-verbatim'] == 0.9
+    assert detail == {'type': 'string', 'description': '照抄原文', 'x-verbatim': 0.9}
+    # a description already carrying the cue is not marked twice
+    marked = {'type': 'object', 'properties': {'d': {
+        'type': 'string', 'description': '照抄 @verbatim', 'x-verbatim': 0.9}}}
+    assert schema_head(marked).count('@verbatim') == 1
 
 
 async def test_over_budget_output_is_kept_not_retried():

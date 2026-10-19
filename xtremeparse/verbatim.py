@@ -21,6 +21,8 @@ from xtremeparse.chunking import content_len
 from xtremeparse.units import type_set
 
 VERBATIM_DEFAULT_RATIO = 0.9  # the protocol default; docxcast resolves the bare marker
+VERBATIM_KEY = 'x-verbatim'  # the schema extension keyword consumers read
+VERBATIM_CUE = '@verbatim'  # the human-readable spelling prompts render
 MARKDOWN_MARKERS = '*_#`'
 _MD_MARKS = str.maketrans('', '', MARKDOWN_MARKERS)
 
@@ -30,10 +32,10 @@ def marker_ratio(prop: dict) -> float | None:
     docxcast emits the resolved ratio; a malformed value on a
     hand-written schema still arms the contract at the default rather
     than silently disarming it."""
-    if 'x-verbatim' not in prop:
+    if VERBATIM_KEY not in prop:
         return None
     try:
-        ratio = float(prop['x-verbatim'])
+        ratio = float(prop[VERBATIM_KEY])
     except (TypeError, ValueError):
         return VERBATIM_DEFAULT_RATIO
     return ratio if 0 < ratio <= 1 else VERBATIM_DEFAULT_RATIO
@@ -86,9 +88,9 @@ class VerbatimFinding:
 
 
 def noise_window(source_norm: str, norm: str) -> str | None:
-    """The source region the item claims to copy — located by its first
-    16-char chunk found in the source, later chunks skipping noise that
-    sits inside earlier ones. None when no chunk lands at all."""
+    """The source region the item claims to copy — located by the first
+    16-char chunk that occurs in the source, padded around that hit.
+    None when no chunk lands at all."""
     for start in range(0, len(norm), 16):
         chunk = norm[start:start + 16]
         if len(chunk) < 8:
@@ -206,8 +208,8 @@ def verbatim_budgets(schema: dict, units, routing) -> dict:
     for these paths; the estimate errs high — headings and JSON syntax
     are not echoed — the safe direction for batching. Which units are
     marked is read from the declared schema, not the decomposed units:
-    a lift strips the array property's description, where the marker
-    lives. {} when nothing is marked."""
+    a lift removes the nested array property, its keyword included, from
+    the units. {} when nothing is marked."""
     if not (marked := _marked_units(schema, units)):
         return {}
     per_item: dict[str, dict[int, int]] = {}

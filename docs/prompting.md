@@ -44,8 +44,8 @@ Extractor(runner,
   or omitted independently), `card` the unit's semantic
   card — all built by
   code. `legend` is one `code = <unit card>` block per unit — the card
-  header plus its field descriptions, the only field-level context the
-  router-plane prompts carry; its
+  header plus its field descriptions, a second carrier of the field
+  context the schema block above already renders per unit; its
   format is fixed by code (the card header is the cue the default
   prompts rely on — an override legend interpretation is the override's
   to keep consistent).
@@ -96,13 +96,13 @@ reasoning modes. For containment questions (is every fact anywhere?),
 judge the host's flattened-digest projection and carry the schema's
 field rules in the rubric — each field's description (exclusions
 included) and option set, not just its name; names alone cannot tell
-the judge what a field owns. The containment protocol
-(`CONTAINMENT_INSTRUCTIONS`) makes the check mechanical: quote each
-candidate loss from the source, normalize whitespace and markdown
-markers on both sides, and cross the candidate out when its normalized
-text occurs anywhere in the output; only surviving quotes may appear in
-the verdict. Pass it through the judge's `instructions=` slot for the
-digest rubric only — the default template stays projection-agnostic.
+the judge what a field owns. A containment protocol supplied by the
+host makes the check mechanical: quote each candidate loss from the
+source, normalize whitespace and markdown markers on both sides, and
+cross the candidate out when its normalized text occurs anywhere in
+the output; only surviving quotes may appear in the verdict. Pass it
+through the judge's `instructions=` slot for the digest rubric only —
+the default template stays projection-agnostic.
 The open-diff judge
 measures ~zero sensitivity to seeded deletions — presence checking
 belongs to deterministic anchors beside it, not to the judge alone.

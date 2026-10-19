@@ -588,9 +588,9 @@ async def route(runner: AgentRunner, *, payload: str,
     overall_block = _overall_block(overall)
     instructions = (instructions or _INSTRUCTIONS).format(
         top=len(chunks) - 1, none=NONE, overall=overall_block,
-        # card headers (not bare paths): the description is the cue for
-        # what a unit collects — and for recognizing a unit that only
-        # summarizes another (its card names the unit it mirrors)
+        # full cards: the header orients the unit, its field lines carry
+        # the descriptions every caller reasons over; a unit that only
+        # summarizes another is recognized by the card naming its mirror
         legend='\n'.join(_legend_entry(code, unit)
                          for code, unit in by_code.items()),
         chunks=_chunks_section(schema_head, chunks))
@@ -644,21 +644,16 @@ async def route(runner: AgentRunner, *, payload: str,
         return True, rounds
 
     def splice(zeros, answer):
-        """Commit the recount's state on success. Map lines (and the
-        derived-source spelling) fold first; a reply that instead
-        quotes the instances' openings — the shared and undrawn asks'
-        own form — anchors by content through the same fold, since a
+        """Commit the recount's state on success. The zero half of
+        `_fold_undrawn` owns the answer: a map-line reply splices first
+        (host overrides), a quote-only reply anchors by content, since a
         claim carrying only a count would otherwise fail the map and
-        send a correct recount into a repair round. The caller owns
-        the fallback."""
+        send a correct recount into a repair round. The caller owns the
+        fallback."""
         nonlocal segments, counts, nested, derived
-        if merged := _splice(segments, counts, nested, derived, answer,
-                             zeros, by_code, len(chunks)):
-            segments, counts, nested, derived = merged
-            return True
         if folded := _fold_undrawn(segments, counts, nested, derived,
-                                   [(z, None) for z in zeros], [], answer,
-                                   by_code, chunks, set()):
+                                   [], zeros, answer, by_code, chunks,
+                                   set()):
             (segments, counts, nested, derived), _ = folded
             return True
         return False
@@ -1098,9 +1093,7 @@ async def _recount_shared(runner: AgentRunner, payload: str,
     index arithmetic echoes the prompt's own examples instead of the
     chunks (measured: a stable count over hallucinated indexes).
     Returns the raw answer; `_parse_shared_answer` reads the sections,
-    its keys the labels the legend printed (the declared-undrawn and
-    merged-nested asks pass chain spellings through this same
-    prompt)."""
+    its keys the labels the legend printed."""
     instructions = _SHARED_CHECK.format(
         units=_recount_legend(shared, by_code),
         chunks=_chunks_section(schema_head, chunks), overall=overall_block)
@@ -1110,8 +1103,8 @@ async def _recount_shared(runner: AgentRunner, payload: str,
 
 def _parse_shared_answer(result, codes: dict | set,
                          keep_zeros: bool = False) -> dict:
-    """``{code: (count, quotes)}`` from a _SHARED_CHECK reply — a count
-    line then quote lines, per unit; units with a malformed or missing
+    """``{code: (count, quotes)}`` from a recount reply — a count line
+    then quote lines, per unit; units with a malformed or missing
     section are absent, a zero count means the document truly lacks it.
     ``keep_zeros`` surfaces zero sections instead of dropping them — the
     nested recount reads a zero as its answer, a demotion to no
@@ -1125,7 +1118,7 @@ def _parse_shared_answer(result, codes: dict | set,
 
 
 # The quote rule has one home in _OPENING_RULE; the firing modes differ
-# only in their state clause and tag.
+# only in their state clause and shared-unit bullet.
 _MIXED_CHECK = '''A document's chunks are listed below. Some repeating units were left
 miscounted: {state_clause}
 Recount them in the DOCUMENT — read the whole chunk list; a brief
@@ -1146,26 +1139,28 @@ Units:
 {chunks}
 {overall}'''
 
-_MERGED_STATE = ('the MERGED ones had their instances folded into one\n'
-                 'shared run, the ZERO ones were written off as absent.')
-_MERGED_BULLET = '- a MERGED unit:\n   ' + _OPENING_RULE + ';'
-_UNDRAWN_STATE = ('the UNDRAWN ones had a count declared but no map\n'
-                  'lines, the ZERO ones were written off as absent.')
-_UNDRAWN_BULLET = '- an UNDRAWN unit:\n   ' + _OPENING_RULE + '.'
+_MIXED_STATE = {
+    'MERGED': ('the MERGED ones had their instances folded into one\n'
+               'shared run', 'a MERGED unit', ';'),
+    'UNDRAWN': ('the UNDRAWN ones had a count declared but no map\n'
+                'lines', 'an UNDRAWN unit', '.'),
+}
+_ZERO_STATE = ', the ZERO ones were written off as absent.'
 
 
 async def _mixed_recount(runner: AgentRunner, payload: str, shared: dict,
                          zeros: list, by_code: dict, chunks: list[str],
                          schema_head: str, overall_block: str,
-                         state_clause: str, shared_bullet: str,
                          tag: str) -> str:
     """One fresh conversation for the units a map miscounted. The firing
-    states share the ZERO half, the legend builder and the result
-    description; only the state clause, the shared-unit bullet and its
-    tag differ."""
+    modes share the ZERO half, the legend builder and the result
+    description; the tag selects the state clause and the shared-unit
+    bullet."""
+    state, subject, punct = _MIXED_STATE[tag]
     units = {**shared, **{z: z for z in zeros}}
     instructions = _MIXED_CHECK.format(
-        state_clause=state_clause, shared_bullet=shared_bullet,
+        state_clause=state + _ZERO_STATE,
+        shared_bullet=f'- {subject}:\n   {_OPENING_RULE}{punct}',
         units=_recount_legend(
             units, by_code,
             lambda label: ' ZERO' if label in zeros else f' {tag}'),
@@ -1182,12 +1177,12 @@ async def _recount_both(runner: AgentRunner, payload: str, shared: dict,
     """Fresh-attention recount of the merged and the zero units in the
     one conversation — the chunks listing, the costly part, is shared.
     Each unit answers a count line, then quotes every instance's
-    opening; a zero unit may instead claim map lines, and `_splice`
-    reads those first. Returns the raw answer: `_parse_shared_answer`
+    opening; a host override that asks for map lines is still read by
+    `_splice` first. Returns the raw answer: `_parse_shared_answer`
     reads the sections, each parser skipping the other's codes."""
     return await _mixed_recount(
         runner, payload, shared, zeros, by_code, chunks, schema_head,
-        overall_block, _MERGED_STATE, _MERGED_BULLET, 'MERGED')
+        overall_block, 'MERGED')
 
 
 _CHAIN_SCOPE = ('A chain label ("<parent>.<item>.<code>") asks for that unit\n'
@@ -1322,7 +1317,7 @@ async def _recount_undrawn(runner: AgentRunner, payload: str,
               for code, parent in units}
     return await _mixed_recount(
         runner, payload, shared, zeros, by_code, chunks, schema_head,
-        overall_block, _UNDRAWN_STATE, _UNDRAWN_BULLET, 'UNDRAWN')
+        overall_block, 'UNDRAWN')
 
 
 _QUOTE_WRAP = '"\'“”「」『』'

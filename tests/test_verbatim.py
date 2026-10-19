@@ -49,7 +49,7 @@ def marked_schema(ratio: float) -> dict:
 def test_marker_ratio_reads_the_extension_keyword():
     assert marker_ratio({'x-verbatim': 0.85}) == 0.85
     assert marker_ratio({'x-verbatim': 0.9}) == VERBATIM_DEFAULT_RATIO
-    # the description channel is dead — the marker is structural now
+    # only the keyword arms enforcement; rendered @verbatim text is display-only
     assert marker_ratio({'description': '描述 @verbatim'}) is None
     assert marker_ratio({'description': 'plain'}) is None and marker_ratio({}) is None
     # a malformed value on a hand-written schema still arms the contract

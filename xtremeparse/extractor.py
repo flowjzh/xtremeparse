@@ -22,7 +22,7 @@ from xtremeparse.router import (RECOUNT_PLACEHOLDERS, ROUTE_PLACEHOLDERS,
 from xtremeparse.scheduling import TaskScheduler
 from xtremeparse.units import decompose
 from xtremeparse.verbatim import (normalize_text, verbatim_budgets,
-                                  verbatim_issues)
+                                  verbatim_issues, verbatim_paths)
 
 DEFAULT_CONCURRENCY = 8
 
@@ -81,6 +81,7 @@ class Extractor:
         head = schema_head(schema)
         chunks = chunk_text(text, max_chars=self.max_chars)
         units = decompose(schema)
+        marked = bool(verbatim_paths(schema))
         routing = execution = None
         recounts, disputed = [], set()
         if chunks and units:
@@ -92,8 +93,7 @@ class Extractor:
             # the seed covers the instructions' variable parts too — the
             # schema head and the legend's full cards (the usage report
             # corrects the estimate either way)
-            tokens = router_tokens(text, head) + estimate_tokens(
-                *(u.card for u in units))
+            tokens = router_tokens(text, head, units)
             route_task = await scheduler.start_task(
                 route(runner, payload=text, schema_head=head, units=units,
                       chunks=chunks,
@@ -161,13 +161,13 @@ class Extractor:
                     recounts.append({'unit': unit_path, 'declared': declared,
                                      'actual': actual, 'revised': revised,
                                      'answer': raw})
-            source_norm = normalize_text(text)
+            source_norm = normalize_text(text) if marked else ''
             data, issues, rounds = await correct(
                 self.runner, execution, payload=text,
                 scheduler=self.scheduler, max_rounds=self.max_rounds,
                 specialist_instructions=self.specialist_instructions,
                 validator=lambda d: list(validator(d) or [])
-                + verbatim_issues(schema, d, source_norm)
+                + (verbatim_issues(schema, d, source_norm) if marked else [])
                 + count_issues(counts, d, soft=disputed))
         else:  # nothing routable: skip the agent fleet entirely
             data, issues, rounds = {}, list(validator({}) or []), []
