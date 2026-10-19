@@ -2144,6 +2144,7 @@ async def test_declared_undrawn_non_array_is_recounted_and_adopted():
     # a fresh recount conversation, the unit labeled in its legend
     assert 'c = [$misc | scalar]' in runner.calls[1]['instructions']
     assert routing.raw['counts'] == {'jobs': 2}  # no non-array count published
+    assert routing.raw['present'] == {'$misc': 1}
     assert [(g.unit.path, g.chunk_ids) for g in routing.groups] == [
         ('basic_info', [0]), ('$misc', [0]), ('jobs', [1]), ('jobs', [2])]
 
@@ -2157,7 +2158,33 @@ async def test_a_settled_non_array_claim_stays_out_of_the_counts():
     routing = await route(runner, payload=PAYLOAD, schema_head=HEAD, units=UNITS,
                           chunks=CHUNKS)
     assert routing.raw['counts'] == {'jobs': 0}
+    assert routing.raw['present'] == {'$misc': 1}
     assert routing.raw['assignments'] == []
+
+
+async def test_a_drawn_non_repeating_unit_publishes_presence_not_a_count():
+    runner = ScriptedRunner(
+        agent_result('0 a,c\n1 b.0\n2 b.1\n3 -\nb: 2\nc: 1'))
+    routing = await route(runner, payload=PAYLOAD, schema_head=HEAD,
+                          units=UNITS, chunks=CHUNKS)
+    assert routing.raw['counts'] == {'jobs': 2}
+    assert routing.raw['present'] == {'$misc': 1}
+    assert [(g.unit.path, g.item) for g in routing.groups] == [
+        ('basic_info', None), ('$misc', None), ('jobs', 0), ('jobs', 1)]
+
+
+def test_validation_reads_presence_without_editing_the_state():
+    from xtremeparse.router import _codes, _map_errors, _parse
+    by_code = _codes(UNITS)
+    state = _parse('0 a\n1 b.0\n2-3 -\nb: 2\nc: 1', by_code, len(CHUNKS))
+    assert state.counts == {'b': 2}
+    assert state.present == {'c': 1}
+    before = (dict(state.counts), dict(state.present))
+    errors = _map_errors(state.segments, state.counts, state.nested,
+                         state.derived, by_code, len(CHUNKS),
+                         present=state.present)
+    assert any('c: declared 1 items but no line draws it' in e for e in errors)
+    assert (state.counts, state.present) == before
 
 
 async def test_an_unplaceable_non_array_recount_keeps_the_repair_path():
@@ -2210,30 +2237,30 @@ def test_map_text_round_trips_through_the_parser():
     text = ('0 a\n1-2 b.0\n2 b.0.c.0\n3 b.1\n4 d\n'
             'b: 2 @90%,90%\nb.0.c: 1 @100%\nd: 1 @15%')
     by_code = _codes(NESTED_UNITS)
-    errors, counts, nested, derived, segments, budgets = \
-        _parse(text, by_code, len(NESTED_CHUNKS))
-    assert not errors
-    rendered = _map_text(segments, counts, nested, derived, budgets, by_code)
-    errors, counts2, nested2, derived2, segments2, budgets2 = \
-        _parse(rendered, by_code, len(NESTED_CHUNKS))
-    assert not errors
-    assert (segments2, counts2, nested2, derived2, budgets2) == \
-        (segments, counts, nested, derived, budgets)
+    state = _parse(text, by_code, len(NESTED_CHUNKS))
+    assert not state.errors
+    rendered = _map_text(state.segments, state.counts, state.present,
+                         state.nested, state.derived, state.budgets, by_code)
+    parsed = _parse(rendered, by_code, len(NESTED_CHUNKS))
+    assert not parsed.errors
+    assert (parsed.segments, parsed.counts, parsed.present, parsed.nested,
+            parsed.derived, parsed.budgets) == (
+        state.segments, state.counts, state.present, state.nested,
+        state.derived, state.budgets)
 
 
 def test_map_text_round_trips_derived_units():
     from xtremeparse.router import _codes, _map_text, _parse
     text = '0 a\n1 b.0\n2 b.1\n3 -\nb: 2\nc = b @30%'
     by_code = _codes(SHARED_UNITS)
-    errors, counts, nested, derived, segments, budgets = \
-        _parse(text, by_code, len(CHUNKS))
-    assert not errors
-    rendered = _map_text(segments, counts, nested, derived, budgets, by_code)
-    errors, counts2, nested2, derived2, segments2, budgets2 = \
-        _parse(rendered, by_code, len(CHUNKS))
-    assert not errors
-    assert counts2 == counts == {'b': 2}
-    assert derived2 == derived == {'c': 'b'}
+    state = _parse(text, by_code, len(CHUNKS))
+    assert not state.errors
+    rendered = _map_text(state.segments, state.counts, state.present,
+                         state.nested, state.derived, state.budgets, by_code)
+    parsed = _parse(rendered, by_code, len(CHUNKS))
+    assert not parsed.errors
+    assert parsed.counts == state.counts == {'b': 2}
+    assert parsed.derived == state.derived == {'c': 'b'}
 
 
 async def test_merged_nested_recount_upward_count_keeps_the_lines():

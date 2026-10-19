@@ -606,15 +606,17 @@ async def route(runner: AgentRunner, *, payload: str,
         names, leave the text behind for diff_base to anchor on — the
         one adoption that must survive a later model diff. Returns the
         parse errors; the caller owns the fallback."""
-        nonlocal counts, nested, derived, segments, budgets, diff_base, valid
-        errors, cts, nest, deriv, segs, budg = _parse(text, by_code,
-                                                      len(chunks))
-        if not errors:
-            counts, nested, derived, segments, budgets = \
-                cts, nest, deriv, segs, budg
+        nonlocal counts, present, nested, derived, segments, budgets, \
+            diff_base, valid
+        state = _parse(text, by_code, len(chunks))
+        if not state.errors:
+            counts, present, nested, derived, segments, budgets = (
+                state.counts, state.present, state.nested, state.derived,
+                state.segments, state.budgets)
             diff_base = text
-            valid = (segs, cts, nest, deriv, budg, text)
-        return errors
+            valid = (state.segments, state.counts, state.present,
+                     state.nested, state.derived, state.budgets, text)
+        return state.errors
 
     async def split_ask(spans):
         # a shared run holding more mapped material than one shared
@@ -648,10 +650,10 @@ async def route(runner: AgentRunner, *, payload: str,
 
     def commit(adoption):
         """Take the state one recount adoption produced."""
-        nonlocal segments, counts, nested, derived
-        segments, counts, nested, derived = (
-            adoption.segments, adoption.counts, adoption.nested,
-            adoption.derived)
+        nonlocal segments, counts, present, nested, derived
+        segments, counts, present, nested, derived = (
+            adoption.segments, adoption.counts, adoption.present,
+            adoption.nested, adoption.derived)
 
     def merge_labels(shared, merged_nested):
         """The recount legend's {label: code} map for one conversation —
@@ -692,9 +694,10 @@ async def route(runner: AgentRunner, *, payload: str,
         answer = await _recount_shared(runner, payload, labels,
                                        by_code, listing, overall_block=overall_block,
                                        schema_head=schema_head)
-        adoption = _adopt_recount(segments, counts, nested, derived, answer,
-                                  shared=shared, merged=merged_nested,
-                                  by_code=by_code, chunks=chunks)
+        adoption = _adopt_recount(segments, counts, present, nested, derived,
+                                  answer, shared=shared,
+                                  merged=merged_nested, by_code=by_code,
+                                  chunks=chunks)
         if adoption is None:
             return [_RouteIssue('segments', 'route_hint',
                                 _split_hint(code, *shared[code]))
@@ -721,8 +724,9 @@ async def route(runner: AgentRunner, *, payload: str,
                                 instructions=recount_instructions,
                                 overall_block=overall_block,
                                 schema_head=schema_head)
-        adoption = _adopt_recount(segments, counts, nested, derived, answer,
-                                  zeros=zeros, by_code=by_code, chunks=chunks,
+        adoption = _adopt_recount(segments, counts, present, nested, derived,
+                                  answer, zeros=zeros, by_code=by_code,
+                                  chunks=chunks,
                                   map_first=bool(recount_instructions))
         if adoption is not None and adoption.zeros_ok:
             commit(adoption)
@@ -755,8 +759,8 @@ async def route(runner: AgentRunner, *, payload: str,
                                      zeros, by_code, chunks,
                                      overall_block=overall_block,
                                      schema_head=schema_head)
-        adoption = _adopt_recount(segments, counts, nested, derived, answer,
-                                  zeros=zeros, shared=shared,
+        adoption = _adopt_recount(segments, counts, present, nested, derived,
+                                  answer, zeros=zeros, shared=shared,
                                   merged=merged_nested, by_code=by_code,
                                   chunks=chunks,
                                   map_first=bool(recount_instructions))
@@ -827,15 +831,15 @@ async def route(runner: AgentRunner, *, payload: str,
         for (cc, p), k in nested.items():
             nested_counts.setdefault(by_code[cc].path, {})[p] = k
         return Routing(_groups(segments, by_code, chunks, derived),
-                       # the published counts are the repeating units'
-                       # declarations: a non-repeating unit's present-or-
-                       # absent reading stays internal (a map that
-                       # settled leniently on one must not hand the
-                       # extraction side a count to reconcile)
-                       {'counts': {by_code[c].path: k for c, k in counts.items()
-                                   if by_code[c].kind == 'array'}
+                       # counts carries repeating units only; the
+                       # non-repeating units' declared presence is its
+                       # own channel — the extraction side reconciles
+                       # array counts, never a presence reading
+                       {'counts': {by_code[c].path: k for c, k in counts.items()}
                                   | {by_code[d].path: counts[s]
                                      for d, s in derived.items()},
+                        'present': {by_code[c].path: n
+                                    for c, n in present.items()},
                         'nested_counts': nested_counts,
                         'assignments': assignments,
                         'budgets': {p: _budget_text(b)
@@ -843,6 +847,8 @@ async def route(runner: AgentRunner, *, payload: str,
                         'maps': maps}, by_path, material)
 
     feedback, last, history = None, None, []
+    present = {}  # non-repeating units' declared presence; counts holds
+    # the repeating units' declarations only
     asked = set()  # hint passes already spent — each ask fires at most
     # once per routing, however the map shifts afterwards
     maps = []  # every round's applied map text — chunk ids, codes and
@@ -873,8 +879,10 @@ async def route(runner: AgentRunner, *, payload: str,
                 text = applied
             elif (patched := _overlay_text(text, base)) is not None:
                 text = patched  # a marker-less reply patches, not replaces
-        errors, counts, nested, derived, segments, budgets = \
-            _parse(text, by_code, len(chunks))
+        state = _parse(text, by_code, len(chunks))
+        errors, counts, present, nested, derived, segments, budgets = (
+            state.errors, state.counts, state.present, state.nested,
+            state.derived, state.segments, state.budgets)
         # every answer leaves a map text behind — a full re-emission is
         # itself, a diff leaves its applied map, an empty reply the
         # standing base — and the next round diffs against it, hint or
@@ -895,8 +903,10 @@ async def route(runner: AgentRunner, *, payload: str,
                 lenient |= _passable(errors)
             stuck_text = text
             if lenient:
-                errors, counts, nested, derived, segments, budgets = \
-                    _parse(text, by_code, len(chunks), lenient)
+                state = _parse(text, by_code, len(chunks), lenient)
+                errors, counts, present, nested, derived, segments, budgets = (
+                    state.errors, state.counts, state.present, state.nested,
+                    state.derived, state.segments, state.budgets)
         if errors and not suggestion and 'undrawn' not in asked \
                 and all(_PASSABLE.match(e) for e in errors):
             # declared-undrawn family: a count declared, no lines drawn.
@@ -915,7 +925,7 @@ async def route(runner: AgentRunner, *, payload: str,
             # on the diff path, and the standing parse's state serves
             # as is (its coherence: _parse's return)
             passable = _passable(errors)
-            if pool := _undrawn_pool(segments, counts, nested):
+            if pool := _undrawn_pool(segments, counts, nested, present):
                 asked.add('undrawn')
                 zeros = ([] if recount_instructions else
                          _pending_zeros(by_code, counts, derived))
@@ -923,16 +933,17 @@ async def route(runner: AgentRunner, *, payload: str,
                                                 zeros, by_code, chunks,
                                                 overall_block=overall_block,
                                                 schema_head=schema_head)
-                adoption = _adopt_recount(segments, counts, nested, derived,
-                                          answer, zeros=zeros, pool=pool,
-                                          by_code=by_code, chunks=chunks,
+                adoption = _adopt_recount(segments, counts, present, nested,
+                                          derived, answer, zeros=zeros,
+                                          pool=pool, by_code=by_code,
+                                          chunks=chunks,
                                           lenient=lenient | passable)
                 if adoption is not None:
-                    segments, counts, nested, derived = (
-                        adoption.segments, adoption.counts, adoption.nested,
-                        adoption.derived)
-                    text = _map_text(segments, counts, nested, derived,
-                                     budgets, by_code)
+                    segments, counts, present, nested, derived = (
+                        adoption.segments, adoption.counts, adoption.present,
+                        adoption.nested, adoption.derived)
+                    text = _map_text(segments, counts, present, nested,
+                                     derived, budgets, by_code)
                     diff_base = text
                     maps.append(text)
                     stuck_text = None  # adoption resets the replay ledger
@@ -940,9 +951,11 @@ async def route(runner: AgentRunner, *, payload: str,
                     if adoption.zeros_ok:
                         asked.add('zeros')  # the merged ask covered zeros
                     errors = _map_errors(segments, counts, nested,
-                                         derived, by_code, len(chunks))
+                                         derived, by_code, len(chunks),
+                                         present=present)
         if not errors:
-            valid = (segments, counts, nested, derived, budgets, text)
+            valid = (segments, counts, present, nested, derived, budgets,
+                     text)
         elif not suggestion:
             past = set().union(*history[:-1]) if len(history) > 1 else set()
             removed = []
@@ -986,7 +999,8 @@ async def route(runner: AgentRunner, *, payload: str,
             # with it (a later hint's diff must anchor on the map code
             # actually holds), spend no model round on the wreckage,
             # and let the remaining asks run
-            segments, counts, nested, derived, budgets, diff_base = valid
+            segments, counts, present, nested, derived, budgets, \
+                diff_base = valid
         if hint_fb := await hint_pass():
             suggestion, feedback = hint_fb
             # the reply protocol closes the round's feedback — once,
@@ -1004,12 +1018,14 @@ async def route(runner: AgentRunner, *, payload: str,
     # passing it would double-claim chunks silently — so that stays a
     # RouterError, and the caller's fresh draw is the cure
     if valid is not None:
-        segments, counts, nested, derived, budgets, _ = valid
+        segments, counts, present, nested, derived, budgets, _ = valid
         return finalize()
     lenient |= _passable(errors)
     if lenient:
-        errors, counts, nested, derived, segments, budgets = \
-            _parse(diff_base, by_code, len(chunks), lenient)
+        state = _parse(diff_base, by_code, len(chunks), lenient)
+        errors, counts, present, nested, derived, segments, budgets = (
+            state.errors, state.counts, state.present, state.nested,
+            state.derived, state.segments, state.budgets)
         if not errors:
             return finalize()
     raise RouterError(f'router segment map invalid after repair: {errors}')
@@ -1210,20 +1226,23 @@ def _pending_zeros(by_code, counts, derived) -> list:
 def _drawn_pairs(segments) -> set:
     """The (code, parent) pairs any map line claims — the one reading of
     drawn-ness: `_map_errors` validates a non-repeating unit's
-    declaration against it and `_undrawn_pool` builds the recount pool
-    from it, so a unit one site calls undrawn the other must too."""
+    declaration against it, `_zero_counts` spares a drawn unit from the
+    zero fill, and `_undrawn_pool` builds the recount pool from it, so
+    a unit one site calls undrawn the others must too."""
     return {(dd[0], dd[2]) for _, _, dests in segments for dd in dests}
 
 
-def _undrawn_pool(segments, counts, nested) -> list:
-    """The declared-undrawn units of a parsed map — counts declared but
-    no lines drawn: ``[(code, None)]`` top-level, ``[(sub-code, parent
-    index)]`` chained — the same state `_map_errors` reads when it
-    writes the assigns-none errors, read from the source, not the
-    prose."""
+def _undrawn_pool(segments, counts, nested, present=None) -> list:
+    """The declared-undrawn units of a parsed map — declarations with
+    no line drawing them: ``[(code, None)]`` top-level repeating and
+    non-repeating units alike, ``[(sub-code, parent index)]`` chained —
+    the same state `_map_errors` reads when it writes the assigns-none
+    errors, read from the source, not the prose."""
     used = _drawn_pairs(segments)
     return [(code, None) for code, declared in counts.items()
             if declared and (code, None) not in used] + \
+        [(code, None) for code, declared in (present or {}).items()
+         if declared and (code, None) not in used] + \
         [(code, parent) for (code, parent), declared in nested.items()
          if declared and (code, parent) not in used]
 
@@ -1668,14 +1687,15 @@ def _quote_anchor(quote: str, domain: list, norms: dict) -> int | None:
                  for c in domain if form in norms[c]), None)
 
 
-def _map_text(segments, counts, nested, derived, budgets, by_code) -> str:
+def _map_text(segments, counts, present, nested, derived, budgets,
+              by_code) -> str:
     """A routing rebuilt in code, rendered back to map text — an
     adoption that continues the round loop must leave a text the
-    anchored conversation can keep diffing against. Every count line
-    round-trips: declared and zero-filled counts alike, per-parent
-    nested counts, derivations, and budget suffixes (a non-repeating
-    unit's estimate rides the noise count line the parser ignores for
-    the count but reads for the budget)."""
+    anchored conversation can keep diffing against. Every declaration
+    round-trips: array counts (declared and zero-filled alike), a
+    non-repeating unit's presence, per-parent nested counts,
+    derivations, and budget suffixes (a non-repeating unit's estimate
+    rides its presence line)."""
     lines = []
     for start, end, dests in segments:
         if dests == ((NONE, None, None),):
@@ -1691,7 +1711,10 @@ def _map_text(segments, counts, nested, derived, budgets, by_code) -> str:
         elif unit.kind == 'array' and unit.parent is None:
             lines.append(f'{code}: {counts[code]}{suffix}')
         elif suffix and unit.kind != 'array':
-            lines.append(f'{code}: 1{suffix}')
+            # an explicitly absent unit must not come back present on a
+            # round trip; a drawn unit without a declaration is present
+            marker = 0 if present.get(code) == 0 else 1
+            lines.append(f'{code}: {marker}{suffix}')
     for (code, parent), k in sorted(nested.items()):
         lines.append(f'{_chain_label(code, parent, by_code)}: {k}'
                      f'{_budget_suffix(budgets.get(code))}')
@@ -1706,14 +1729,15 @@ class _Adoption:
 
     segments: list
     counts: dict
+    present: dict
     nested: dict
     derived: dict
     zeros_ok: bool
     pending_shared: tuple[str, ...]
 
 
-def _adopt_recount(segments, counts, nested, derived, answer, *, zeros=(),
-                   pool=(), shared=(), merged=(), by_code, chunks,
+def _adopt_recount(segments, counts, present, nested, derived, answer, *,
+                   zeros=(), pool=(), shared=(), merged=(), by_code, chunks,
                    lenient=frozenset(), map_first=False):
     """Adopt a recount reply through its typed claims — the one path for
     zero, shared/merged, undrawn and nested-chain answers. The grammar
@@ -1724,14 +1748,16 @@ def _adopt_recount(segments, counts, nested, derived, answer, *, zeros=(),
     ``pool``/``merged`` hold (sub-code, parent) targets, ``zeros`` the
     plain codes a map left at zero, ``shared`` the merged top-level
     units. Each top-level undrawn claim anchors its quotes and lays the
-    instances' lines; a chained claim partitions the parent's run from
-    the first to the last anchor, the run's head and tail staying the
-    parent's own; a lone opening cannot trim a multi-entry chain (the
-    parent's own heading is not a sub-entry, measured). A zero claim is
-    absence: for a chain it drops the declaration, for a top-level unit
-    it confirms the count. A unit whose section is unusable — missing,
-    quotes unanchored, count and quotes disagreeing — keeps its error
-    for the diff path. Returns None when nothing was adoptable."""
+    instances' lines; a non-repeating unit's claim is a presence
+    reading whose quotes locate the chunks holding its fields; a
+    chained claim partitions the parent's run from the first to the
+    last anchor, the run's head and tail staying the parent's own; a
+    lone opening cannot trim a multi-entry chain (the parent's own
+    heading is not a sub-entry, measured). A zero claim is absence: for
+    a chain it drops the declaration, for a top-level unit it confirms
+    the count. A unit whose section is unusable — missing, quotes
+    unanchored, count and quotes disagreeing — keeps its error for the
+    diff path. Returns None when nothing was adoptable."""
     n = len(chunks)
     labels = set(shared) | set(zeros) | {
         _chain_label(code, parent, by_code)
@@ -1772,6 +1798,34 @@ def _adopt_recount(segments, counts, nested, derived, answer, *, zeros=(),
                 failed_zeros.add(code)  # a grammar this ask did not request
             continue
         count, quotes = claim.total, claim.quotes
+        if parent is None and by_code[code].kind != 'array':
+            # a non-repeating unit has no instances: its claim is a
+            # presence reading, and every anchored quote marks a chunk
+            # holding its fields (the fields may sit apart)
+            if not count:
+                present = {**present, code: 0}
+                changed = True
+                continue
+            if not quotes:
+                if code in zero_codes:
+                    failed_zeros.add(code)
+                continue
+            if norms is None:
+                norms = {c: norm(chunks[c]) for c in range(n)}
+            hits = [_quote_anchor(q, range(n), norms) for q in quotes]
+            if any(c is None for c in hits):
+                if code in zero_codes:
+                    failed_zeros.add(code)
+                continue
+            for c in sorted(set(hits)):
+                ds = per_chunk[c]
+                if ds == [(NONE, None, None)]:
+                    ds.clear()
+                if (code, None, None) not in ds:
+                    ds.append((code, None, None))
+            present = {**present, code: 1}
+            changed = True
+            continue
         if parent is None:
             if norms is None:
                 norms = {c: norm(chunks[c]) for c in range(n)}
@@ -1827,12 +1881,13 @@ def _adopt_recount(segments, counts, nested, derived, answer, *, zeros=(),
                 segments, counts, nested, derived, answer, zeros, by_code,
                 n, lenient)):
             return None
-        return _Adoption(*spliced, True, ())
+        return _Adoption(spliced[0], spliced[1], present, spliced[2],
+                         spliced[3], True, ())
     rebuilt = _resegment({c: tuple(ds) for c, ds in per_chunk.items()},
                          counts, nested, derived, by_code, n, lenient)
     if rebuilt is None:
         return None
-    return _Adoption(rebuilt, counts, nested, derived, zeros_ok,
+    return _Adoption(rebuilt, counts, present, nested, derived, zeros_ok,
                      tuple(pending_shared))
 
 
@@ -2019,23 +2074,46 @@ def _declared_budget(line: str):
     return None
 
 
-def _parse(text, by_code: dict, n: int, lenient: set | None = None):
-    """Validate count declarations plus a segment map. Returns (errors,
-    counts, nested, derived, segments, budgets); segments are ``(start,
-    end, destinations)`` with destinations a uniform ``(code,
-    item|None, parent|None)`` — the third element names the parent
-    instance of a chain through a lifted sub-array — derived a
-    ``{code: source}`` map
-    of summarizing units, counts a ``{code: int}`` map of top-level
-    declarations, nested a ``{(sub-code, parent index): int}`` map of
-    the per-parent ones, budgets a ``{code: Budget}`` map of the
-    (tolerated, never checked) ``@`` declarations. ``lenient`` names
-    codes whose declared-vs-used mismatch is passed through unsaid —
-    a replayed map's count arbitration owns the number."""
+@dataclass(frozen=True)
+class _State:
+    """One parsed map's normalized state — what every repair, hint and
+    adoption round reads and edits. ``counts`` carries the top-level
+    repeating units' declarations only; ``present`` carries the
+    non-repeating units' declared presence (the wire grammar's
+    ``<code>: 1`` — a positive number means the document holds
+    material, and a drawing without a declaration carries presence on
+    its own). Validation reads this state and never edits it."""
+
+    errors: list
+    segments: list
+    counts: dict
+    present: dict
+    nested: dict
+    derived: dict
+    budgets: dict
+    lenient: frozenset
+
+
+def _parse(text, by_code: dict, n: int,
+           lenient: set | None = None) -> _State:
+    """Validate count declarations plus a segment map. ``segments`` are
+    ``(start, end, destinations)`` with destinations a uniform
+    ``(code, item|None, parent|None)`` — the third element names the
+    parent instance of a chain through a lifted sub-array. ``derived``
+    maps summarizing units to their source, ``counts`` declares the
+    top-level repeating units, ``present`` the non-repeating ones,
+    ``nested`` the lifted sub-arrays per parent index, and ``budgets``
+    the (tolerated, never checked) ``@`` declarations. ``lenient``
+    names codes whose declared-vs-used mismatch is passed through
+    unsaid — a replayed map's count arbitration owns the number.
+    Missing repeating units read as zero once validation settles (the
+    zero recount pass re-examines every zero)."""
     if not isinstance(text, str) or not text.strip():
-        return (['output must be the count lines and segment map, nothing else'],
-                {}, {}, {}, [], {})
-    errors, counts, nested, derived, segments, budgets = [], {}, {}, {}, [], {}
+        return _State(
+            ['output must be the count lines and segment map, nothing else'],
+            [], {}, {}, {}, {}, {}, frozenset())
+    errors, counts, present, nested, derived, segments, budgets = \
+        [], {}, {}, {}, {}, [], {}
     sub_decls = {}
     in_map = False
     for i, line in enumerate(text.strip().splitlines()):
@@ -2108,8 +2186,10 @@ def _parse(text, by_code: dict, n: int, lenient: set | None = None):
                 # a non-repeating unit's count is present-or-absent: 0
                 # says the document holds nothing for it, a positive
                 # number says it has material — and then a line must
-                # draw it (_map_errors owns that check)
-                counts[code] = int(declared or 0)
+                # draw it (_map_errors owns that check). The declared
+                # number rides the presence state, never the counts the
+                # extraction reconciles.
+                present[code] = int(declared or 0)
             elif code in counts or code in derived:
                 errors.append(f'line {i + 1}: {code} declared twice')
             elif source == code:
@@ -2184,15 +2264,20 @@ def _parse(text, by_code: dict, n: int, lenient: set | None = None):
     # editing position, so out-of-order lines are normal, not an error
     _settle_chains(segments, by_code)
     errors += _map_errors(segments, counts, nested, derived, by_code, n,
-                          lenient)
+                          lenient, present)
+    # a repeating unit the map never mentions reads as zero — filled by
+    # the constructor, after validation, so the validator stays a pure
+    # read and an undeclared-but-drawn unit still reports
+    counts = _zero_counts(counts, by_code, segments, derived)
     # exact duplicates collapse — one repeated destination must not
     # flood the repair feedback with the same message
     errors = list(dict.fromkeys(errors))
-    # segments return alongside errors: the callers gate on the error
+    # the state returns alongside errors: the callers gate on the error
     # list, and the declared-undrawn path reads the standing state
     # when every error is count-family (its segments are coherent —
     # syntax and geometry errors are never passable)
-    return errors, counts, nested, derived, segments, budgets
+    return _State(errors, segments, counts, present, nested, derived,
+                  budgets, frozenset(lenient or ()))
 
 
 def _chain_parents(dests: tuple, by_code: dict) -> set:
@@ -2672,17 +2757,33 @@ def _uncovered_removal(removed: list, missing: list) -> str | None:
     return None
 
 
+def _zero_counts(counts, by_code: dict, segments, derived) -> dict:
+    """The repeating units the map neither declared nor drew, read as
+    zero — constructed here after validation, never filled by the
+    validator itself. An undeclared unit the map does draw keeps its
+    missing declaration: that is an error the repair path owns."""
+    used = _drawn_pairs(segments)
+    return {code: 0 for code, unit in by_code.items()
+            if unit.kind == 'array' and unit.parent is None
+            and code not in derived and code not in counts
+            and (code, None) not in used} | counts
+
+
 def _map_errors(segments, counts, nested, derived, by_code: dict,
-                n: int, lenient: set | None = None) -> list:
+                n: int, lenient: set | None = None,
+                present: dict | None = None) -> list:
     """Whole-map consistency: line-range overlap, declared-vs-used
     items per destination — top level and, per parent instance, lifted
-    sub-arrays — derivation sanity, and full coverage (reported even
-    alongside line errors, so the model gets the complete picture in
-    one repair). A pure chain line claims no coverage of its own: it
-    must sit inside a line that carries its parent destination, where
-    it reads as the fine partition of that run — each sub-entry keeps
-    its own slice and fans out on its own; overlapping it with anything
-    else is an error."""
+    sub-arrays — derivation sanity, non-repeating presence, and full
+    coverage (reported even alongside line errors, so the model gets
+    the complete picture in one repair). A pure chain line claims no
+    coverage of its own: it must sit inside a line that carries its
+    parent destination, where it reads as the fine partition of that
+    run — each sub-entry keeps its own slice and fans out on its own;
+    overlapping it with anything else is an error. The validator never
+    edits the state it reads; ``present`` lets a full parse validate
+    the presence channel, while a segment rebuild passes None — it
+    edits drawings only, and presence travels beside it."""
     covering, chains = [], []
     for seg in segments:
         if _pure_chain(seg[2]):
@@ -2745,19 +2846,16 @@ def _map_errors(segments, counts, nested, derived, by_code: dict,
         if code in derived:
             continue
         if unit.kind != 'array':
-            if (code, None) in drawn:
-                # a drawn non-repeating unit carries no count: it is
-                # present exactly where a line claims it — and the pop
-                # lives in the validator, the one function every
-                # constructor passes (text parse and the code-authored
-                # folds alike), ahead of the hint passes reading counts
-                counts.pop(code, None)
-            elif (declared := counts.get(code)) \
+            # a drawn non-repeating unit is present exactly where a line
+            # claims it; only a positive declaration with no drawing is
+            # an error. Presence never enters counts, so nothing is
+            # popped here — the validator only reads
+            if present is not None and (code, None) not in drawn \
+                    and (declared := present.get(code)) \
                     and code not in (lenient or ()):
-                # declared present with no line drawing it — the
-                # declared-undrawn family's error shape, so the fresh
-                # recount that carries that family claims the chunks
-                # holding the unit's fields
+                # the declared-undrawn family's error shape, so the
+                # fresh recount that carries that family claims the
+                # chunks holding the unit's fields
                 errors.append(
                     f'{code}: declared {declared} items but no line '
                     f'draws it — give the unit its own line over the '
@@ -2794,10 +2892,9 @@ def _map_errors(segments, counts, nested, derived, by_code: dict,
                 errors.append(f'{code}: items {sorted(items)} used but its '
                               f'count is undeclared — declare "{code}: <n>" '
                               f'first')
-            else:
-                # absent declarations read as zero — safe under map-first
-                # because every zero is re-examined by the recount pass
-                counts[code] = 0
+            # an undrawn, undeclared unit reads as zero — the
+            # constructor fills it after this pure read (the zero
+            # recount pass re-examines every zero)
             continue
         if items != set(range(declared)) and code not in (lenient or ()):
             hint = (f' — attach its items to the lines of the unit whose text it '
