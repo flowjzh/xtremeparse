@@ -114,6 +114,9 @@ def test_default_prompts_carry_all_placeholders():
     from xtremeparse import router
     check_placeholders(router._INSTRUCTIONS, ROUTE_PLACEHOLDERS, 'router')
     check_placeholders(router._CHECK, RECOUNT_PLACEHOLDERS, 'recount')
+    check_placeholders(router._MIXED_CHECK,
+                       {'state_clause', 'shared_bullet', 'units', 'chunks',
+                        'overall'}, 'mixed recount')
 
 
 def test_overall_block_rides_last_in_every_default_prompt():
@@ -122,7 +125,7 @@ def test_overall_block_rides_last_in_every_default_prompt():
     # revert the routing behavior
     from xtremeparse import router
     for template in (router._INSTRUCTIONS, router._CHECK,
-                     router._SHARED_CHECK, router._BOTH_CHECK):
+                     router._SHARED_CHECK, router._MIXED_CHECK):
         assert template.rstrip().endswith('{overall}')
 
 
@@ -1967,7 +1970,7 @@ async def test_declared_undrawn_unit_is_recounted_and_adopted():
                           chunks=CHUNKS)
     assert len(runner.calls) == 2  # the recount adopted — no repair round
     assert runner.calls[1]['feedback'] is None  # a fresh conversation
-    assert 'RECOUNT MERGED' in runner.calls[1]['instructions']
+    assert 'RECOUNT UNDRAWN' in runner.calls[1]['instructions']
     assert 'RECOUNT ZERO' in runner.calls[1]['instructions']
     assert routing.raw['counts'] == {'jobs': 2, 'summary': 0}
     assert [(g.item, g.chunk_ids) for g in routing.groups
@@ -1998,6 +2001,7 @@ async def test_nested_undrawn_chains_partition_the_parent_run():
     routing = await route(runner, payload=PAYLOAD, schema_head=HEAD, units=NESTED_UNITS,
                           chunks=NESTED_CHUNKS)
     assert len(runner.calls) == 2
+    assert 'own heading is not one' in runner.calls[1]['instructions']
     roles = [g for g in routing.groups if g.unit.path == 'jobs.roles']
     assert [(g.item, g.parent, g.chunk_ids) for g in roles] == \
         [(0, 0, [1]), (1, 0, [2])]
@@ -2017,6 +2021,25 @@ async def test_undrawn_chains_leave_the_parent_runs_own_head_and_tail():
     assert [(g.item, g.chunk_ids) for g in roles] == [(0, [2]), (1, [3])]
     jobs = [g for g in routing.groups if g.unit.path == 'jobs']
     assert [(g.item, g.chunk_ids) for g in jobs] == [(0, [1, 2, 3, 4])]
+
+
+async def test_undrawn_single_quote_cannot_demote_a_multi_entry_chain():
+    # a count declared but no chain line drawn; the recount answers one
+    # and quotes the parent's own opening — one anchor is not evidence
+    # to trim a multi-entry chain, so the repair round redraws it
+    runner = ScriptedRunner(
+        agent_result('0 a\n1-3 b.0\n4 -\nb: 1\nb.0.c: 2'),
+        agent_result('b.0.c: 1\n公司甲·工程师'),
+        *[agent_result('0 a\n1 b.0\n2 b.0.c.0\n3 b.0.c.1\n4 -\n'
+                       'b: 1\nb.0.c: 2')] * 3)
+    routing = await route(runner, payload=PAYLOAD, schema_head=HEAD,
+                          units=NESTED_UNITS, chunks=NESTED_CHUNKS)
+    assert len(runner.calls) >= 3
+    assert runner.calls[2]['feedback'] is not None
+    assert routing.raw['nested_counts'] == {'jobs.roles': {0: 2}}
+    roles = [g for g in routing.groups if g.unit.path == 'jobs.roles']
+    assert [(g.item, g.parent, g.chunk_ids) for g in roles] == \
+        [(0, 0, [2]), (1, 0, [3])]
 
 
 async def test_undrawn_recount_number_overrides_the_declaration():

@@ -12,8 +12,10 @@ from xtremeparse.contracts import JSONSchema
 SPECIALIST_INSTRUCTIONS = '''You are a structured-extraction specialist. Extract this unit's fields
 from the assigned material below. The full document in the shared
 context provides background; extract only what the unit card asks
-for, from the assigned material. Output only the structured data of
-the output schema stated at the end of this message.
+for. For a non-repeating unit, a card field may sit outside the
+assigned slice — take the value the shared document shows for that
+field. Output only the structured data of the output schema stated at
+the end of this message.
 
 Unit:
 
@@ -28,9 +30,9 @@ Unit:
 WHOLE_ARRAY_ADDENDUM = '''
 
 The output schema is an array: return every instance the assigned
-material holds as its own entry — never merge
-instances into one entry, never summarize. An entry the unit card
-would not fill is not an instance — never pad the array with one.'''
+material holds as its own entry — never merge instances into one
+entry, never summarize. An entry the unit card would not fill is not
+an instance — never pad the array with one.'''
 
 SPECIALIST_PLACEHOLDERS = frozenset({'card'})
 

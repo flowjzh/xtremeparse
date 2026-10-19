@@ -130,13 +130,12 @@ code, ".item" appended on repeating units; "4-9 x.0-8" is the ranged
 form — those chunks carry exactly instances 0-8, in chunk order; a
 bare repeating code ("4-9 x") means several instances share the run
 unsplit — they are extracted whole; a single chunk may omit "-end").
-Example codes below
-are schematic letters, not units of this document. After the map, one
-count line per repeating unit ("x: 3" plus its budget suffix)
-declaring the instances the DOCUMENT holds — every repeating unit gets
-one: 0 only for a unit truly absent, and a unit with no text of its
-own that only summarizes another declares its source ("x = y")
-instead.
+Example codes below are schematic letters, not units of this document.
+After the map, one count line per repeating unit ("x: 3" plus its
+budget suffix) declaring the instances the DOCUMENT holds — every
+repeating unit gets one: 0 only for a unit truly absent, and a unit
+with no text of its own that only summarizes another declares its
+source ("x = y") instead.
 
 Rules:
 - As you write the map, number a repeating unit's instances in the order you
@@ -171,18 +170,18 @@ Rules:
   fields, not the source. Two shapes take a non-ratio form instead:
   - a list of names: average the entries' own lengths as they stand in the
     assigned chunks, and multiply by the number of entries the document
-    holds. An entry's length is the field value's own text — the name alone,
-    not the labels, headings, or grades printed beside it in the chunk. The
-    length counts CHARACTERS, never words — word counts understate a name
-    badly;
+    holds. An entry's length is the field value's own text — the name
+    alone, not the labels, headings, or grades printed beside it in the
+    chunk. The length counts CHARACTERS, never words — word counts
+    understate a name badly;
   - a fixed-length summary — the card pins the output size ("one
     line", "about 100 characters") — or an item whose output does not mirror
     the material at all: a plain character estimate, "@<n>" ("x: 3 @300"). A
-    value's cost is its own text alone: a date ≈7, a name ≈10, a one-line
-    title ≈20.
+    value's cost is its own text alone: a short scalar ≈7, a short label
+    ≈10, a one-line string ≈20.
   Every declaration line carries one.
-- Map lines ascend, never overlap, and together cover EVERY chunk id in
-  0..{top}.
+- Map lines ascend, never overlap, and together cover EVERY
+  chunk id in 0..{top}.
 - A run may feed several DIFFERENT units at once: comma-join their codes ("5
   x.0,y.0") — a summary or cross-cutting unit rides the lines of the unit
   whose text it shares, item by item:
@@ -191,16 +190,30 @@ Rules:
   An instance whose own text sits inside another unit's run rides that line
   too, even when its unit's other instances get lines of their own ("0-1
   e.0,a.0" then "2 a.1"): a chunk holding two units' material is ONE line
-  carrying both codes — two lines claiming the same chunk are never legal.
+  carrying both codes — two lines claiming the same chunk are never
+  legal.
+- A unit's fields may live in more than one section: give the unit a
+  line over every chunk that carries any of its fields, not only the
+  chunk where its name appears. A non-repeating unit obeys this too —
+  its count being one does not limit it to one line. When another
+  unit also owns the chunk, comma-join both codes; never keep just
+  one:
+      5 f
+      9 f,b.0
 - A unit whose legend entry shows another unit's path ("<code> =
   [parent.field | array]") nests inside that unit's instances. Its
   sub-entries never ride a parent's plain line — each gets its own chain
   line THROUGH the parent instance ("<parent>.<item>.<code>.<sub>", e.g.
   "3-15 c.0.d.0" — parent instance 0's first sub-entry), one line per
-  sub-entry where chunk boundaries allow. A parent line plus a count line
-  maps no sub-entries: only chain lines do. Every chain line also feeds its
-  parent instance the chunks it covers, so those chunks take no separate
-  parent line:
+  sub-entry where chunk boundaries allow. A chain line carries ONE
+  sub-entry: never comma-join several chain destinations on one line
+  unless the chunks cannot separate them — a comma-joined chain list
+  is the merged form. A chain line covers that sub-entry's heading AND
+  the material that follows it, up to the next sub-entry or the
+  parent's next instance; never leave its description on the parent
+  line. A parent line plus a count line maps no sub-entries: only
+  chain lines do. Every chain line also feeds its parent instance the
+  chunks it covers, so those chunks take no separate parent line:
       12-14 c.0
       15-20 c.0.d.0
       21-26 c.0.d.1
@@ -213,9 +226,9 @@ Rules:
 - Items of the SAME unit that separable chunk boundaries CAN separate MUST
   each get their own line ("5-9 x.0" then "10-11 x.1"): each item's budget
   then scales against its own material. Sharing one line ("3 x.0,x.1,x.2")
-  is ONLY for a run whose chunk boundaries cannot separate the instances —
-  one chunk holding material of two or more instances; that material is then
-  extracted once, whole.
+  is ONLY for a run whose chunk boundaries cannot separate the
+  instances — one chunk holding material of two or more instances;
+  that material is then extracted once, whole.
 - A long run whose chunks carry one unit's instances IN ORDER — an entry
   list too dense for chunk boundaries to separate (roughly one instance to a
   chunk) — MUST be ONE ranged line ("12-93 x.0-84": name the exact index
@@ -228,23 +241,32 @@ Rules:
   density does; and a parent whose sub-entries take chain lines takes plain
   per-item lines for its own chunks, never a ranged parent line beside its
   chain lines (the chains feed the parent those chunks).
-- Every declared item receives at least one chunk. A unit sharing another's
-  run may repeat one item across several lines (one instance spanning what
-  another unit splits into many).
+- Every declared item receives at least one chunk. A unit sharing
+  another's run may repeat one item across several lines (one instance
+  spanning what another unit splits into many).
 - Each item is ONE instance of the repeating unit — a complete entry. Start
   a new item whenever the text moves to the next instance; never merge
-  distinct instances into one, and never split one instance across items.
-- Code {none} on its own (no item) marks chunks irrelevant to every unit,
-  always ranged ("42-43 {none}"), never a bare {none} line. A chunk that is
-  only a label — a section heading or title introducing the entries around
-  it, no instance and no field-bound text of its own — takes {none}, never a
-  unit's item line.
-- Before answering, verify: every repeating unit has a declaration line (its
-  count "x: <n>" or its source "x = y") and every parent instance holding a
-  nested unit's sub-entries declares its count ("x.0.y: <n>"), the map
-  covers 0..{top} exactly once in ascending non-overlapping lines, item
-  indexes of each unit run 0..used-1 with no gaps, every count line matches
-  the map.
+  distinct instances into one, and never split one instance across
+  items.
+- A chunk that repeats an entity already mapped is not automatically
+  irrelevant: when it carries that entity's own entry text, it is
+  another instance or a sub-entry — route it to the unit. Only a bare
+  reference with no entry text takes {none}.
+- Code {none} on its own (no item) marks chunks irrelevant to every
+  unit, always ranged ("42-43 {none}"), never a bare {none} line. A
+  chunk that is only a label — a section heading or title introducing
+  the entries around it, no instance and no field-bound text of its
+  own — takes {none}, never a unit's item line. A line with a field
+  label and a value is material even inside a block of irrelevant
+  prose; split the run:
+      3-9 -
+      10 x.0
+- Before answering, verify: every repeating unit has a declaration line
+  (its count "x: <n>" or its source "x = y") and every parent instance
+  holding a nested unit's sub-entries declares its count ("x.0.y: <n>"),
+  the map covers 0..{top} exactly once in ascending non-overlapping
+  lines, item indexes of each unit run 0..used-1 with no gaps, every
+  count line matches the map.
 
 {chunks}
 
@@ -254,11 +276,11 @@ reference — the map and count lines name codes only):
 {overall}'''
 
 
-_DIFF_HOWTO = '''Reply with a unified diff against your previous map: "-" lines removed,
-"+" lines added, one edit per line — never re-emit an unchanged line.
-The full map is also accepted; a partial fragment is not — a reply
-without "-" or "+" lines replaces the whole map, so every line left
-out is lost.'''
+_DIFF_HOWTO = '''Reply with a unified diff against your previous map: "-" lines
+removed, "+" lines added, one edit per line — never re-emit an
+unchanged line. The full map is also accepted; a partial fragment is
+not — a reply without "-" or "+" lines replaces the whole map, so
+every line left out is lost.'''
 _DIFF_REPLY = _DIFF_HOWTO + ' An empty reply declines the suggestion.'
 _DIFF_FIX = _DIFF_HOWTO + ' Fix every error named above.'
 _DECLINE = 'reply with nothing.'  # the silent decline every fan-out ask
@@ -270,8 +292,8 @@ listed at the end were left at zero; recount their instances in the
 DOCUMENT — read the whole chunk list; a brief mention inside an
 otherwise irrelevant run is still an instance.
 
-For each unit answer one line only, <code> being that unit's code
-from the list at the end:
+For each unit answer one line only, <code> being that
+unit's code from the list at the end:
 - its count, "<code>: <n>", when the unit has its own text in the chunks —
   then add its map lines in the routing DSL ("4 <code>.0", "5 <code>.1"),
   one item per instance, covering exactly its material;
@@ -1092,29 +1114,58 @@ def _parse_shared_answer(result, codes: dict | set,
 # The quote rule below is _SHARED_CHECK's, the zero-unit rules are
 # _CHECK's — reword one firing mode's copy and the others must follow,
 # or the adoption rates drift by path with no test signal.
-_BOTH_CHECK = '''A document's chunks are listed below. Some repeating units were
-left miscounted: the MERGED ones had their instances folded into one
-shared run, the ZERO ones were written off as absent. Recount them in
-the DOCUMENT — read the whole chunk list; a brief mention inside an
-otherwise irrelevant run is still an instance.
+_MIXED_CHECK = '''A document's chunks are listed below. Some repeating units were left
+miscounted: {state_clause}
+Recount them in the DOCUMENT — read the whole chunk list; a brief
+mention inside an otherwise irrelevant run is still an instance.
 
 For each unit marked RECOUNT answer a count line "<code>: <n>" — how
 many instances the DOCUMENT holds — then, per its tag:
 
-- a MERGED unit: exactly n lines, one per instance, each quoting VERBATIM
-  the opening text of that instance as it stands in the chunk listing —
-  enough text to locate its chunk, no commentary;
-- a ZERO unit with its own text: its map lines in the routing DSL ("4
-  <code>.0", "5 <code>.1"), one item per instance, covering exactly its
-  material;
-- a ZERO unit the document truly does not contain: the count line "<code>:
-  0" alone.
+{shared_bullet}
+- a ZERO unit with its own text: its map lines in the routing DSL
+  ("4 <code>.0", "5 <code>.1"), one item per instance, covering
+  exactly its material;
+- a ZERO unit the document truly does not contain: the count
+  line "<code>: 0" alone.
 
 Units:
 {units}
 
 {chunks}
 {overall}'''
+
+_MERGED_STATE = ('the MERGED ones had their instances folded into one\n'
+                 'shared run, the ZERO ones were written off as absent.')
+_MERGED_BULLET = '''- a MERGED unit: exactly n lines, one per instance, each quoting VERBATIM
+  the opening text of that instance as it stands in the chunk listing —
+  enough text to locate its chunk, no commentary;'''
+_UNDRAWN_STATE = ('the UNDRAWN ones had a count declared but no map\n'
+                  'lines, the ZERO ones were written off as absent.')
+_UNDRAWN_BULLET = '''- an UNDRAWN unit: exactly n lines, one per instance, each quoting
+  VERBATIM the opening text of that instance as it stands in the chunk
+  listing — enough text to locate its chunk, no commentary.'''
+
+
+async def _mixed_recount(runner: AgentRunner, payload: str, shared: dict,
+                         zeros: list, by_code: dict, chunks: list[str],
+                         schema_head: str, overall_block: str,
+                         state_clause: str, shared_bullet: str,
+                         tag: str) -> str:
+    """One fresh conversation for the units a map miscounted. The firing
+    states share the ZERO half, the legend builder and the result
+    description; only the state clause, the shared-unit bullet and its
+    tag differ."""
+    units = {**shared, **{z: z for z in zeros}}
+    instructions = _MIXED_CHECK.format(
+        state_clause=state_clause, shared_bullet=shared_bullet,
+        units=_recount_legend(
+            units, by_code,
+            lambda label: ' ZERO' if label in zeros else f' {tag}'),
+        chunks=_chunks_section(schema_head, chunks), overall=overall_block)
+    description = _BOTH_RECOUNT_DESCRIPTION if zeros \
+        else SHARED_RECOUNT_DESCRIPTION
+    return await fresh_check(runner, payload, instructions, description)
 
 
 async def _recount_both(runner: AgentRunner, payload: str, shared: dict,
@@ -1128,18 +1179,17 @@ async def _recount_both(runner: AgentRunner, payload: str, shared: dict,
     answer: `_splice` reads the zero units' lines, `_parse_shared_
     answer` the merged units' sections — each skips the other's
     codes."""
-    instructions = _BOTH_CHECK.format(
-        units=_recount_legend({**shared, **{z: z for z in zeros}}, by_code,
-                              lambda c: ' ZERO' if c in zeros else ' MERGED'),
-        chunks=_chunks_section(schema_head, chunks), overall=overall_block)
-    return await fresh_check(runner, payload, instructions,
-                             _BOTH_RECOUNT_DESCRIPTION)
+    return await _mixed_recount(
+        runner, payload, shared, zeros, by_code, chunks, schema_head,
+        overall_block, _MERGED_STATE, _MERGED_BULLET, 'MERGED')
 
 
-_CHAIN_SCOPE = ('A chain label ("<parent>.<item>.<code>") asks for that '
-                'unit under that ONE parent entry: count its instances '
-                'in that parent\'s own material — 0 when the parent '
-                'holds none that meets the unit\'s card.')
+_CHAIN_SCOPE = ('A chain label ("<parent>.<item>.<code>") asks for that unit\n'
+                'under that ONE parent entry: scan that parent instance\'s own\n'
+                'material from its heading to the next parent instance; each\n'
+                "distinct instance opening is one sub-entry, and the parent's\n"
+                'own heading is not one. 0 when the parent holds none that\n'
+                "meets the unit's card.")
 
 
 def _recount_legend(units, by_code, tag=None) -> str:
@@ -1147,7 +1197,8 @@ def _recount_legend(units, by_code, tag=None) -> str:
     recounted unit, ``<label> = <unit header> RECOUNT``. ``units`` maps
     the label to the code (a plain code maps to itself; the declared-
     undrawn ask passes chain spellings as labels); ``tag`` names the
-    unit's firing mode (``' MERGED'`` / ``' ZERO'``) when the one
+    unit's firing mode (``' MERGED'`` / ``' UNDRAWN'`` / ``' ZERO'``)
+    when the one
     conversation mixes them. The chain-scoping note rides the listing
     whenever a chain label does — one home for the rule, the same
     discipline the firing modes' quote rule follows."""
@@ -1255,21 +1306,17 @@ async def _recount_undrawn(runner: AgentRunner, payload: str,
                            chunks: list[str], schema_head: str,
                            overall_block: str = '') -> str:
     """Fresh-attention recount of the units a map declared but never
-    drew — the merged recount's prompt verbatim (count plus each
-    instance's opening text), the units labeled by their chain
-    spellings. Zero-declared units recount in the same conversation
+    drew. The state clause names the firing mode; the chain-scoping
+    rule rides the legend (``_CHAIN_SCOPE``), so the fresh read bounds
+    each chain to its parent instance and does not count the parent's
+    own heading. Zero-declared units recount in the same conversation
     when any pend (the chunks listing is the costly part). Returns the
     raw answer: `_fold_undrawn` owns the adoption."""
     shared = {_chain_label(code, parent, by_code): code
               for code, parent in units}
-    if zeros:
-        return await _recount_both(runner, payload, shared, zeros,
-                                   by_code, chunks,
-                                   overall_block=overall_block,
-                                   schema_head=schema_head)
-    return await _recount_shared(runner, payload, shared, by_code, chunks,
-                                 overall_block=overall_block,
-                                 schema_head=schema_head)
+    return await _mixed_recount(
+        runner, payload, shared, zeros, by_code, chunks, schema_head,
+        overall_block, _UNDRAWN_STATE, _UNDRAWN_BULLET, 'UNDRAWN')
 
 
 _QUOTE_WRAP = '"\'“”「」『』'
@@ -1727,6 +1774,11 @@ def _fold_undrawn(segments, counts, nested, derived, pool, zeros, answer,
             if (hits := _anchors(quotes, owned, chunks)) is None:
                 continue
             anchors = sorted(hits)  # quotes may not arrive in document order
+            if len(anchors) == 1 and nested.get((code, parent), 0) > 1:
+                # one opening cannot trim a multi-entry chain without
+                # evidence: the parent's own heading is not a sub-entry
+                # (measured: 4 true stints demoted to 1)
+                continue
             _lay_subentries(per_chunk, owned, anchors, code, parent)
             nested = {**nested, (code, parent): count}
         changed = True

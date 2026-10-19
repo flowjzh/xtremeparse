@@ -65,9 +65,8 @@ def _openings(items: list) -> list:
     return [o for o in out if o]
 
 
-_ARBITRATION_CHECK = '''The context carries a document. Below is the list of
-instances of one repeating unit extracted from it, each quoted by its
-opening text:
+_ARBITRATION_CHECK = '''The context carries a document. Below is the list of instances of one
+repeating unit extracted from it, each quoted by its opening text:
 
 {list}
 
@@ -75,11 +74,11 @@ opening text:
 # the answer skeleton carries no holes — a list spliced into a verdict
 # section is unrepresentable, so the pre-filled-verdict failure mode
 # (measured on a live trace) cannot come back through a template edit
-_ARBITRATION_SKELETON = '''Re-read the document and check the list: which document
-instances are MISSING from the list, and which list entries does the
-document NOT contain? Quote each as its opening text, one per line,
-verbatim — enough text to identify it, no commentary. When the list is
-complete and faithful, answer with both sections empty.
+_ARBITRATION_SKELETON = '''Re-read the document and check the list: which document instances are
+MISSING from the list, and which list entries does the document NOT
+contain? Quote each as its opening text, one per line, verbatim —
+enough text to identify it, no commentary. When the list is complete
+and faithful, answer with both sections empty.
 
 missing:
 
