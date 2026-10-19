@@ -1,10 +1,13 @@
 """Boundary probes for the router: segment DSL, count declarations, repair."""
 
+import re
+
 import pytest
 
 from xtremeparse.arbitration import norm
 from xtremeparse.router import (NONE, RECOUNT_PLACEHOLDERS, ROUTE_PLACEHOLDERS,
-                                RouterError, Group, _anchors, _codes,
+                                RouterError, Group, _CHECK, _INSTRUCTIONS,
+                                _MIXED_CHECK, _SHARED_CHECK, _anchors, _codes,
                                 _diff_text, _name_list, _overlay_text,
                                 _recount_legend, _resplit, route)
 from xtremeparse.units import MISC, decompose
@@ -111,21 +114,27 @@ def test_default_prompts_carry_all_placeholders():
     # drift guard: an edited default missing a slot would render empty
     # at call time — the same fail-fast hosts get for their overrides
     from xtremeparse.prompting import check_placeholders
-    from xtremeparse import router
-    check_placeholders(router._INSTRUCTIONS, ROUTE_PLACEHOLDERS, 'router')
-    check_placeholders(router._CHECK, RECOUNT_PLACEHOLDERS, 'recount')
-    check_placeholders(router._MIXED_CHECK,
+    check_placeholders(_INSTRUCTIONS, ROUTE_PLACEHOLDERS, 'router')
+    check_placeholders(_CHECK, RECOUNT_PLACEHOLDERS, 'recount')
+    check_placeholders(_MIXED_CHECK,
                        {'state_clause', 'shared_bullet', 'units', 'chunks',
                         'overall'}, 'mixed recount')
+
+
+def test_zero_recount_examples_show_no_concrete_chunk_id():
+    # index arithmetic echoes a concrete example id instead of reading
+    # the listing (measured: a three-instance summary drawn as "4", "5",
+    # "6" — the example's own ids) — the zero ask names the id, never
+    # shows one
+    for template in (_CHECK, _MIXED_CHECK):
+        assert not re.search(r'\d+\s+<code>\.', template)
 
 
 def test_overall_block_rides_last_in_every_default_prompt():
     # placement is the measured fix (docs/prompting.md): a layout edit
     # that drops the slot back mid-prompt must fail here, not silently
     # revert the routing behavior
-    from xtremeparse import router
-    for template in (router._INSTRUCTIONS, router._CHECK,
-                     router._SHARED_CHECK, router._MIXED_CHECK):
+    for template in (_INSTRUCTIONS, _CHECK, _SHARED_CHECK, _MIXED_CHECK):
         assert template.rstrip().endswith('{overall}')
 
 
@@ -269,17 +278,32 @@ async def test_zero_declaration_gets_one_recount_round():
     assert [g.chunk_ids for g in routing.groups if g.unit.kind == 'array'] == [[1]]
 
 
-async def test_the_recounts_quoted_map_line_still_splices():
-    # the recount answers the template's quoted example form
-    # ("4 <code>.0") with the quotes on — unquoted, the claim never
-    # parses and a clean adoption decays into two repair rounds
+@pytest.mark.parametrize('claim', ['"2 b.0"', '[2] b.0', '<2> b.0', '（2） b.0'])
+async def test_the_recounts_decorated_map_line_still_splices(claim):
+    # the zero ask names the chunk id without an example; a reply
+    # wrapping the claim in quotes, the prompt's placeholder, or the
+    # listing's brackets is the same claim — unparsed, a clean adoption
+    # decays into two repair rounds
     runner = ScriptedRunner(
         agent_result('0 a\n1-3 -\nb: 0'),
-        agent_result('b: 1\n"2 b.0"'))  # same claim, quoted
+        agent_result(f'b: 1\n{claim}'))
     routing = await route(runner, payload=PAYLOAD, schema_head=HEAD, units=UNITS, chunks=CHUNKS)
     assert len(runner.calls) == 2 and runner.calls[1]['feedback'] is None
     assert routing.raw['counts'] == {'jobs': 1}
     assert [g.chunk_ids for g in routing.groups if g.unit.kind == 'array'] == [[2]]
+
+
+async def test_a_quoted_zero_recount_anchors_instead_of_repairing():
+    # the zero ask's own bullet requests the shared recount's form —
+    # count plus instance openings; the count-only fold would fail the
+    # map and spend a repair round on a correct recount
+    runner = ScriptedRunner(
+        agent_result('0 a\n1-3 -\nb: 0'),
+        agent_result('b: 2\n第一段：腾讯\n第二段：阿里'))
+    routing = await route(runner, payload=PAYLOAD, schema_head=HEAD, units=UNITS, chunks=CHUNKS)
+    assert len(runner.calls) == 2 and runner.calls[1]['feedback'] is None
+    assert routing.raw['counts'] == {'jobs': 2}
+    assert [g.chunk_ids for g in routing.groups if g.unit.kind == 'array'] == [[1], [2]]
 
 
 async def test_zero_confirm_adopts_silently_on_a_chain_map():
@@ -1975,6 +1999,22 @@ async def test_declared_undrawn_unit_is_recounted_and_adopted():
     assert routing.raw['counts'] == {'jobs': 2, 'summary': 0}
     assert [(g.item, g.chunk_ids) for g in routing.groups
             if g.unit.path == 'jobs'] == [(0, [1]), (1, [2])]
+
+
+async def test_an_undrawn_round_folds_a_quoted_zero_unit_too():
+    # the combined recount answers the zero unit with openings, not map
+    # lines — the same fresh conversation must fold both halves, or the
+    # next hint pass spends a second full recount
+    runner = ScriptedRunner(
+        agent_result('0 a\n1-3 -\nb: 1'),
+        agent_result('b: 1\n第一段：腾讯\nc: 2\n第二段：阿里\n无关页脚'))
+    routing = await route(runner, payload=PAYLOAD, schema_head=HEAD, units=SHARED_UNITS,
+                          chunks=CHUNKS)
+    assert len(runner.calls) == 2 and runner.calls[1]['feedback'] is None
+    assert routing.raw['counts'] == {'jobs': 1, 'summary': 2}
+    assert [(g.unit.path, g.item, g.chunk_ids) for g in routing.groups] == [
+        ('basic_info', None, [0]), ('jobs', 0, [1]),
+        ('summary', 0, [2]), ('summary', 1, [3])]
 
 
 async def test_undrawn_instances_sharing_one_chunk_claim_it_together():

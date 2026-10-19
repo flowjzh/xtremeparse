@@ -72,7 +72,7 @@ SPLIT_MATERIAL_CAP = 1000  # mapped content chars one shared call may
 # Deliberately ~3x BATCH_BUDGET_CAP — a unit crossing this trigger at a
 # full ratio splits into at least three blocks, so the ask is never a
 # single-block no-op
-RECOUNT_DESCRIPTION = 'Declarations and map lines for the RECOUNT units only'
+RECOUNT_DESCRIPTION = 'Declarations and opening quotes for the RECOUNT units only'
 SHARED_RECOUNT_DESCRIPTION = ('Per recounted unit: a count line and the '
                               "instances' opening quotes")
 _BOTH_RECOUNT_DESCRIPTION = ('Per recounted unit: a count line, then its '
@@ -287,16 +287,20 @@ _DECLINE = 'reply with nothing.'  # the silent decline every fan-out ask
 # ends with — an empty reply keeps the standing map
 
 
+_OPENING_RULE = ('exactly n lines, one per instance, each quoting VERBATIM the\n'
+                 '   opening text of that instance as it stands in the chunk\n'
+                 '   listing — enough text to locate its chunk, no commentary')
+
 _CHECK = '''You are rechecking part of a routing decision. The repeating units
 listed at the end were left at zero; recount their instances in the
 DOCUMENT — read the whole chunk list; a brief mention inside an
 otherwise irrelevant run is still an instance.
 
-For each unit answer one line only, <code> being that
-unit's code from the list at the end:
-- its count, "<code>: <n>", when the unit has its own text in the chunks —
-  then add its map lines in the routing DSL ("4 <code>.0", "5 <code>.1"),
-  one item per instance, covering exactly its material;
+For each unit answer a count line "<code>: <n>" — how many instances
+the DOCUMENT holds — <code> being that unit's code from the list at
+the end; then:
+- a unit with its own text in the chunks:
+   ''' + _OPENING_RULE + ''';
 - "<code>: 0" alone when the document truly does not contain the unit.
 
 {chunks}
@@ -364,9 +368,9 @@ def _undouble(item: str) -> str:
 def _flatten(item: str) -> str:
     """One destination's item token with sub-numbering flattened: the
     schema's instances are flat, but the model sub-numbers entries the
-    document nests (one employer, two roles) — 'c.0.1' claims instance
-    0, its parent. Rejection sent a canary repair loop circling to
-    exhaustion: the model never abandons the spelling. The parser's
+    document nests (one parent, two sub-entries) — 'c.0.1' claims
+    instance 0, its parent. Rejection sent a canary repair loop
+    circling to exhaustion: the model never abandons the spelling. The parser's
     chain reading takes the schema-aware cases first; this fold stays
     for the recount splice, where no schema shape can disambiguate."""
     if m := _SUBITEM.fullmatch(item):
@@ -640,12 +644,22 @@ async def route(runner: AgentRunner, *, payload: str,
         return True, rounds
 
     def splice(zeros, answer):
-        """`_splice`'s fold — commit the recount's state on success.
-        The caller owns the fallback."""
+        """Commit the recount's state on success. Map lines (and the
+        derived-source spelling) fold first; a reply that instead
+        quotes the instances' openings — the shared and undrawn asks'
+        own form — anchors by content through the same fold, since a
+        claim carrying only a count would otherwise fail the map and
+        send a correct recount into a repair round. The caller owns
+        the fallback."""
         nonlocal segments, counts, nested, derived
         if merged := _splice(segments, counts, nested, derived, answer,
                              zeros, by_code, len(chunks)):
             segments, counts, nested, derived = merged
+            return True
+        if folded := _fold_undrawn(segments, counts, nested, derived,
+                                   [(z, None) for z in zeros], [], answer,
+                                   by_code, chunks, set()):
+            (segments, counts, nested, derived), _ = folded
             return True
         return False
 
@@ -925,9 +939,9 @@ async def route(runner: AgentRunner, *, payload: str,
             # declared-undrawn family: a count declared, no lines drawn.
             # Repair rounds fail it — the anchored conversation re-emits
             # its own map, and the chain/covering arithmetic its fixes
-            # need fumbles shared seams (measured: the 81-item b-[] 1-3
-            # rounds, the block-layout d-[] half the draws, the
-            # same-company multi-stint d-[] burns on the under-merged
+            # need fumbles shared seams (measured: a large dense-list
+            # b-[] 1-3 rounds, the block-layout d-[] half the draws,
+            # the multi-entry chain d-[] burns on the under-merged
             # run). The fresh recount is the zeros' discipline applied
             # to the drawing: count each unit plus its instances'
             # opening text, and code anchors the quotes and lays the
@@ -948,7 +962,7 @@ async def route(runner: AgentRunner, *, payload: str,
                                                 schema_head=schema_head)
                 fixed = _fold_undrawn(segments, counts, nested, derived,
                                       pool, zeros, answer, by_code,
-                                      len(chunks), chunks, lenient | passable)
+                                      chunks, lenient | passable)
                 if fixed is not None:
                     (segments, counts, nested, derived), zeros_ok = fixed
                     text = _map_text(segments, counts, nested, derived,
@@ -1042,8 +1056,9 @@ async def _recount(runner: AgentRunner, payload: str, by_code: dict,
     Deliberately NOT a repair round: no history, so the model never
     sees the map it is re-examining — anchoring on its own finished
     map is exactly the failure being corrected (a repair round shown
-    the map re-emits it verbatim, measured). Returns the raw answer
-    for `_splice` to fold in."""
+    the map re-emits it verbatim, measured). Returns the raw answer —
+    map lines fold through `_splice`, opening quotes through
+    `_fold_undrawn`."""
     instructions = (instructions or _CHECK).format(
         # only the recounted units appear — the other codes' mere
         # presence invited a full re-answer of every array (their
@@ -1062,9 +1077,7 @@ were left merged as one; recount them.
 
 For each unit marked RECOUNT answer:
 1. a count line "<code>: <n>" — how many instances the DOCUMENT holds;
-2. then exactly n lines, one per instance, each quoting VERBATIM the opening
-   text of that instance as it stands in the chunk listing — enough text to
-   locate its chunk, no commentary.
+2. then ''' + _OPENING_RULE + '''.
 
 Units:
 {units}
@@ -1111,9 +1124,8 @@ def _parse_shared_answer(result, codes: dict | set,
             if count or keep_zeros}
 
 
-# The quote rule below is _SHARED_CHECK's, the zero-unit rules are
-# _CHECK's — reword one firing mode's copy and the others must follow,
-# or the adoption rates drift by path with no test signal.
+# The quote rule has one home in _OPENING_RULE; the firing modes differ
+# only in their state clause and tag.
 _MIXED_CHECK = '''A document's chunks are listed below. Some repeating units were left
 miscounted: {state_clause}
 Recount them in the DOCUMENT — read the whole chunk list; a brief
@@ -1123,9 +1135,8 @@ For each unit marked RECOUNT answer a count line "<code>: <n>" — how
 many instances the DOCUMENT holds — then, per its tag:
 
 {shared_bullet}
-- a ZERO unit with its own text: its map lines in the routing DSL
-  ("4 <code>.0", "5 <code>.1"), one item per instance, covering
-  exactly its material;
+- a ZERO unit with its own text:
+   ''' + _OPENING_RULE + ''';
 - a ZERO unit the document truly does not contain: the count
   line "<code>: 0" alone.
 
@@ -1137,14 +1148,10 @@ Units:
 
 _MERGED_STATE = ('the MERGED ones had their instances folded into one\n'
                  'shared run, the ZERO ones were written off as absent.')
-_MERGED_BULLET = '''- a MERGED unit: exactly n lines, one per instance, each quoting VERBATIM
-  the opening text of that instance as it stands in the chunk listing —
-  enough text to locate its chunk, no commentary;'''
+_MERGED_BULLET = '- a MERGED unit:\n   ' + _OPENING_RULE + ';'
 _UNDRAWN_STATE = ('the UNDRAWN ones had a count declared but no map\n'
                   'lines, the ZERO ones were written off as absent.')
-_UNDRAWN_BULLET = '''- an UNDRAWN unit: exactly n lines, one per instance, each quoting
-  VERBATIM the opening text of that instance as it stands in the chunk
-  listing — enough text to locate its chunk, no commentary.'''
+_UNDRAWN_BULLET = '- an UNDRAWN unit:\n   ' + _OPENING_RULE + '.'
 
 
 async def _mixed_recount(runner: AgentRunner, payload: str, shared: dict,
@@ -1174,11 +1181,10 @@ async def _recount_both(runner: AgentRunner, payload: str, shared: dict,
                         overall_block: str = '') -> str:
     """Fresh-attention recount of the merged and the zero units in the
     one conversation — the chunks listing, the costly part, is shared.
-    Each unit answers a count line; a merged unit's instances quote
-    their openings, a zero unit claims map lines. Returns the raw
-    answer: `_splice` reads the zero units' lines, `_parse_shared_
-    answer` the merged units' sections — each skips the other's
-    codes."""
+    Each unit answers a count line, then quotes every instance's
+    opening; a zero unit may instead claim map lines, and `_splice`
+    reads those first. Returns the raw answer: `_parse_shared_answer`
+    reads the sections, each parser skipping the other's codes."""
     return await _mixed_recount(
         runner, payload, shared, zeros, by_code, chunks, schema_head,
         overall_block, _MERGED_STATE, _MERGED_BULLET, 'MERGED')
@@ -1320,17 +1326,20 @@ async def _recount_undrawn(runner: AgentRunner, payload: str,
 
 
 _QUOTE_WRAP = '"\'“”「」『』'
-_LISTING_ID = re.compile(r'^\[\d+\]\s*')
+_LISTING_ID = re.compile(r'^[<\[（(【〔]\s*(\d+)\s*[>\]）)】〕]\s*')
 
 
-def _seek_text(quote: str) -> str:
-    """The quote's seek text — normed, with the listing's own line-id
-    marker and wrapping quotation marks stripped. The recount is asked
-    for verbatim openings and sometimes answers with the listing's
-    ``[id] `` prefix or quoted-string wrappers the chunk text does not
-    carry; stripping the decoration keeps the content seek on the
-    quote's own words."""
-    return _LISTING_ID.sub('', norm(quote)).strip(_QUOTE_WRAP)
+def _seek_forms(quote: str) -> list[str]:
+    """The quote's seek texts, as written first — normed, with wrapping
+    quotation marks stripped. The recount is asked for verbatim
+    openings and sometimes answers with the listing's ``[id] `` prefix
+    the chunk text does not carry; the stripped form is the fallback,
+    never the first form: a quote that legitimately opens with a
+    bracketed number must be sought as written before its decoration
+    is removed."""
+    written = norm(quote).strip(_QUOTE_WRAP)
+    bare = _LISTING_ID.sub('', written)
+    return [written] if not bare or bare == written else [written, bare]
 
 
 def _anchors(quotes: list, domain: list, chunks: list[str]) -> list | None:
@@ -1344,9 +1353,9 @@ def _anchors(quotes: list, domain: list, chunks: list[str]) -> list | None:
     norms = {c: norm(chunks[c]) for c in domain}
     hits = []
     for q in quotes:
-        n = _seek_text(q)
-        hit = next((c for c in domain if c not in hits and n in norms[c]),
-                   None) if n else None
+        hit = next((c for form in _seek_forms(q) if form
+                    for c in domain if c not in hits and form in norms[c]),
+                   None)
         if hit is None:
             return None
         hits.append(hit)
@@ -1587,14 +1596,13 @@ def _splice(segments, counts, nested, derived, answer, zeros, by_code: dict,
             else:
                 counts = {**counts, code: int(declared or 0)}
             continue
-        stripped = line.strip()
-        # the recount answers the template's quoted example form
-        # ("4 <code>.0") with the quotes on — a claim the quotes hide
-        # is the recount's whole point, so fall back to the module's
-        # quote-wrapper set when the bare line fails (measured on live
-        # draws)
-        if not (m := _LINE.match(stripped)
-                or _LINE.match(stripped.strip(_QUOTE_WRAP))):
+        # the recount answers the template's map-line form with the
+        # listing's own decorations on — wrapping quotes and the
+        # bracketed chunk id ("[4] <code>.0"); strip them first, the
+        # claim the decorations hide is the recount's whole point
+        # (measured on live draws)
+        stripped = _LISTING_ID.sub(r'\1 ', line.strip().strip(_QUOTE_WRAP))
+        if not (m := _LINE.match(stripped)):
             continue
         start, end = int(m.group(1)), int(m.group(2) or m.group(1))
         dests = []
@@ -1673,10 +1681,8 @@ def _quote_anchor(quote: str, domain: list, norms: dict) -> int | None:
     not one per quote). The recount quotes the chunk listing verbatim,
     so content seek is the one reliable coordinate (index arithmetic
     echoes the prompt's own examples, measured)."""
-    n = _seek_text(quote)
-    if not n:
-        return None
-    return next((c for c in domain if n in norms[c]), None)
+    return next((c for form in _seek_forms(quote) if form
+                 for c in domain if form in norms[c]), None)
 
 
 def _map_text(segments, counts, nested, derived, budgets, by_code) -> str:
@@ -1710,7 +1716,7 @@ def _map_text(segments, counts, nested, derived, budgets, by_code) -> str:
 
 
 def _fold_undrawn(segments, counts, nested, derived, pool, zeros, answer,
-                  by_code, n, chunks, lenient):
+                  by_code, chunks, lenient):
     """Fold the declared-undrawn recount into a validated map — the
     adoption is code's, the anchored conversation never redraws its
     own lines again. Each undrawn unit's answer — count plus per-
@@ -1726,10 +1732,15 @@ def _fold_undrawn(segments, counts, nested, derived, pool, zeros, answer,
     the map wrote off as irrelevant yields its NONE claim to the
     recount's material. Counts update to the recount's number, the
     fresh read authoritative under the zeros' own rule.
+    The zero-declared units fold first through `_splice` (map lines,
+    a count, or a source); when that fold fails their opening quotes
+    take the same content-anchored path as the undrawn units — the
+    recount asked for quotes, so a correct answer must not be dropped.
     A unit whose section is unusable — missing, quotes unanchored,
     count and quotes disagreeing — is skipped and keeps its error for
-    the diff path. Returns ``(rebuilt state, zero half spliced)``, or
+    the diff path. Returns ``(rebuilt state, zero half resolved)``, or
     None when nothing was adoptable."""
+    n = len(chunks)
     labels = {_chain_label(code, parent, by_code) for code, parent in pool}
     parsed = _parse_shared_answer(answer, labels | set(zeros))
     changed, zeros_ok = False, False
@@ -1738,9 +1749,10 @@ def _fold_undrawn(segments, counts, nested, derived, pool, zeros, answer,
                               zeros, by_code, n, lenient):
             segments, counts, nested, derived = spliced
             changed = zeros_ok = True
+    zero_codes = set() if zeros_ok else set(zeros)
     per_chunk = {c: list(ds) for c, ds in _cover(segments).items()}
-    norms = None
-    for code, parent in pool:
+    norms, failed_zeros = None, set()
+    for code, parent in list(pool) + [(z, None) for z in zero_codes]:
         section = parsed.get(_chain_label(code, parent, by_code))
         if not section:
             continue  # absent or zero — the map keeps its error, diff repairs
@@ -1750,6 +1762,8 @@ def _fold_undrawn(segments, counts, nested, derived, pool, zeros, answer,
                 norms = {c: norm(chunks[c]) for c in range(n)}
             hits = [_quote_anchor(q, range(n), norms) for q in quotes]
             if any(c is None for c in hits):
+                if code in zero_codes:
+                    failed_zeros.add(code)
                 continue
             if len(hits) == 1 and count != len(hits):
                 # the recount merged the instances' openings into one
@@ -1758,6 +1772,8 @@ def _fold_undrawn(segments, counts, nested, derived, pool, zeros, answer,
                 # every item claims the chunk
                 hits = [hits[0]] * count
             if len(hits) != count:
+                if code in zero_codes:
+                    failed_zeros.add(code)
                 continue  # under-quoted across chunks — ambiguous, diff
             for i, c in enumerate(sorted(hits)):
                 ds = per_chunk[c]
@@ -1782,6 +1798,8 @@ def _fold_undrawn(segments, counts, nested, derived, pool, zeros, answer,
             _lay_subentries(per_chunk, owned, anchors, code, parent)
             nested = {**nested, (code, parent): count}
         changed = True
+    if zero_codes and not failed_zeros:
+        zeros_ok = True  # every zero answered zero or anchored its quotes
     if not changed:
         return None
     rebuilt = _resegment({c: tuple(ds) for c, ds in per_chunk.items()},
