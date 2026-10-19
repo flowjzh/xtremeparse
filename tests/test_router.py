@@ -6,10 +6,11 @@ import pytest
 
 from xtremeparse.arbitration import norm
 from xtremeparse.router import (NONE, RECOUNT_PLACEHOLDERS, ROUTE_PLACEHOLDERS,
-                                RouterError, Group, _CHECK, _INSTRUCTIONS,
-                                _MIXED_CHECK, _SHARED_CHECK, _anchors, _codes,
-                                _diff_text, _name_list, _overlay_text,
-                                _recount_legend, _resplit, route)
+                                Claim, RouterError, Group, _CHECK,
+                                _INSTRUCTIONS, _MIXED_CHECK, _SHARED_CHECK,
+                                _anchors, _codes, _diff_text, _name_list,
+                                _overlay_text, _recount_legend, _resplit,
+                                parse_claims, route)
 from xtremeparse.units import MISC, decompose
 from xtremeparse.prompting import schema_head
 from tests.helpers import ScriptedRunner, agent_result
@@ -363,6 +364,27 @@ async def test_recount_ranged_claim_adopts_as_the_shared_form():
     jobs = [a for a in routing.raw['assignments'] if a['unit'] == 'jobs']
     assert [(a['item'], a['chunks']) for a in jobs] == \
         [(0, [2, 3]), (1, [2, 3])]
+
+
+def test_parse_claims_reads_counts_sources_and_quotes():
+    claims = parse_claims('b: 2\n第一段\n- 第二段\nc = b\nd: 0', {'b', 'c', 'd'})
+    assert claims['b'] == Claim(2, quotes=('第一段', '第二段'))
+    assert claims['c'] == Claim(None, 'b')
+    assert claims['d'] == Claim(0)
+
+
+def test_parse_claims_ignores_units_outside_the_labels():
+    # an unknown code's line is prose to this recount, not a section
+    claims = parse_claims('q: 2\nnoise\nb: 1\nfirst', {'b'})
+    assert claims == {'b': Claim(1, quotes=('first',))}
+
+
+def test_a_zero_with_quotes_is_a_presence_claim():
+    # the claims are evidence first: quotes outvote a contradictory 0
+    assert Claim(0, quotes=('a', 'b')).total == 2
+    assert Claim(0).total == 0
+    assert Claim(None).total is None
+    assert Claim(3, quotes=('a',)).total == 3  # partial quotes stay visible
 
 
 async def test_recount_claims_inside_one_units_items_read_as_derivation():
@@ -1710,7 +1732,7 @@ async def test_shared_resplit_reads_chain_destinations_through():
                 (2, 2, (('b', 1, None),)),
                 (3, 4, ((NONE, None, None),))]
     merged = _resplit(segments, {'b': 1}, {('c', 0): 1}, 'b',
-                      (2, ['姓名张三', '公司甲·工程师']),
+                      Claim(2, quotes=('姓名张三', '公司甲·工程师')),
                       by_code, {}, NESTED_CHUNKS)
     assert merged is not None
     segs, counts = merged
