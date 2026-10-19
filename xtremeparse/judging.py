@@ -10,6 +10,7 @@ from dataclasses import dataclass
 
 from xtremeparse.contracts import AgentRunner
 from xtremeparse.prompting import check_placeholders
+from xtremeparse.verbatim import MARKDOWN_MARKERS
 
 JUDGE_INSTRUCTIONS = '''You are an impartial judge. Decide whether the assertion below holds
 for the output, given the source. The assertion is the complete
@@ -22,6 +23,31 @@ only from what survives.
 Assertion:
 
 {rubric}'''
+
+CONTAINMENT_INSTRUCTIONS = '''You are an impartial judge. Decide whether the assertion below holds
+for the output, given the source. The assertion is the complete
+standard — its exclusions are as binding as its requirements; weigh
+only what it asks, nothing else.
+
+The output is a flat digest: every non-blank extracted value, one per
+line. A fact is present when it occurs on ANY line. Apply this
+protocol before the verdict:
+1. List every candidate loss as an EXACT verbatim quote from the source.
+2. Normalize both sides: remove whitespace and the markdown markers
+   {markers}. Search the ENTIRE output for each quote's normalized
+   characters; a quote split across lines or embedded in a longer line
+   still counts as present.
+3. Cross out every candidate whose normalized quote occurs in the
+   output, and every candidate the assertion excludes or another field
+   owns. Source parser artifacts reproduced in the output are faithful
+   copies; formatting differences are not losses.
+4. Only uncrossed candidates are losses. If none remain, ok is true;
+   otherwise ok is false and the reason names them. Do not infer loss
+   from length or ordering; unmarked fields may be condensed.
+
+Assertion:
+
+{rubric}'''.replace('{markers}', MARKDOWN_MARKERS)
 
 JUDGE_PLACEHOLDERS = frozenset({'rubric'})
 

@@ -21,7 +21,8 @@ from xtremeparse.chunking import content_len
 from xtremeparse.units import type_set
 
 VERBATIM_DEFAULT_RATIO = 0.9  # the protocol default; docxcast resolves the bare marker
-_MD_MARKS = str.maketrans('', '', '*_#`')
+MARKDOWN_MARKERS = '*_#`'
+_MD_MARKS = str.maketrans('', '', MARKDOWN_MARKERS)
 
 
 def marker_ratio(prop: dict) -> float | None:

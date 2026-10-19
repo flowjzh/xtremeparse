@@ -80,15 +80,32 @@ Judge-side settings live at the adapter, as recommendations:
   self-judging bias.
 - Temperature 0 steadies verdicts (a judge that flips run to run
   measures noise, not quality).
+- Thinking on for containment judging. With the verbatim retention
+  clause, a non-thinking decode produced false losses on facts the
+  digest carried and missed real omissions (measured on the suite);
+  thinking on with the evidence protocol below caught the real losses
+  and respected schema exclusions. Scope it to the containment judge —
+  the structured-output rubrics keep the cheaper default decode. The
+  judge runs outside the extraction scheduler, so its extra latency
+  stays out of the fleet's budget.
 
 Shape the judged material before trusting exclusion clauses — a judge
 shown field structure keeps demanding a field-for-field mirror of the
 source even against explicit exclusions, measured across models and
 reasoning modes. For containment questions (is every fact anywhere?),
 judge the host's flattened-digest projection and carry the schema's
-field inventory in the rubric. The open-diff judge measures
-~zero sensitivity to seeded deletions — presence checking belongs to
-deterministic anchors beside it, not to the judge alone.
+field rules in the rubric — each field's description (exclusions
+included) and option set, not just its name; names alone cannot tell
+the judge what a field owns. The containment protocol
+(`CONTAINMENT_INSTRUCTIONS`) makes the check mechanical: quote each
+candidate loss from the source, normalize whitespace and markdown
+markers on both sides, and cross the candidate out when its normalized
+text occurs anywhere in the output; only surviving quotes may appear in
+the verdict. Pass it through the judge's `instructions=` slot for the
+digest rubric only — the default template stays projection-agnostic.
+The open-diff judge
+measures ~zero sensitivity to seeded deletions — presence checking
+belongs to deterministic anchors beside it, not to the judge alone.
 
 ## Provenance
 
