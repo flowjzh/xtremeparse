@@ -24,13 +24,14 @@ inseparably — one line the executor keeps whole until a split round
 redraws it. A valid map that leaves fan-out on the table — a shared
 run whose mapped material overflows one shared call's capacity (the
 dense draw), or instances sharing one run far longer than their
-count — gets its fix in a round of its own: the overflow ask hands
-the model the block lines to ratify — the even partition computed in
-code, one line per call-sized block, the count sized from the unit's
-own budget — and the merged lazy form gets a fresh-conversation
-recount that code re-splits at the quoted openings, the one
-conversation carrying every unit the map miscounted — merged and
-zero-declared alike. A fan-out round
+count — gets its fix in a round of its own: the overflow ask's
+even partition is computed in code, one line per call-sized block,
+the count sized from the unit's own budget, and adopted in code — the
+ask round survives only for runs code may not redraw (a line another
+unit shares or a chain rides) — and the merged lazy form gets a
+fresh-conversation recount that code re-splits at the quoted openings,
+the one conversation carrying every unit the map miscounted — merged
+and zero-declared alike. A fan-out round
 is a suggestion: silence declines it, and so does an answer that
 fails validation — the standing map was valid before the ask
 (the zero recount is the exception: its disagreement is resolved,
@@ -575,8 +576,9 @@ async def route(runner: AgentRunner, *, payload: str,
     """Map chunks to units via one agent call, with bounded repairs —
     each a diff against the previous answer — feeding the validation
     errors back as ``feedback``; plus one
-    verification round when any repeating unit comes out declared 0
-    (see route loop). A replayed map — the same text twice — passes
+    verification round when a repeating unit comes out declared 0 or a
+    unit is declared with no line drawn (see route loop). A replayed
+    map — the same text twice — passes
     its declared-vs-used mismatches through: the extraction's count
     arbitration owns the number. ``payload`` is the document text, the
     byte-identical system message every call shares. ``schema_head``
@@ -939,9 +941,7 @@ async def route(runner: AgentRunner, *, payload: str,
                                           chunks=chunks,
                                           lenient=lenient | passable)
                 if adoption is not None:
-                    segments, counts, present, nested, derived = (
-                        adoption.segments, adoption.counts, adoption.present,
-                        adoption.nested, adoption.derived)
+                    commit(adoption)
                     text = _map_text(segments, counts, present, nested,
                                      derived, budgets, by_code)
                     diff_base = text
@@ -1111,9 +1111,8 @@ class Claim:
 def parse_claims(result, labels: dict | set) -> dict[str, Claim]:
     """``{label: Claim}`` from a recount reply — a count line then quote
     lines, per unit; units with a missing section are absent. Zero
-    sections stay in the map: the adopter reads absence from the claim,
-    not from the parser's mode (a zero confirms the zero case, and a
-    nested recount reads it as a demotion to no sub-entries)."""
+    sections stay in the map: a zero confirms the zero case, and a
+    nested recount reads it as a demotion to no sub-entries."""
     sections = sectioned(
         result, lambda line: (m.group(1), m.group(2), m.group(3))
         if (m := _COUNT.match(line)) and m.group(1) in labels else None)
@@ -1232,7 +1231,7 @@ def _drawn_pairs(segments) -> set:
     return {(dd[0], dd[2]) for _, _, dests in segments for dd in dests}
 
 
-def _undrawn_pool(segments, counts, nested, present=None) -> list:
+def _undrawn_pool(segments, counts, nested, present) -> list:
     """The declared-undrawn units of a parsed map — declarations with
     no line drawing them: ``[(code, None)]`` top-level repeating and
     non-repeating units alike, ``[(sub-code, parent index)]`` chained —
@@ -1241,7 +1240,7 @@ def _undrawn_pool(segments, counts, nested, present=None) -> list:
     used = _drawn_pairs(segments)
     return [(code, None) for code, declared in counts.items()
             if declared and (code, None) not in used] + \
-        [(code, None) for code, declared in (present or {}).items()
+        [(code, None) for code, declared in present.items()
          if declared and (code, None) not in used] + \
         [(code, parent) for (code, parent), declared in nested.items()
          if declared and (code, parent) not in used]
@@ -1723,9 +1722,7 @@ def _map_text(segments, counts, present, nested, derived, budgets,
 
 @dataclass(frozen=True)
 class _Adoption:
-    """The state one recount adoption produced, and what it settled.
-    ``pending_shared`` names the merged top-level units whose claims
-    were unusable, for the caller's hint round."""
+    """The state one recount adoption produced, and what it settled."""
 
     segments: list
     counts: dict
@@ -1733,7 +1730,6 @@ class _Adoption:
     nested: dict
     derived: dict
     zeros_ok: bool
-    pending_shared: tuple[str, ...]
 
 
 def _adopt_recount(segments, counts, present, nested, derived, answer, *,
@@ -1770,14 +1766,11 @@ def _adopt_recount(segments, counts, present, nested, derived, answer, *,
             segments, counts, nested, derived = spliced
             zeros_ok = True
     changed = zeros_ok
-    pending_shared = []
     for code in shared:
         claim = claims.get(code)
         resplit = (_resplit(segments, counts, nested, code, claim, by_code,
                             derived, chunks) if claim is not None else None)
-        if resplit is None:
-            pending_shared.append(code)
-        else:
+        if resplit is not None:
             segments, counts = resplit
             changed = True
     if merged:
@@ -1882,13 +1875,12 @@ def _adopt_recount(segments, counts, present, nested, derived, answer, *,
                 n, lenient)):
             return None
         return _Adoption(spliced[0], spliced[1], present, spliced[2],
-                         spliced[3], True, ())
+                         spliced[3], True)
     rebuilt = _resegment({c: tuple(ds) for c, ds in per_chunk.items()},
                          counts, nested, derived, by_code, n, lenient)
     if rebuilt is None:
         return None
-    return _Adoption(rebuilt, counts, present, nested, derived, zeros_ok,
-                     tuple(pending_shared))
+    return _Adoption(rebuilt, counts, present, nested, derived, zeros_ok)
 
 
 def _merged_nested(segments: list, nested: dict) -> set:
@@ -2091,7 +2083,6 @@ class _State:
     nested: dict
     derived: dict
     budgets: dict
-    lenient: frozenset
 
 
 def _parse(text, by_code: dict, n: int,
@@ -2111,7 +2102,7 @@ def _parse(text, by_code: dict, n: int,
     if not isinstance(text, str) or not text.strip():
         return _State(
             ['output must be the count lines and segment map, nothing else'],
-            [], {}, {}, {}, {}, {}, frozenset())
+            [], {}, {}, {}, {}, {})
     errors, counts, present, nested, derived, segments, budgets = \
         [], {}, {}, {}, {}, [], {}
     sub_decls = {}
@@ -2263,12 +2254,14 @@ def _parse(text, by_code: dict, n: int,
     # ranges are explicit; a diff reply's "+" insert lands at its own
     # editing position, so out-of-order lines are normal, not an error
     _settle_chains(segments, by_code)
+    drawn = _drawn_pairs(segments)  # one reading per parse: validation,
+    # the zero fill and the undrawn pool all read the same set
     errors += _map_errors(segments, counts, nested, derived, by_code, n,
-                          lenient, present)
+                          lenient, present, drawn)
     # a repeating unit the map never mentions reads as zero — filled by
     # the constructor, after validation, so the validator stays a pure
     # read and an undeclared-but-drawn unit still reports
-    counts = _zero_counts(counts, by_code, segments, derived)
+    counts = _zero_counts(counts, by_code, derived, drawn)
     # exact duplicates collapse — one repeated destination must not
     # flood the repair feedback with the same message
     errors = list(dict.fromkeys(errors))
@@ -2277,7 +2270,7 @@ def _parse(text, by_code: dict, n: int,
     # when every error is count-family (its segments are coherent —
     # syntax and geometry errors are never passable)
     return _State(errors, segments, counts, present, nested, derived,
-                  budgets, frozenset(lenient or ()))
+                  budgets)
 
 
 def _chain_parents(dests: tuple, by_code: dict) -> set:
@@ -2757,21 +2750,21 @@ def _uncovered_removal(removed: list, missing: list) -> str | None:
     return None
 
 
-def _zero_counts(counts, by_code: dict, segments, derived) -> dict:
+def _zero_counts(counts, by_code: dict, derived: dict, drawn: set) -> dict:
     """The repeating units the map neither declared nor drew, read as
-    zero — constructed here after validation, never filled by the
-    validator itself. An undeclared unit the map does draw keeps its
-    missing declaration: that is an error the repair path owns."""
-    used = _drawn_pairs(segments)
+    zero — filled after validation. An undeclared unit the map does
+    draw keeps its missing declaration: that is an error the repair
+    path owns."""
     return {code: 0 for code, unit in by_code.items()
             if unit.kind == 'array' and unit.parent is None
             and code not in derived and code not in counts
-            and (code, None) not in used} | counts
+            and (code, None) not in drawn} | counts
 
 
 def _map_errors(segments, counts, nested, derived, by_code: dict,
                 n: int, lenient: set | None = None,
-                present: dict | None = None) -> list:
+                present: dict | None = None,
+                drawn: set | None = None) -> list:
     """Whole-map consistency: line-range overlap, declared-vs-used
     items per destination — top level and, per parent instance, lifted
     sub-arrays — derivation sanity, non-repeating presence, and full
@@ -2783,7 +2776,9 @@ def _map_errors(segments, counts, nested, derived, by_code: dict,
     overlapping it with anything else is an error. The validator never
     edits the state it reads; ``present`` lets a full parse validate
     the presence channel, while a segment rebuild passes None — it
-    edits drawings only, and presence travels beside it."""
+    edits drawings only, and presence travels beside it. ``drawn`` is
+    the parse's one drawn-ness set; a rebuild computes its own."""
+    drawn = _drawn_pairs(segments) if drawn is None else drawn
     covering, chains = [], []
     for seg in segments:
         if _pure_chain(seg[2]):
@@ -2841,15 +2836,13 @@ def _map_errors(segments, counts, nested, derived, by_code: dict,
         elif source not in counts:
             errors.append(f'{code}: = {source} needs {source}\'s own count '
                           f'declared first')
-    drawn = _drawn_pairs(segments)
     for code, unit in by_code.items():
         if code in derived:
             continue
         if unit.kind != 'array':
             # a drawn non-repeating unit is present exactly where a line
             # claims it; only a positive declaration with no drawing is
-            # an error. Presence never enters counts, so nothing is
-            # popped here — the validator only reads
+            # an error
             if present is not None and (code, None) not in drawn \
                     and (declared := present.get(code)) \
                     and code not in (lenient or ()):

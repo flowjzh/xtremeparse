@@ -2003,7 +2003,7 @@ async def test_separated_nested_chains_draw_no_recount():
 # (the first-pass maps declare the numbers and skip the drawing; a
 # fresh recount counts each unit and quotes its instances' openings,
 # and code anchors the quotes and lays the lines — _recount_undrawn /
-# _fold_undrawn)
+# _adopt_recount)
 
 async def test_declared_undrawn_unit_is_recounted_and_adopted():
     # b declared, nothing drawn, its material in chunks the map wrote

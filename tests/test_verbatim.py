@@ -3,7 +3,6 @@
 import copy
 from types import SimpleNamespace
 
-from xtremeparse.chunking import content_len
 from xtremeparse.prompting import schema_head
 from xtremeparse.router import route
 from xtremeparse.schema import heading_label
@@ -205,39 +204,13 @@ SHARED_BUDGET_SCHEMA = {'type': 'object', 'properties': {
 SHARED_CHUNKS = ['甲甲 乙', '丙 丁丁', '戊']
 
 
-def _group_budgets(schema, units, routing) -> dict:
-    """The pre-refactor group-text computation, kept as the reference
-    the routing material must reproduce on a shared run."""
-    marked = {u.path for u in units
-              if any(p == u.path or p.startswith(u.path + '.')
-                     for p in verbatim_paths(schema))}
-    per_item, whole = {}, {}
-    for g in routing.groups:
-        if g.unit.path not in marked:
-            continue
-        chars = content_len(g.text)
-        if g.item is None:
-            whole[g.unit.path] = whole.get(g.unit.path, 0) + chars
-        else:
-            row = per_item.setdefault(g.unit.path, {})
-            row[g.item] = row.get(g.item, 0) + chars
-    out = {}
-    for path, vals in per_item.items():
-        row, last = [], 0
-        for i in range(max(vals) + 1):
-            last = vals.get(i, last)
-            row.append(last)
-        out[path] = row
-    out.update(whole)
-    return out
-
-
-async def test_verbatim_budgets_and_group_text_agree_on_a_shared_run():
+async def test_verbatim_budgets_price_a_shared_run_by_item():
+    # co-chunked instances split their shared run's material; a derived
+    # unit mirrors its source's material
     units = decompose(SHARED_BUDGET_SCHEMA)
     routing = await route(
         ScriptedRunner(agent_result('0-1 a.0,b.0\n2 a.1\na: 2\nb: 1\nc = a')),
         payload='全文', schema_head=schema_head(SHARED_BUDGET_SCHEMA),
         units=units, chunks=SHARED_CHUNKS)
-    expected = _group_budgets(SHARED_BUDGET_SCHEMA, units, routing)
-    assert expected == {'jobs': [6, 1], 'summary': [6, 1]}
-    assert verbatim_budgets(SHARED_BUDGET_SCHEMA, units, routing) == expected
+    assert verbatim_budgets(SHARED_BUDGET_SCHEMA, units, routing) == \
+        {'jobs': [6, 1], 'summary': [6, 1]}
