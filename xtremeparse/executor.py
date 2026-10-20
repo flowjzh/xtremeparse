@@ -10,6 +10,7 @@ not — a per-path ``unit_strategy`` override encodes prior knowledge.
 from __future__ import annotations
 
 import asyncio
+import json
 from dataclasses import dataclass
 from typing import Literal, Optional
 
@@ -66,13 +67,15 @@ class Call:
 
     @property
     def produced(self) -> int:
-        """Entries the call returned — the produced side of ``slots``,
-        read the way ``values_from_calls`` merges: a list's length, or
-        one entry (a per-item single's own object, or an array-shaped
-        reply that came back unwrapped). len() on a single's entry dict
-        counts keys, not instances, and read every healthy single as an
-        over-full batch (measured: phantom shortfalls then patched
-        healthy entries into junk-keyed dicts for two rounds)."""
+        """Entries the raw reply returned — the produced side of
+        ``slots``: a list's length, or one entry (a per-item single's
+        own object, or an array-shaped reply that came back unwrapped).
+        The merge collapses exact repeats in an over-returning ranged
+        reply, so ``produced`` can exceed the entries it contributes;
+        len() on a single's entry dict counts keys, not instances, and
+        read every healthy single as an over-full batch (measured:
+        phantom shortfalls then patched healthy entries into junk-keyed
+        dicts for two rounds)."""
         if self.result is None or self.result.data is None:
             return 0
         data = self.result.data
@@ -155,11 +158,20 @@ async def execute(runner: AgentRunner, routing: Routing, *, payload: str,
     return Execution(values_from_calls(calls), calls)
 
 
+def _first_occurrences(items: list) -> list:
+    """The first copy of each exact value in one reply — a ranged
+    strategy over-returns by design, so a repeated entry is noise."""
+    return list({json.dumps(v, sort_keys=True): v for v in items}.values())
+
+
 def values_from_calls(calls: list) -> dict:
     """Per-unit values from call results; None data stays absent and
     per-item results concatenate in item-index order. A lifted
     sub-array's values key by the parent instance they fill — merge
-    grafts the bracket form into the parent's items."""
+    grafts the bracket form into the parent's items. An over-returning
+    ranged reply (its run's chunk count, not its declared slots, bounds
+    what the specialist can see) collapses exact-value repeats; the
+    other strategies' extras stay visible to count arbitration."""
     values = {}
     for call in calls:
         data = call.result.data if call.result else None
@@ -167,8 +179,10 @@ def values_from_calls(calls: list) -> dict:
             continue
         path = call.value_path
         if call.batch:
-            values.setdefault(path, []).extend(
-                data if isinstance(data, list) else [data])
+            items = data if isinstance(data, list) else [data]
+            if call.strategy == 'ranged' and len(items) > call.slots:
+                items = _first_occurrences(items)
+            values.setdefault(path, []).extend(items)
         elif call.strategy == 'per-item':
             values.setdefault(path, []).append(data)
         else:

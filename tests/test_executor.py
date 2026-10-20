@@ -6,7 +6,7 @@ import pytest
 
 from xtremeflow.scheduler import TaskScheduler
 
-from xtremeparse.executor import execute
+from xtremeparse.executor import Call, execute, values_from_calls
 from xtremeparse.merge import merge
 from xtremeparse.prompting import SPECIALIST_INSTRUCTIONS
 from xtremeparse.router import Group, Routing
@@ -376,3 +376,29 @@ async def test_merge_grafts_a_lifted_sub_array_in_either_arrival_order():
         {'company': '公司甲', 'roles': [{'title': '工程师'}]},
         {'company': '公司乙'}]}}
     assert parent_first == child_first == expected
+
+
+def _batch_call(reply: list) -> Call:
+    return Call(UNITS['career.jobs'], None, 'ranged', [0, 1], 'scope',
+                batch=(0, 1), result=agent_result(reply))
+
+
+def test_over_returning_batch_collapses_exact_repeats():
+    call = _batch_call([{'company': '甲'}, {'company': '乙'},
+                        {'company': '甲'}, {'company': '乙'}])
+    assert values_from_calls([call]) == {
+        'career.jobs': [{'company': '甲'}, {'company': '乙'}]}
+
+
+def test_normal_sized_batch_keeps_repeated_entries():
+    call = _batch_call([{'company': '甲'}, {'company': '甲'}])
+    assert values_from_calls([call]) == {
+        'career.jobs': [{'company': '甲'}, {'company': '甲'}]}
+
+
+def test_per_item_batch_keeps_exact_repeats():
+    # only the ranged strategy's over-return is the artifact case
+    call = Call(UNITS['career.jobs'], None, 'per-item', [0, 1], 'scope',
+                batch=(0, 1), result=agent_result([{'company': '甲'}] * 3))
+    assert values_from_calls([call]) == {
+        'career.jobs': [{'company': '甲'}] * 3}

@@ -10,7 +10,8 @@ from xtremeparse.router import (NONE, RECOUNT_PLACEHOLDERS, ROUTE_PLACEHOLDERS,
                                 _INSTRUCTIONS, _MIXED_CHECK, _SHARED_CHECK,
                                 _anchors, _codes, _diff_text, _name_list,
                                 _overlay_text, _recount_legend, _resplit,
-                                parse_claims, route)
+                                _shared_hints, _shared_spans, parse_claims,
+                                route)
 from xtremeparse.units import MISC, decompose
 from xtremeparse.prompting import schema_head
 from tests.helpers import ScriptedRunner, agent_result
@@ -794,6 +795,25 @@ async def test_lazy_single_instance_gets_recounted_and_resplit():
     jobs = [a for a in routing.raw['assignments'] if a['unit'] == 'jobs']
     assert jobs[0]['chunks'] == list(range(1, 30))
     assert jobs[1]['chunks'] == list(range(30, 38))
+
+
+async def test_ranged_run_with_a_guessed_count_gets_recounted():
+    # a ranged line's count is the model's own arithmetic; more than
+    # RANGED_LOAD chunks per named instance sends the run to the same
+    # fresh recount the merged form uses — and a run dense enough for
+    # the split ask still takes the recount, never a split sized from
+    # the count under suspicion
+    chunks = ['姓名张三'] + [c + 'x' * 150 for c in '一二三四五六七八九十']
+    runner = ScriptedRunner(
+        agent_result('0 a\n1-10 b.0-4\na: 1\nb: 5'),
+        agent_result('b: 10\n一\n二\n三\n四\n五\n六\n七\n八\n九\n十'))
+    routing = await route(runner, payload=PAYLOAD, schema_head=HEAD,
+                          units=UNITS, chunks=chunks)
+    assert len(runner.calls) == 2
+    assert 'were left merged as one' in runner.calls[1]['instructions']
+    assert routing.raw['counts']['jobs'] == 10
+    jobs = [a for a in routing.raw['assignments'] if a['unit'] == 'jobs']
+    assert [a['item'] for a in jobs] == list(range(10))
 
 
 async def test_resplit_keeps_co_riding_destinations():
@@ -2273,3 +2293,20 @@ async def test_merged_nested_recount_upward_count_keeps_the_lines():
     roles = [g for g in routing.groups if g.unit.path == 'jobs.roles']
     assert [(g.item, g.chunk_ids) for g in roles] == \
         [(0, [1, 2, 3]), (1, [1, 2, 3])]
+
+
+@pytest.mark.parametrize('segments, counts, expected', [
+    pytest.param([(16, 72, [('e', (0, 22), None)]),
+                  (74, 82, [('e', (23, 31), None)]),
+                  (83, 97, [('e', (32, 46), None)])], {'e': 47},
+                 {'e': (57, 23)}, id='unit_total_dilution'),
+    pytest.param([(74, 82, [('e', (0, 8), None)])], {'e': 9}, {},
+                 id='one_per_chunk'),
+    pytest.param([(16, 72, [('e', (0, 28), None)])], {'e': 29},
+                 {'e': (57, 29)}, id='below_two'),
+])
+def test_ranged_runs_enter_the_recount_on_their_own_span(
+        segments, counts, expected):
+    _, merged, short = _shared_spans(segments, counts)
+    assert short == expected
+    assert _shared_hints(merged, counts, short) == expected

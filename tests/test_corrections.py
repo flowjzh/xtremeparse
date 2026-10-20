@@ -300,12 +300,12 @@ async def test_count_shortfall_with_no_short_call_surfaces_unrouted():
 
 
 async def test_over_count_retries_only_the_over_full_batch():
-    # duplicates push one batch past its slots — the over-count routes to
-    # the batch holding the extras, and healthy calls stand
+    # distinct extras push one batch past its slots — the over-count
+    # routes to the batch holding them, and healthy calls stand
     full = call('jobs', [{'company': '腾讯'}, {'company': '阿里'}],
                 strategy='per-item', scope='s01', batch=(0, 1))
     over = call('jobs', [{'company': '美团'}, {'company': '京东'},
-                         {'company': '美团'}, {'company': '京东'}],
+                         {'company': '拼多多'}, {'company': '网易'}],
                 strategy='per-item', scope='s23', batch=(2, 3))
     runner = ScriptedRunner(agent_result([{'company': '美团'}, {'company': '京东'}]))
     data, issues, rounds = await correct(
@@ -314,6 +314,23 @@ async def test_over_count_retries_only_the_over_full_batch():
         payload='p', scheduler=scheduler())
     assert [c['scope'] for c in runner.calls] == ['s23']
     assert [c['company'] for c in data['jobs']] == ['腾讯', '阿里', '美团', '京东']
+    assert issues == []
+
+
+async def test_exact_duplicate_over_return_is_collapsed_at_merge():
+    # the ranged strategy over-returns by design; exact repeats in that
+    # reply are decode noise, so the merge removes them before the
+    # validator runs — no retry, no issue
+    over = call('jobs', [{'company': '美团'}, {'company': '京东'},
+                         {'company': '美团'}, {'company': '京东'}],
+                strategy='ranged', scope='s23', batch=(2, 3))
+    runner = ScriptedRunner()
+    data, issues, rounds = await correct(
+        runner, execution(over),
+        validator=lambda d: count_issues({'jobs': 2}, d),
+        payload='p', scheduler=scheduler())
+    assert runner.calls == [] and rounds == []
+    assert [c['company'] for c in data['jobs']] == ['美团', '京东']
     assert issues == []
 
 

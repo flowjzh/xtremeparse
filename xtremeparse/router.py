@@ -68,6 +68,10 @@ RESHARE_LOAD = 8  # the recount's load bar, in chunks per instance, for
 # chunks per instance — below it the recount is pure decode-shaving,
 # confirmed and never adopted (a 2-instance band, a 6-chunk single —
 # measured)
+RANGED_LOAD = 1.5  # a ranged run's re-count bar, in chunks per
+# declared instance: the ranged form's premise is roughly one instance
+# per chunk, so more than one and a half chunks per instance means the
+# count is a guess (measured: a dense list drawn 57 chunks deep as 23)
 SPLIT_MATERIAL_CAP = 1000  # mapped content chars one shared call may
 # absorb before the split ask pays for itself: past ~1k chars the
 # whole-array decode (~58 tok/s measured) outlasts the extra round.
@@ -614,7 +618,7 @@ async def route(runner: AgentRunner, *, payload: str,
             state, diff_base, valid = parsed, text, (parsed, text)
         return errors
 
-    async def split_ask(spans):
+    async def split_ask(spans, short):
         # a shared run holding more mapped material than one shared
         # call may absorb — the dense draw (span ≈ declared). The even
         # partition is computed in code, because the model's own
@@ -628,7 +632,7 @@ async def route(runner: AgentRunner, *, payload: str,
         rounds = []
         for code, (first, last, lines) in _overrun_hints(
                 state.segments, spans, state.counts, chunks, by_code,
-                state.budgets, state.derived).items():
+                state.budgets, state.derived, short).items():
             spliced = _adopt_blocks(diff_base, code, first, last, lines)
             if spliced is None or (spliced != diff_base
                                    and adopt(spliced)):
@@ -764,14 +768,13 @@ async def route(runner: AgentRunner, *, payload: str,
         commit(adoption)
         return None  # every zero is resolved; partial splits stand
 
-    async def fanout_ask(shared_spans):
+    async def fanout_ask(shared):
         # both fan-out kinds in one round when they pend together;
         # a host's recount_instructions is tuned for the zero
         # case, so an override keeps the two asks apart. The asks
         # mark themselves here — a combined round spends both
         # halves at once, and a shared round's feedback must
         # leave zeros pending for the next visit
-        shared = _shared_hints(shared_spans, state.counts)
         zeros = _pending_zeros(by_code, state.counts, state.derived)
         merged_nested = _merged_nested(state.segments, state.nested)
         if (shared or merged_nested) and zeros and 'shared' not in asked \
@@ -798,11 +801,11 @@ async def route(runner: AgentRunner, *, payload: str,
         ask is a suggestion, always. Returns None when no hint
         applied or one adopted its fix in code and the map may be
         final."""
-        spans, merged = _shared_spans(state.segments, state.counts)
+        spans, merged, short = _shared_spans(state.segments, state.counts)
         if 'split' not in asked \
-                and (fb := await split_ask(spans)) is not None:
+                and (fb := await split_ask(spans, short)) is not None:
             return fb
-        return await fanout_ask(merged)
+        return await fanout_ask(_shared_hints(merged, state.counts, short))
 
     def finalize():
         assignments = _assignments(state.segments, by_code)
@@ -2520,17 +2523,22 @@ def _adopt_blocks(text: str, code: str, first: int, last: int,
 
 
 def _shared_spans(segments: list, counts: dict) -> tuple:
-    """Shared-form array units — ``({code: chunk span}, {code: span})``.
-    The first maps every unit riding shared lines (comma-joined
-    destinations, a lone item spanning the whole run, or a ranged run —
-    the material-overflow ask's candidate pool). The second is the
-    subset whose recount is worth a round: a ranged run is the
-    whole-run-decode case, always in; a line already carrying one
-    destination per instance is decomposed, its recount pure
+    """Shared-form array units — ``({code: chunk span}, {code: span},
+    {code: (span, declared)})``. The first maps every unit riding shared
+    lines (comma-joined destinations, a lone item spanning the whole
+    run, or a ranged run — the material-overflow ask's candidate pool).
+    The second is the subset whose recount is worth a round: a ranged
+    run is the whole-run-decode case, always in; a line already carrying
+    one destination per instance is decomposed, its recount pure
     decode-shaving, in only past RESHARE_LOAD chunks per instance —
     a unit declared once obeys the same arithmetic (a lone item over a
     handful of chunks reads as one long entry as plausibly as a merge;
     measured: its recount confirmed every time and never adopted).
+    The third names ranged runs whose own count is a guess: more than
+    RANGED_LOAD chunks per named instance, the arithmetic the ranged
+    form leaves to the model while the unit total can sit near one.
+    The recount covers the whole unit; the pair only words the
+    fallback, and the first run to trip the bar supplies it.
     Single-chunk runs excluded. A unit riding a line that carries a
     chain (a lifted sub-array's destination) is excluded with them —
     redrawing that line would swallow the chain, and the recount sees
@@ -2538,7 +2546,7 @@ def _shared_spans(segments: list, counts: dict) -> tuple:
     chained = {dd[0] for _, _, dests in segments
                if any(x[2] is not None for x in dests)
                for dd in dests if dd[2] is None}
-    shared, merged = {}, {}
+    shared, merged, short = {}, {}, {}
     for start, end, dests in segments:
         if start == end:
             continue
@@ -2549,23 +2557,26 @@ def _shared_spans(segments: list, counts: dict) -> tuple:
                 per[dd[0]] = per.get(dd[0], 0) + 1
                 if isinstance(dd[1], tuple):
                     ranged.add(dd[0])
+                    declared = len(items_of(dd[1]))
+                    if declared and _lazy_shape(span, declared, RANGED_LOAD):
+                        short.setdefault(dd[0], (span, declared))
         for d, n in per.items():
             if counts.get(d) == 1 or d in ranged or n > 1:
                 shared[d] = shared.get(d, 0) + span
                 if d in ranged or span >= n * RESHARE_LOAD:
                     merged[d] = merged.get(d, 0) + span
-    return shared, merged
+    return shared, merged, short
 
 
-def _lazy_shape(span: int, declared: int) -> bool:
-    """The lazy shared shape: instances merged into one run far longer
-    than one entry plausibly reads alone. The shared recount's case —
-    and the overrun ask's exclusion, so one unit can never draw both
-    (the exclusivity is this one predicate, not parallel arithmetic)."""
-    return span >= declared * 4 and span - declared >= HINT_MIN
+def _lazy_shape(span: int, declared: int, load: float = 4) -> bool:
+    """A run far longer than its declared instances, by the caller's
+    load: the lazy draw's case (load 4) and a guessed ranged count
+    (load RANGED_LOAD) share the delta guard. The overrun ask excludes
+    both, so one unit never draws a split and a recount."""
+    return span >= declared * load and span - declared >= HINT_MIN
 
 
-def _shared_hints(spans: dict, counts: dict) -> dict:
+def _shared_hints(spans: dict, counts: dict, short: dict) -> dict:
     """Array units left in the LAZY shared shape — instances merged into
     one long run, a unit declared once whose lone item spans far more
     chunks than one entry plausibly reads alone (the recount-worthy
@@ -2576,12 +2587,16 @@ def _shared_hints(spans: dict, counts: dict) -> dict:
     single entry is indistinguishable from the merged form — the
     recount lets the model confirm it; a declined suggestion costs one
     round. Already-separated maps (each instance its own line) never
-    fire; small excesses don't pay for the round. Returns ``{code:
-    (chunk span, declared)}``."""
-    return {code: (span, declared)
-            for code, span in spans.items()
-            if (declared := counts.get(code) or 0)
-            and _lazy_shape(span, declared)}
+    fire; small excesses don't pay for the round. ``short`` adds the
+    ranged runs whose own span flags a guessed count; a code in both
+    keeps the run's pair, since the recount covers the whole unit and
+    the pair only words the fallback. Returns ``{code: (chunk span,
+    declared)}``."""
+    hints = {code: (span, declared)
+             for code, span in spans.items()
+             if (declared := counts.get(code) or 0)
+             and _lazy_shape(span, declared)}
+    return hints | short
 
 
 def _split_hint(code: str, span: int, declared: int) -> str:
@@ -2596,7 +2611,7 @@ def _split_hint(code: str, span: int, declared: int) -> str:
 
 def _overrun_hints(segments: list, spans: dict, counts: dict,
                    chunks: list[str], by_code: dict, budgets: dict,
-                   derived: dict) -> dict:
+                   derived: dict, skip: dict) -> dict:
     """Array units whose shared run holds more mapped material than one
     shared call may absorb — the dense draw (every instance riding its
     section's range) that the lazy ratio cannot see: there span ≈
@@ -2608,11 +2623,12 @@ def _overrun_hints(segments: list, spans: dict, counts: dict,
     adopted in code (``_adopt_blocks``) — the ask round only survives
     where the adoption declines the redraw.
     Lazy-shaped units stay the recount's (the anchored model will not
-    unmerge those, measured). Returns ``{code: (first chunk, last
+    unmerge those, measured), and so do ``skip`` codes: a guessed ranged
+    count must not size a split. Returns ``{code: (first chunk, last
     chunk, block lines)}``."""
     wanted = [code for code, span in spans.items()
               if (declared := counts.get(code) or 0) >= HINT_MIN
-              and not _lazy_shape(span, declared)]
+              and not _lazy_shape(span, declared) and code not in skip]
     if not wanted:
         return {}
     bounds = {}
