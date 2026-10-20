@@ -912,8 +912,7 @@ async def route(runner: AgentRunner, *, payload: str,
             # on the diff path, and the standing parse's state serves
             # as is (its coherence: _parse's return)
             passable = _passable(errors)
-            if pool := _undrawn_pool(state.segments, state.counts,
-                                     state.nested, state.present):
+            if pool := _undrawn_pool(state):
                 asked.add('undrawn')
                 zeros = ([] if recount_instructions else
                          _pending_zeros(by_code, state.counts,
@@ -1209,18 +1208,18 @@ def _drawn_pairs(segments) -> set:
     return {(dd[0], dd[2]) for _, _, dests in segments for dd in dests}
 
 
-def _undrawn_pool(segments, counts, nested, present) -> list:
+def _undrawn_pool(state) -> list:
     """The declared-undrawn units of a parsed map — declarations with
     no line drawing them: ``[(code, None)]`` top-level repeating and
     non-repeating units alike, ``[(sub-code, parent index)]`` chained —
     the same state `_map_errors` reads when it writes the assigns-none
     errors, read from the source, not the prose."""
-    used = _drawn_pairs(segments)
-    return [(code, None) for code, declared in counts.items()
+    used = _drawn_pairs(state.segments)
+    return [(code, None) for code, declared in state.counts.items()
             if declared and (code, None) not in used] + \
-        [(code, None) for code, declared in present.items()
+        [(code, None) for code, declared in state.present.items()
          if declared and (code, None) not in used] + \
-        [(code, parent) for (code, parent), declared in nested.items()
+        [(code, parent) for (code, parent), declared in state.nested.items()
          if declared and (code, parent) not in used]
 
 
@@ -1352,7 +1351,7 @@ def _resplit(state, code: str, claim: Claim, by_code: dict,
     two instances sharing one chunk and fails the seek. Other units'
     destinations on the same chunks are preserved. Adoption is code's;
     any unusable piece returns None for the caller's fallback. Returns
-    the rebuilt ``(segments, counts)``."""
+    the rebuilt state."""
     if not (count := claim.total) or count != len(claim.quotes):
         return None
     cover = _cover(state.segments)
@@ -1368,12 +1367,11 @@ def _resplit(state, code: str, claim: Claim, by_code: dict,
         stripped = tuple(dd for dd in dests if dd[0] != code)
         per_chunk[c] = (stripped + ((code, item_of[c], None),)
                         if c in item_of else stripped)
-    counts = {**state.counts, code: count}
-    rebuilt = _resegment(per_chunk, replace(state, counts=counts), by_code,
-                         len(chunks))
+    st = replace(state, counts={**state.counts, code: count})
+    rebuilt = _resegment(per_chunk, st, by_code, len(chunks))
     if rebuilt is None:
         return None
-    return rebuilt, counts
+    return replace(st, segments=rebuilt)
 
 
 def _lines(text) -> list:
@@ -1501,9 +1499,10 @@ def _pure_chain(dests: tuple) -> bool:
 
 
 def _cover(segments: list) -> dict:
-    """Per chunk id: the destinations owning it — the expanded form both
-    adoption paths (recount splice, shared-run resplit) edit before
-    re-segmenting. A pure-chain segment nesting in a parent run keeps
+    """Per chunk id: the destinations owning it — the expanded form the
+    adoptions (recount splice, shared-run resplit, undrawn laying,
+    nested fold) edit before re-segmenting. A pure-chain segment
+    nesting in a parent run keeps
     the parent's destinations underneath it: containment is segment
     geometry, which the per-chunk form cannot express, and dropping the
     parent would leave the chains riding no run — the rebuild would
@@ -1524,7 +1523,7 @@ def _cover(segments: list) -> dict:
 
 def _resegment(per_chunk: dict, state, by_code: dict, n: int,
                lenient: set | None = None):
-    """The adoption tail shared by both paths that edit the expanded
+    """The adoption tail shared by every path that edits the expanded
     map: a per-chunk destination map → coalesced segments (adjacent
     equal destinations merge into one run; the result is a disjoint
     partition, so containment needs no re-settling — ``_cover`` already
@@ -1561,9 +1560,8 @@ def _splice(state, answer, zeros, by_code: dict, n: int,
     merged state or None. ``lenient`` passes count-family mismatches
     through the rebuild's validation — the undrawn adoption splices
     zeros while its own units' errors still stand."""
-    segments, counts, derived = state.segments, dict(state.counts), dict(state.derived)
-    nested = state.nested
-    cover = _cover(segments)
+    counts, derived = state.counts, state.derived
+    cover = _cover(state.segments)
     claimed, crossed, seen = {}, set(), set()
     for line in str(answer).strip().splitlines():
         if m := _COUNT.match(line.strip()):
@@ -1733,39 +1731,30 @@ def _adopt_recount(state, answer, *, zeros=(), pool=(), shared=(),
     unanchored, count and quotes disagreeing — keeps its error for the
     diff path. Returns None when nothing was adoptable."""
     n = len(chunks)
-    segments, counts, present, nested, derived = (
-        state.segments, state.counts, state.present, state.nested,
-        state.derived)
     labels = set(shared) | set(zeros) | {
         _chain_label(code, parent, by_code)
         for code, parent in (*pool, *merged)}
     claims = parse_claims(answer, labels)
+    st = state
     zeros_ok = False
     if map_first and zeros:
-        if spliced := _splice(state, answer, zeros, by_code, n, lenient):
-            segments, counts, nested, derived = (
-                spliced.segments, spliced.counts, spliced.nested,
-                spliced.derived)
-            zeros_ok = True
+        if spliced := _splice(st, answer, zeros, by_code, n, lenient):
+            st, zeros_ok = spliced, True
     changed = zeros_ok
     for code in shared:
         claim = claims.get(code)
-        resplit = (_resplit(replace(state, segments=segments, counts=counts),
-                            code, claim, by_code, chunks)
+        resplit = (_resplit(st, code, claim, by_code, chunks)
                    if claim is not None else None)
         if resplit is not None:
-            segments, counts = resplit
-            changed = True
+            st, changed = resplit, True
     if merged:
-        folded = _fold_nested_merged(
-            replace(state, segments=segments, counts=counts,
-                    nested=nested, derived=derived),
-            set(merged), claims, by_code, n, chunks)
+        folded = _fold_nested_merged(st, set(merged), claims, by_code, n,
+                                     chunks)
         if folded is not None:
-            segments, nested = folded.segments, folded.nested
-            changed = True
+            st, changed = folded, True
     zero_codes = set() if zeros_ok else set(zeros)
-    per_chunk = {c: list(ds) for c, ds in _cover(segments).items()}
+    per_chunk = {c: list(ds) for c, ds in _cover(st.segments).items()}
+    counts, present, nested = st.counts, st.present, st.nested
     norms, failed_zeros = None, set()
     for code, parent in [*pool, *((z, None) for z in zero_codes)]:
         claim = claims.get(_chain_label(code, parent, by_code))
@@ -1856,11 +1845,10 @@ def _adopt_recount(state, answer, *, zeros=(), pool=(), shared=(),
         # a default recount may still answer in the map's grammar; the
         # prompt did not ask for it, so it is only the fallback
         if map_first or not zeros or not (spliced := _splice(
-                state, answer, zeros, by_code, n, lenient)):
+                st, answer, zeros, by_code, n, lenient)):
             return None
         return _Adoption(spliced, True)
-    st = replace(state, segments=segments, counts=counts, present=present,
-                 nested=nested, derived=derived)
+    st = replace(st, counts=counts, present=present, nested=nested)
     rebuilt = _resegment({c: tuple(ds) for c, ds in per_chunk.items()},
                          st, by_code, n, lenient)
     if rebuilt is None:
@@ -1921,8 +1909,8 @@ def _fold_nested_merged(state, merged, claims, by_code: dict, n: int,
     stand. A recount whose openings all miss the footprint keeps its
     standing lines. Returns the rebuilt state, or None when nothing
     was adoptable."""
-    segments, nested = state.segments, dict(state.nested)
-    per_chunk = {c: list(ds) for c, ds in _cover(segments).items()}
+    nested = state.nested
+    per_chunk = {c: list(ds) for c, ds in _cover(state.segments).items()}
     changed = False
     for code, parent in merged:
         claim = claims.get(_chain_label(code, parent, by_code))
@@ -1969,11 +1957,12 @@ def _fold_nested_merged(state, merged, claims, by_code: dict, n: int,
         changed = True
     if not changed:
         return None
+    st = replace(state, nested=nested)
     rebuilt = _resegment({c: tuple(ds) for c, ds in per_chunk.items()},
-                         replace(state, nested=nested), by_code, n)
+                         st, by_code, n)
     if rebuilt is None:
         return None
-    return replace(state, segments=rebuilt, nested=nested)
+    return replace(st, segments=rebuilt)
 
 
 def _material(assignments, chunks, derived: dict) -> dict:
@@ -2239,8 +2228,9 @@ def _parse(text, by_code: dict, n: int,
     # ranges are explicit; a diff reply's "+" insert lands at its own
     # editing position, so out-of-order lines are normal, not an error
     _settle_chains(segments, by_code)
-    drawn = _drawn_pairs(segments)  # one reading per parse: validation,
-    # the zero fill and the undrawn pool all read the same set
+    drawn = _drawn_pairs(segments)  # one reading per parse: validation
+    # and the zero fill read the same set; later pools recompute —
+    # adoptions may have redrawn the lines by then
     st = _State(segments, counts, present, nested, derived, budgets)
     errors += _map_errors(st, by_code, n, lenient, drawn)
     # a repeating unit the map never mentions reads as zero — filled by

@@ -1732,14 +1732,14 @@ async def test_shared_resplit_reads_chain_destinations_through():
                 (1, 1, (('b', 0, None), ('c', 0, 0))),
                 (2, 2, (('b', 1, None),)),
                 (3, 4, ((NONE, None, None),))]
-    state = _State(segments, {'b': 1}, {}, {('c', 0): 1}, {}, {})
+    state = _State(segments=segments, counts={'b': 1}, present={},
+                   nested={('c', 0): 1}, derived={}, budgets={})
     merged = _resplit(state, 'b',
                       Claim(2, quotes=('姓名张三', '公司甲·工程师')),
                       by_code, NESTED_CHUNKS)
     assert merged is not None
-    segs, counts = merged
-    assert counts == {'b': 2}
-    assert segs[1][2] == (('c', 0, 0), ('b', 1, None))
+    assert merged.counts == {'b': 2}
+    assert merged.segments[1][2] == (('c', 0, 0), ('b', 1, None))
 
 
 async def test_parent_run_and_chain_on_same_range_lines_merge():
