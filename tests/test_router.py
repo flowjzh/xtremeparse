@@ -1726,14 +1726,16 @@ async def test_shared_resplit_reads_chain_destinations_through():
     # regression: a shared unit whose owned chunks carry a chain line —
     # the anchor scan must read 3-tuple destinations through, not
     # unpack them flat (a live draw crashed exactly here)
+    from xtremeparse.router import _State
     by_code = {c: u for c, u in zip('abcd', NESTED_UNITS)}
     segments = [(0, 0, (('b', 0, None),)),
                 (1, 1, (('b', 0, None), ('c', 0, 0))),
                 (2, 2, (('b', 1, None),)),
                 (3, 4, ((NONE, None, None),))]
-    merged = _resplit(segments, {'b': 1}, {('c', 0): 1}, 'b',
+    state = _State(segments, {'b': 1}, {}, {('c', 0): 1}, {}, {})
+    merged = _resplit(state, 'b',
                       Claim(2, quotes=('姓名张三', '公司甲·工程师')),
-                      by_code, {}, NESTED_CHUNKS)
+                      by_code, NESTED_CHUNKS)
     assert merged is not None
     segs, counts = merged
     assert counts == {'b': 2}
@@ -2176,13 +2178,11 @@ async def test_a_drawn_non_repeating_unit_publishes_presence_not_a_count():
 def test_validation_reads_presence_without_editing_the_state():
     from xtremeparse.router import _codes, _map_errors, _parse
     by_code = _codes(UNITS)
-    state = _parse('0 a\n1 b.0\n2-3 -\nb: 2\nc: 1', by_code, len(CHUNKS))
+    _, state = _parse('0 a\n1 b.0\n2-3 -\nb: 2\nc: 1', by_code, len(CHUNKS))
     assert state.counts == {'b': 2}
     assert state.present == {'c': 1}
     before = (dict(state.counts), dict(state.present))
-    errors = _map_errors(state.segments, state.counts, state.nested,
-                         state.derived, by_code, len(CHUNKS),
-                         present=state.present)
+    errors = _map_errors(state, by_code, len(CHUNKS))
     assert any('c: declared 1 items but no line draws it' in e for e in errors)
     assert (state.counts, state.present) == before
 
@@ -2237,30 +2237,25 @@ def test_map_text_round_trips_through_the_parser():
     text = ('0 a\n1-2 b.0\n2 b.0.c.0\n3 b.1\n4 d\n'
             'b: 2 @90%,90%\nb.0.c: 1 @100%\nd: 1 @15%')
     by_code = _codes(NESTED_UNITS)
-    state = _parse(text, by_code, len(NESTED_CHUNKS))
-    assert not state.errors
-    rendered = _map_text(state.segments, state.counts, state.present,
-                         state.nested, state.derived, state.budgets, by_code)
-    parsed = _parse(rendered, by_code, len(NESTED_CHUNKS))
-    assert not parsed.errors
-    assert (parsed.segments, parsed.counts, parsed.present, parsed.nested,
-            parsed.derived, parsed.budgets) == (
-        state.segments, state.counts, state.present, state.nested,
-        state.derived, state.budgets)
+    errors, state = _parse(text, by_code, len(NESTED_CHUNKS))
+    assert not errors
+    rendered = _map_text(state, by_code)
+    reparsed_errors, reparsed = _parse(rendered, by_code, len(NESTED_CHUNKS))
+    assert not reparsed_errors
+    assert reparsed == state
 
 
 def test_map_text_round_trips_derived_units():
     from xtremeparse.router import _codes, _map_text, _parse
     text = '0 a\n1 b.0\n2 b.1\n3 -\nb: 2\nc = b @30%'
     by_code = _codes(SHARED_UNITS)
-    state = _parse(text, by_code, len(CHUNKS))
-    assert not state.errors
-    rendered = _map_text(state.segments, state.counts, state.present,
-                         state.nested, state.derived, state.budgets, by_code)
-    parsed = _parse(rendered, by_code, len(CHUNKS))
-    assert not parsed.errors
-    assert parsed.counts == state.counts == {'b': 2}
-    assert parsed.derived == state.derived == {'c': 'b'}
+    errors, state = _parse(text, by_code, len(CHUNKS))
+    assert not errors
+    rendered = _map_text(state, by_code)
+    reparsed_errors, reparsed = _parse(rendered, by_code, len(CHUNKS))
+    assert not reparsed_errors
+    assert reparsed.counts == state.counts == {'b': 2}
+    assert reparsed.derived == state.derived == {'c': 'b'}
 
 
 async def test_merged_nested_recount_upward_count_keeps_the_lines():
