@@ -31,6 +31,11 @@ _ENTRY = re.compile(r'^\s*[\x80-\x9f•]')
 MAX_CHARS = 250
 
 
+def is_heading(text: str) -> bool:
+    """Whether a chunk opens a markdown heading."""
+    return bool(_HEADING.match(text))
+
+
 def normalize_newlines(text: str) -> str:
     """Owned at extraction entry: chunks and the shared prompt prefix
     must agree on newlines."""
@@ -87,7 +92,7 @@ def _blocks(text: str) -> list[str]:
             para.clear()
 
     for line in text.split('\n'):
-        if _HEADING.match(line):
+        if is_heading(line):
             flush()
             para.append(line)
         elif not line.strip():

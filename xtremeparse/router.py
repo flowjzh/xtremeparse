@@ -54,7 +54,7 @@ from dataclasses import dataclass, replace
 from typing import Optional
 
 from xtremeparse.arbitration import fresh_check, norm, sectioned
-from xtremeparse.chunking import content_len
+from xtremeparse.chunking import content_len, is_heading
 from xtremeparse.contracts import AgentRunner, BATCH_BUDGET_CAP, JSONSchema
 from xtremeparse.schema import type_set, value_branches
 from xtremeparse.units import Unit
@@ -801,7 +801,8 @@ async def route(runner: AgentRunner, *, payload: str,
         ask is a suggestion, always. Returns None when no hint
         applied or one adopted its fix in code and the map may be
         final."""
-        spans, merged, short = _shared_spans(state.segments, state.counts)
+        spans, merged, short = _shared_spans(state.segments, state.counts,
+                                             by_code)
         if 'split' not in asked \
                 and (fb := await split_ask(spans, short)) is not None:
             return fb
@@ -1358,8 +1359,22 @@ def _resplit(state, code: str, claim: Claim, by_code: dict,
     if not (count := claim.total) or count != len(claim.quotes):
         return None
     cover = _cover(state.segments)
-    owned = sorted(c for c, dests in cover.items()
-                   if code in {dd[0] for dd in dests})
+    parent_path = by_code[code].path
+    subs = {c for c, u in by_code.items() if u.parent == parent_path}
+    owned, joint, used = set(), {}, {}
+    for c, dests in cover.items():
+        if any(dd[0] == code for dd in dests):
+            owned.add(c)
+        plain = any(dd[0] == code and dd[2] is None for dd in dests)
+        for dd in dests:
+            if dd[2] is None or dd[0] not in subs:
+                continue
+            owned.add(c)  # the parent's material through its child's chain
+            if plain:  # a chain riding the parent's own line is one
+                # chunk's joint destination — it moves with the chunk,
+                # never dropped
+                joint.setdefault((dd[0], dd[2]), set()).add(c)
+    owned = sorted(owned)
     if not owned or (hits := _anchors(list(claim.quotes), owned, chunks)) is None:
         return None
     hits = sorted(hits)
@@ -1367,10 +1382,34 @@ def _resplit(state, code: str, claim: Claim, by_code: dict,
     item_of = {c: max(0, bisect_right(hits, c) - 1) for c in owned}
     per_chunk = {}
     for c, dests in cover.items():
-        stripped = tuple(dd for dd in dests if dd[0] != code)
-        per_chunk[c] = (stripped + ((code, item_of[c], None),)
-                        if c in item_of else stripped)
-    st = replace(state, counts={**state.counts, code: count})
+        io = item_of.get(c)
+        # a nested entry's separate chain line survives only on chunks
+        # that stay under its declared parent instance; a chunk the
+        # recount moved to another top-level instance drops the old
+        # chain (the merge was the mis-parenting being corrected)
+        stripped = tuple(
+            dd for dd in dests
+            if dd[0] != code
+            and not (io is not None and dd[2] is not None
+                     and dd[0] in subs
+                     and dd[2] != io
+                     and c not in joint.get((dd[0], dd[2]), ())))
+        per_chunk[c] = (stripped + ((code, io, None),)
+                        if io is not None else stripped)
+        for dd in stripped:
+            if dd[2] is not None and dd[0] in subs:
+                used.setdefault((dd[0], dd[2]), set()).add(dd[1])
+    # the surviving chains are the nested declarations: a dropped chain
+    # takes its count with it (the old count described the merge)
+    nested = {}
+    for key, declared in state.nested.items():
+        unit = by_code.get(key[0])
+        if unit is None or unit.parent != parent_path:
+            nested[key] = declared
+        elif key in used:
+            nested[key] = len(used[key])
+    st = replace(state, counts={**state.counts, code: count},
+                 nested=nested)
     rebuilt = _resegment(per_chunk, st, by_code, len(chunks))
     if rebuilt is None:
         return None
@@ -1726,7 +1765,8 @@ def _adopt_recount(state, answer, *, zeros=(), pool=(), shared=(),
     instances' lines; a non-repeating unit's claim is a presence
     reading whose quotes locate the chunks holding its fields; a
     chained claim partitions the parent's run from the first to the
-    last anchor, the run's head and tail staying the parent's own; a
+    last anchor, the run's head staying the parent's own and the tail
+    following ``_lay_subentries``' rule; a
     lone opening cannot trim a multi-entry chain (the parent's own
     heading is not a sub-entry, measured). A zero claim is absence: for
     a chain it drops the declaration, for a top-level unit it confirms
@@ -1839,7 +1879,7 @@ def _adopt_recount(state, answer, *, zeros=(), pool=(), shared=(),
             anchors = sorted(hits)  # quotes may not arrive in document order
             if len(anchors) == 1 and nested.get((code, parent), 0) > 1:
                 continue  # one opening cannot trim a multi-entry chain
-            _lay_subentries(per_chunk, owned, anchors, code, parent)
+            _lay_subentries(per_chunk, owned, anchors, code, parent, chunks)
             nested = {**nested, (code, parent): count}
         changed = True
     if zero_codes and not failed_zeros:
@@ -1863,9 +1903,12 @@ def _merged_nested(segments: list, nested: dict) -> set:
     """The lifted sub-arrays whose sub-entries ride one line together —
     a ranged chain or comma-joined chains of one (code, parent): the
     merged shape the shared recount treats at the top level. Chain
-    destinations are invisible to ``_shared_spans`` (a redraw there
-    would swallow the chain), so these declarations are the one kind no
-    fresh recount ever verifies — the nested recount's candidate pool.
+    destinations never pool their own unit into ``_shared_spans`` (a
+    redraw would swallow the chain), so these declarations are the one
+    kind no fresh recount ever verifies — the nested recount's
+    candidate pool; the count-1 parent's chain-fed footprint can pool
+    the parent itself, and ``_adopt_recount`` runs the top-level
+    resplit before the nested fold for exactly that overlap.
     One destination per line stays out: that fine partition is a legal
     draw the instructions bless, and its chains run long on genuine
     multi-stint files — recounted there, a miscount trims real
@@ -1887,12 +1930,17 @@ def _merged_nested(segments: list, nested: dict) -> set:
 
 
 def _lay_subentries(per_chunk: dict, domain: list, anchors: list,
-                    code: str, parent: int) -> None:
+                    code: str, parent: int, chunks: list) -> None:
     """Lay recounted sub-entry lines over the parent's chunks: each
     chunk takes the index of the last anchor at or before it — the
-    partition both nested folds adopt at their quotes."""
+    partition both nested folds adopt at their quotes. The run's head
+    stays the parent's own; so does the tail after the last anchor,
+    unless that anchor opens a heading — a heading is the sub-entry's
+    opening and the blocks that follow are its continuation, so they
+    ride the last sub-entry."""
+    tail = is_heading(chunks[anchors[-1]])
     for c in domain:
-        if anchors[0] <= c <= anchors[-1]:
+        if c >= anchors[0] and (c <= anchors[-1] or tail):
             per_chunk[c].append((code, bisect_right(anchors, c) - 1, parent))
 
 
@@ -1945,7 +1993,8 @@ def _fold_nested_merged(state, merged, claims, by_code: dict, n: int,
             per_chunk[c] = [dd for dd in per_chunk[c]
                             if not (dd[0] == code and dd[2] == parent)]
         if anchors:
-            _lay_subentries(per_chunk, footprint, anchors, code, parent)
+            _lay_subentries(per_chunk, footprint, anchors, code, parent,
+                            chunks)
             nested = {**nested, (code, parent): len(anchors)}
         else:
             # the parent holds none that meets the card: the chains
@@ -2522,7 +2571,23 @@ def _adopt_blocks(text: str, code: str, first: int, last: int,
     return '\n'.join(out)
 
 
-def _shared_spans(segments: list, counts: dict) -> tuple:
+def _chain_fed(segments: list, by_code: dict) -> dict:
+    """Chunks each parent unit receives through its nested units' chain
+    lines — the extractor-facing material of the parent. A chain
+    destination names the nested unit and the parent instance; the
+    parent code is the nested unit's declared parent."""
+    fed = {}
+    for start, end, dests in segments:
+        for dd in dests:
+            if dd[2] is None or (unit := by_code.get(dd[0])) is None \
+                    or unit.parent is None:
+                continue
+            if (parent := _parent_code(unit, by_code)) in by_code:
+                fed.setdefault(parent, set()).update(range(start, end + 1))
+    return fed
+
+
+def _shared_spans(segments: list, counts: dict, by_code: dict) -> tuple:
     """Shared-form array units — ``({code: chunk span}, {code: span},
     {code: (span, declared)})``. The first maps every unit riding shared
     lines (comma-joined destinations, a lone item spanning the whole
@@ -2542,7 +2607,9 @@ def _shared_spans(segments: list, counts: dict) -> tuple:
     Single-chunk runs excluded. A unit riding a line that carries a
     chain (a lifted sub-array's destination) is excluded with them —
     redrawing that line would swallow the chain, and the recount sees
-    none of the sub-entries."""
+    none of the sub-entries. A parent declared once still counts the
+    chunks its chain lines feed it: its footprint is its own lines
+    plus its nested units', the material the extractor will see."""
     chained = {dd[0] for _, _, dests in segments
                if any(x[2] is not None for x in dests)
                for dd in dests if dd[2] is None}
@@ -2565,6 +2632,17 @@ def _shared_spans(segments: list, counts: dict) -> tuple:
                 shared[d] = shared.get(d, 0) + span
                 if d in ranged or span >= n * RESHARE_LOAD:
                     merged[d] = merged.get(d, 0) + span
+    for code, fed in _chain_fed(segments, by_code).items():
+        if counts.get(code) != 1:
+            continue
+        direct = set()
+        for start, end, dests in segments:
+            if any(dd[0] == code and dd[2] is None for dd in dests):
+                direct.update(range(start, end + 1))
+        span = len(direct | fed)
+        shared[code] = max(shared.get(code, 0), span)
+        if span >= RESHARE_LOAD:
+            merged[code] = max(merged.get(code, 0), span)
     return shared, merged, short
 
 

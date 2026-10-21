@@ -2107,6 +2107,24 @@ async def test_undrawn_chains_leave_the_parent_runs_own_head_and_tail():
     assert [(g.item, g.chunk_ids) for g in jobs] == [(0, [1, 2, 3, 4])]
 
 
+async def test_undrawn_heading_sub_entry_keeps_its_tail_description():
+    # a heading-anchored last sub-entry owns the following description
+    # block; the parent's own head stays its own
+    chunks = ['姓名张三', '### 公司甲', '### 公司甲·工程师', '工程师描述',
+              '### 公司甲·经理', '经理描述', '无关页脚']
+    runner = ScriptedRunner(
+        agent_result('0 a\n1-5 b.0\n6 -\nb: 1\nb.0.c: 2'),
+        agent_result('b.0.c: 2\n### 公司甲·工程师\n### 公司甲·经理'))
+    routing = await route(runner, payload=PAYLOAD, schema_head=HEAD,
+                          units=NESTED_UNITS, chunks=chunks)
+    assert len(runner.calls) == 2
+    roles = [g for g in routing.groups if g.unit.path == 'jobs.roles']
+    assert [(g.item, g.chunk_ids) for g in roles] == \
+        [(0, [2, 3]), (1, [4, 5])]
+    jobs = [g for g in routing.groups if g.unit.path == 'jobs']
+    assert [(g.item, g.chunk_ids) for g in jobs] == [(0, [1, 2, 3, 4, 5])]
+
+
 async def test_undrawn_single_quote_cannot_demote_a_multi_entry_chain():
     # a count declared but no chain line drawn; the recount answers one
     # and quotes the parent's own opening — one anchor is not evidence
@@ -2307,6 +2325,6 @@ async def test_merged_nested_recount_upward_count_keeps_the_lines():
 ])
 def test_ranged_runs_enter_the_recount_on_their_own_span(
         segments, counts, expected):
-    _, merged, short = _shared_spans(segments, counts)
+    _, merged, short = _shared_spans(segments, counts, {})
     assert short == expected
     assert _shared_hints(merged, counts, short) == expected

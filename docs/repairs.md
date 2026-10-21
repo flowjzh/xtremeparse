@@ -91,7 +91,20 @@ one fresh conversation — see the zero-count recount below):
   arithmetic (a lone item over a handful of chunks reads as one long
   entry as plausibly as a merge: recounted, confirmed, and never
   adopted while thin — the recount is for the merge, not the
-  spelling).
+  spelling). A parent declared once whose material arrives mostly
+  through its nested units' chains counts those chunks too — the
+  chains carry a parent index, not the parent code, so its own lines
+  can read as a lone single-chunk item while the extractor sees the
+  whole run; the footprint is its lines plus its chain-fed chunks,
+  and only a chain-fed parent enters the pool on that reading
+  (without the chains it is the lone-item case the arithmetic above
+  owns). The re-split owns those chunks as well: a separate chain
+  line stranded under the old single instance drops where the
+  recount re-homes its chunks to another top-level instance (the
+  merge was the mis-parenting), the nested declarations re-derive
+  from the survivors — a dropped chain takes its count with it — and
+  a chain riding the parent's own line is one chunk's joint
+  destination, moving with the chunk.
 - Merged sub-entries. A lifted sub-array's sub-entries riding one line
   together — a ranged chain or comma-joined chains of one parent
   instance — are the merged shape the previous bullet cannot see:
@@ -107,7 +120,11 @@ one fresh conversation — see the zero-count recount below):
   material. Adoption is code's and per parent: the openings that
   anchor in the parent's footprint ARE its sub-entries — a quote
   landing elsewhere is another parent's instance, dropped — and they
-  partition the footprint at their anchors; a recount that names none
+  partition the footprint at their anchors; the head before the first
+  anchor and the tail after the last stay the parent's own, unless
+  that last anchor opens a markdown heading — the heading is the
+  sub-entry's opening and the blocks that follow are its continuation,
+  riding the last sub-entry; a recount that names none
   of them and says zero strips the chains and the declaration together
   (the parent keeps its chunks); openings all missing the
   footprint beside a positive count are no evidence to unmake the map —
@@ -122,6 +139,10 @@ one fresh conversation — see the zero-count recount below):
   an inseparable pair on one chunk is a legal draw. Demotion is the
   point: the titles of a narrated
   progression inside one band draw like sub-entries and are not.
+  The top-level re-split is adopted before this fold reads its
+  footprints: a count-1 parent's chain-fed footprint can pool the
+  parent in the same round a merged-nested recount pends, and the
+  re-split's re-homing decides which chunks the fold then sees.
 
 A fan-out round is a suggestion: an empty reply declines it, and so
 does an answer that fails validation — the standing map was valid
