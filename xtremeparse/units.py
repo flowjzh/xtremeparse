@@ -38,7 +38,9 @@ class Unit:
     @property
     def header(self) -> str:
         """The card's first line — ``[path | kind] description``, the
-        unit's own semantics without its field list."""
+        unit's own semantics without its field list; every later card
+        line is a two-space-indented continuation, schema text arrives
+        pre-reflowed (``_card_text``)."""
         return self.card.splitlines()[0]
 
     @property
@@ -67,6 +69,17 @@ def decompose(schema: JSONSchema) -> list[Unit]:
     return units
 
 
+def _card_text(text: str) -> str:
+    # schema text with a line break rides as a two-space-indented
+    # continuation line so the card keeps its [path | kind] first line
+    # and owns its whole block
+    return text.replace('\r\n', '\n').replace('\r', '\n').replace('\n', '\n  ')
+
+
+def _card_header(path: str, kind: str, prop: JSONSchema) -> str:
+    return f'[{path} | {kind}] {_card_text(prop.get("description", ""))}'.strip()
+
+
 def _object_units(path: str, prop: JSONSchema) -> list[Unit]:
     props = prop.get('properties') or {}
     arrays = {k for k, v in props.items() if 'array' in type_set(v)}
@@ -76,7 +89,7 @@ def _object_units(path: str, prop: JSONSchema) -> list[Unit]:
         sub = {**prop, 'properties': rest}
         if 'required' in prop:
             sub['required'] = [k for k in prop['required'] if k in rest]
-        header = f'[{path} | object] {prop.get("description", "")}'.strip()
+        header = _card_header(path, 'object', prop)
         units.append(Unit(path, 'object', sub, f'{header}\n  {_fields_card(rest)}'))
     return units + [u for k in arrays for u in _array_units(f'{path}.{k}', props[k])]
 
@@ -110,7 +123,7 @@ def _array_unit(path: str, prop: JSONSchema, parent: str = None) -> Unit:
 
 
 def _array_card(path: str, prop: JSONSchema, items: JSONSchema) -> str:
-    header = f'[{path} | array] {prop.get("description", "")}'.strip()
+    header = _card_header(path, 'array', prop)
     if fields := _fields_card(items.get('properties') or {}):
         header = f'{header}\n  per item: {fields}'
     return header
@@ -121,7 +134,7 @@ def _fields_card(props: dict) -> str:
 
 
 def _field_card(name: str, prop: JSONSchema) -> str:
-    desc = prop.get('description', '')
+    desc = _card_text(prop.get('description', ''))
     if annot := prop.get('format') or _nonstring(prop.get('type')):
         desc = f'{desc}({annot})'
     return f'{name} {desc}'.strip()

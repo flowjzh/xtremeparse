@@ -63,6 +63,26 @@ def test_cards_carry_the_description_chain():
     assert '(boolean)' in cards['basic_info']
 
 
+def test_multiline_description_rides_indented_under_the_card():
+    units = decompose({'type': 'object', 'properties': {
+        'jobs': {'type': 'array', 'description': 'lead line:\n* case one\n* case two',
+                 'items': {'type': 'object',
+                           'properties': {'company': {'type': 'string'}}}}}})
+    assert units[0].card == ('[jobs | array] lead line:\n'
+                             '  * case one\n'
+                             '  * case two\n'
+                             '  per item: company')
+    assert units[0].header == '[jobs | array] lead line:'
+
+
+def test_multiline_field_description_rides_indented_too():
+    units = decompose({'type': 'object', 'properties': {
+        'a': {'type': 'object',
+              'properties': {'x': {'type': 'string',
+                                   'description': 'one\r\ntwo'}}}}})
+    assert units[0].card == '[a | object]\n  x one\n  two'
+
+
 def test_bare_schema_degrades_to_name_only_cards():
     units = decompose({'type': 'object', 'properties': {
         'a': {'type': 'string'},
