@@ -1936,11 +1936,15 @@ def _lay_subentries(per_chunk: dict, domain: list, anchors: list,
     partition both nested folds adopt at their quotes. The run's head
     stays the parent's own; so does the tail after the last anchor,
     unless that anchor opens a heading — a heading is the sub-entry's
-    opening and the blocks that follow are its continuation, so they
-    ride the last sub-entry."""
-    tail = is_heading(chunks[anchors[-1]])
+    opening and the blocks that follow are its continuation, riding
+    the last sub-entry up to the next heading: from a heading that
+    opens later in the footprint on, the blocks are an opening the
+    recount missed and stay the parent's own."""
+    limit = min([c for c in domain if c > anchors[-1] and is_heading(chunks[c])],
+                default=max(domain) + 1 if is_heading(chunks[anchors[-1]])
+                else anchors[-1] + 1)
     for c in domain:
-        if c >= anchors[0] and (c <= anchors[-1] or tail):
+        if c >= anchors[0] and c < limit:
             per_chunk[c].append((code, bisect_right(anchors, c) - 1, parent))
 
 

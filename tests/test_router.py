@@ -2125,6 +2125,27 @@ async def test_undrawn_heading_sub_entry_keeps_its_tail_description():
     assert [(g.item, g.chunk_ids) for g in jobs] == [(0, [1, 2, 3, 4, 5])]
 
 
+async def test_underquoted_heading_recount_leaves_a_later_heading_to_the_parent():
+    # the recount under-quotes: a third heading still opens in the
+    # footprint, so the tail rides only up to it — the anchored last
+    # sub-entry keeps its description, the missed opening's blocks stay
+    # the parent's own
+    chunks = ['姓名张三', '### 公司甲', '### 公司甲·工程师', '工程师描述',
+              '### 公司甲·经理', '经理描述', '### 公司甲·总监', '总监描述', '无关页脚']
+    runner = ScriptedRunner(
+        agent_result('0 a\n1-7 b.0\n8 -\nb: 1\nb.0.c: 3'),
+        agent_result('b.0.c: 2\n### 公司甲·工程师\n### 公司甲·经理'))
+    routing = await route(runner, payload=PAYLOAD, schema_head=HEAD,
+                          units=NESTED_UNITS, chunks=chunks)
+    assert len(runner.calls) == 2
+    roles = [g for g in routing.groups if g.unit.path == 'jobs.roles']
+    assert [(g.item, g.chunk_ids) for g in roles] == \
+        [(0, [2, 3]), (1, [4, 5])]
+    jobs = [g for g in routing.groups if g.unit.path == 'jobs']
+    assert [(g.item, g.chunk_ids) for g in jobs] == \
+        [(0, [1, 2, 3, 4, 5, 6, 7])]
+
+
 async def test_undrawn_single_quote_cannot_demote_a_multi_entry_chain():
     # a count declared but no chain line drawn; the recount answers one
     # and quotes the parent's own opening — one anchor is not evidence

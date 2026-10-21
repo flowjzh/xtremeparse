@@ -124,7 +124,9 @@ one fresh conversation — see the zero-count recount below):
   anchor and the tail after the last stay the parent's own, unless
   that last anchor opens a markdown heading — the heading is the
   sub-entry's opening and the blocks that follow are its continuation,
-  riding the last sub-entry; a recount that names none
+  riding the last sub-entry up to the next heading the footprint
+  holds, if one opens (from there on the blocks are an opening the
+  recount missed and stay the parent's own); a recount that names none
   of them and says zero strips the chains and the declaration together
   (the parent keeps its chunks); openings all missing the
   footprint beside a positive count are no evidence to unmake the map —
