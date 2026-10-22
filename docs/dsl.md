@@ -45,8 +45,7 @@ repeating (array) unit.
     never written bare (`d.0`, `d: 2`, `d = c.0.d`) — validation names
     the chain instead; a bare `d: 0` is tolerated as the silence it
     restates, an identical repeat of the chain count as the restatement
-    it is (the model re-declares it after the chain lines to attach the
-    budget), and a sub-entry takes no count line of its own.
+    it is, and a sub-entry takes no count line of its own.
     A chain line drawn inside the parent instance's own run
     becomes the fine partition of that run: the parent's line stays
     the one carrying the coverage, and each sub-entry keeps its own
@@ -60,11 +59,8 @@ repeating (array) unit.
 - A ranged run (`12-93 x.0-92`) is the compact shared form: those chunks
   carry exactly instances 0..92, inseparably — one destination instead
   of 93 comma-joined indexes, the run's material extracted once until a
-  split round redraws it. The base prompt makes it mandatory for dense
-  entry-list runs (consecutive instances, roughly one to a chunk): the
-  initial draw stays one short line — cheap to emit and, when a split
-  round rewrites it, cheap to quote in a diff. A range takes its line
-  alone only as the inseparable batched run it means. Comma-joined
+  split round redraws it. A range takes its line alone only as the
+  inseparable batched run it means. Comma-joined
   with another destination (`5 x.0,y.0-y.2`) it spells the shared
   form compactly — instances a..b each ride the line's chunks, one
   chunk or many — and the parser spells it back out per index. No
@@ -143,11 +139,10 @@ Violations are fed back as repair errors (bounded rounds, then
 
 Tolerated noise: two map lines
 claiming the SAME chunk range union their destinations into one line —
-the model lines a parent's run and its sub-entries' chains up as
-separate same-range lines, and one chunk set is one line's semantics;
+one chunk set is one line's semantics;
 a repeated destination on one line is idempotent, never an error; an
 exact duplicate map line collapses; per-sub-entry declarations
-(`c.0.d.0: 1`, the model's mirror of item counting) are tolerated and
+(`c.0.d.0: 1`) are tolerated and
 fold — the highest numbered sub-entry is the parent's count when no
 explicit `c.0.d: <n>` stands; a dotted tail on an item keeps
 its leading index — a dotted tail that spells a nested unit (its code
@@ -182,8 +177,8 @@ the routed material before use; the declared forms ride in the
 trace's router budgets verbatim. Budgets shape output through batch
 (consecutive small items coalesce into one shared call while their
 accumulated budget fits the per-call capacity) and are never enforced
-on the output. Overruns are accepted — a retry would cost a full
-extra decode. A host's `output_budgets={'path': n | [n, ...]}`
+on the output. Overruns are accepted. A host's
+`output_budgets={'path': n | [n, ...]}`
 overrides the router's declarations per path — except on the marked
 paths of the @verbatim section below, where a derived pricing
 outranks both.
@@ -199,14 +194,10 @@ carries it) and emitted as the JSON Schema extension keyword
 SYNTAX.md. Hand-written schemas set the keyword directly. The library
 then enforces the contract without host wiring:
 
-- **Prompt cue**: the router-plane schema block folds each marker
-  into its field description as an inline `@verbatim` cue. The
-  structured keyword alone is easy for the model to skip: moving the
-  marker out of the description shifted the router's declared count on
-  a bilingual same-company multi-entry source (3 → 4 in about a third
-  of draws), and the rendered cue restored the expected count in 20/20
-  draws. The schema object is untouched; enforcement still reads the
-  keyword.
+- **Prompt cue**: every model-facing schema copy drops the keyword —
+  it is an enforcement key, not model vocabulary. Each marked field's
+  description renders the inline `@verbatim` cue instead. The schema
+  object is untouched; enforcement still reads the keyword.
 - **Budget**: units carrying marked fields get their output budget
   computed from the routed material (a verbatim echo costs what its
   source costs), discarding the router's declared estimate and a host

@@ -12,13 +12,12 @@ absolute cap, ``@<n>%`` a ratio of the item's mapped material, or
 the executor treats as an arrangement), and per parent instance for a
 lifted sub-array (``c.0.d: 2``). The map enumerates: the model
 numbers a repeating unit's instances as it meets them, so the count is
-derived from the map rather than committed up front — a count-first
-declaration made the model report one fewer instance (counting is a
-weak operation) and then obey its own wrong number, silently dropping
-the section's tail entry. A run may feed several units at once
-(comma-joined codes) — a summary or cross-cutting unit reading the
-same text a detailed unit extracts; exclusive partitioning broke on
-exactly that shape. A ranged run (``12-93 x.0-81``) is the compact
+derived from the map rather than committed up front — counting is a
+weak operation, and a declared count can override the map and drop a
+section's tail entry. A run may feed several units at once (comma-joined
+codes) — a summary or cross-cutting unit reading the same text a
+detailed unit extracts; exclusive partitioning cannot express that
+shape. A ranged run (``12-93 x.0-81``) is the compact
 shared form: those chunks carry exactly instances 0..81,
 inseparably — one line the executor keeps whole until a split round
 redraws it. A valid map that leaves fan-out on the table — a shared
@@ -83,8 +82,8 @@ SHARED_RECOUNT_DESCRIPTION = ('Per recounted unit: a count line and the '
                               "instances' opening quotes")
 _BOTH_RECOUNT_DESCRIPTION = ('Per recounted unit: a count line, then its '
                              "instances' opening quotes or map lines")
-# placeholders every prompt template must carry (host overrides are
-# validated against these; see docs/prompting.md)
+# placeholders every host prompt override must carry (validated at
+# construction; see docs/prompting.md)
 ROUTE_PLACEHOLDERS = frozenset({'top', 'none', 'legend', 'chunks'})
 RECOUNT_PLACEHOLDERS = frozenset({'legend', 'chunks'})
 _DEST = (r'[a-z]+(?:\.\d+)*(?:\.[a-z_]+(?:\.\d+)*)?'
@@ -274,12 +273,9 @@ Rules:
   lines, item indexes of each unit run 0..used-1 with no gaps, every
   count line matches the map.
 
-{chunks}
-
 Unit codes (each entry below is that unit's card, a definition for
 reference — the map and count lines name codes only):
-{legend}
-{overall}'''
+{legend}'''
 
 
 _DIFF_HOWTO = '''Reply with a unified diff against your previous map: "-" lines
@@ -297,10 +293,12 @@ _OPENING_RULE = ('exactly n lines, one per instance, each quoting VERBATIM the\n
                  '   opening text of that instance as it stands in the chunk\n'
                  '   listing — enough text to locate its chunk, no commentary')
 
-_CHECK = '''You are rechecking part of a routing decision. The repeating units
+_CHUNK_READ = ('read the whole chunk listing in the preceding message; a brief\n'
+               'mention inside an otherwise irrelevant run is still an instance')
+
+_CHECK_PRECEDING = '''You are rechecking part of a routing decision. The repeating units
 listed at the end were left at zero; recount their instances in the
-DOCUMENT — read the whole chunk list; a brief mention inside an
-otherwise irrelevant run is still an instance.
+DOCUMENT — ''' + _CHUNK_READ + '''.
 
 For each unit answer a count line "<code>: <n>" — how many instances
 the DOCUMENT holds — <code> being that unit's code from the list at
@@ -308,8 +306,6 @@ the end; then:
 - a unit with its own text in the chunks:
    ''' + _OPENING_RULE + ''';
 - "<code>: 0" alone when the document truly does not contain the unit.
-
-{chunks}
 
 Units left at zero (code = unit header):
 {legend}
@@ -512,13 +508,23 @@ def _listing(chunks: list[str]) -> str:
                      for i, c in enumerate(chunks))
 
 
+_CHUNKS_LEAD = 'The document above is split into numbered chunks:'
+
+
+def _chunks_part(chunks: list[str], label: str = _CHUNKS_LEAD) -> str:
+    """The chunk listing as its own stable user message. The document
+    rides the system message, so the listing never repeats it; the
+    default label is the standard lead-in, and an override gets the
+    plain `Chunks:` heading it was written against."""
+    return f'{label}\n\n{_listing(chunks)}'
+
+
 def _chunks_section(schema_head: str, chunks: list[str]) -> str:
-    """The {chunks} substitution — the schema block, then the Chunks:
-    heading directly over its numbered listing (the schema is not
-    chunks; the heading must not cover it). Content stays the document
-    text alone: the one system message every call shares (see
-    prompting.schema_head)."""
-    return f'{schema_head}\n\nChunks:\n\n{_listing(chunks)}'
+    """The inline {chunks} substitution a host prompt override gets —
+    the schema block ahead of the chunk listing. The default path
+    splits the listing into its own stable message (`_chunks_part`)
+    and never inlines the schema."""
+    return f'{schema_head}\n\n{_chunks_part(chunks, "Chunks:")}'
 
 
 _NAMED_MARKER = (' — a list of names: its budget is the keyword form '
@@ -527,22 +533,20 @@ _NAMED_MARKER = (' — a list of names: its budget is the keyword form '
 
 def _legend_entry(code: str, unit: Unit) -> str:
     """One legend entry — the full card: the unit header plus its field
-    descriptions (the schema block ahead of the Chunks: heading carries
-    them a second time; both carriers are measured, see
-    docs/prompting.md). The name-list marker rides the header line — the
-    legend is a scan surface, so the form verdict must sit on the line
-    the model scans (the pricing how-to stays in the budget rule)."""
+    descriptions (the router's schema message carries them a second
+    time). The name-list marker rides the header line — the legend is a
+    scan surface, so the form verdict must sit on the line the model
+    scans (the pricing how-to stays in the budget rule)."""
     if not _name_list(unit):
         return f'{code} = {unit.card}'
     return f'{code} = {unit.header}{_NAMED_MARKER}{unit.card[len(unit.header):]}'
 
 
 def _overall_block(overall: str) -> str:
-    """The block an overall instruction renders as, or '' — every default
-    template glues `{overall}` at its very end, the prompt's last line;
-    docs/prompting.md records why the slot sits there (measured). The
-    block carries its own trailing newlines, so the prompts read the
-    same either way."""
+    """The block an overall instruction renders as, or '' — the recount
+    templates glue `{overall}` at their very end, and the router renders
+    it as the final message; the block carries its own trailing
+    newlines, so the prompts read the same either way."""
     return f'Overall Instruction:\n\n{overall}\n\n' if overall else ''
 
 
@@ -586,23 +590,49 @@ async def route(runner: AgentRunner, *, payload: str,
     its declared-vs-used mismatches through: the extraction's count
     arbitration owns the number. ``payload`` is the document text, the
     byte-identical system message every call shares. ``schema_head``
-    is the schema block rendered ahead of the Chunks: heading (see
-    prompting.schema_head). ``instructions``/``recount_instructions``
+    is the schema block (see prompting.schema_head); the default path
+    sends it as its own stable user message after the chunk listing,
+    while a host prompt override gets it inline ahead of its `Chunks:`
+    listing. The stable router-plane blocks ride
+    separate user messages — the chunk listing, the schema, then the
+    rules and legend — with the overall instruction as the final
+    message; recounts reuse the chunk listing and never repeat the
+    schema. The message split is the provider-cache boundary: a cache
+    block closes only at a message edge. ``instructions``/
+    ``recount_instructions``
     replace the default prompt templates; they must carry their
     placeholders (ROUTE_PLACEHOLDERS / RECOUNT_PLACEHOLDERS — the
     Extractor validates host overrides at construction). ``overall`` is
     the schema's document-level instruction, rendered as the "Overall
-    Instruction" block in the default prompts — '' when absent."""
+    Instruction" block in the default recount prompts and as the
+    router's final message — '' when absent."""
     by_code = _codes(units)
     overall_block = _overall_block(overall)
-    instructions = (instructions or _INSTRUCTIONS).format(
-        top=len(chunks) - 1, none=NONE, overall=overall_block,
-        # full cards: the header orients the unit, its field lines carry
-        # the descriptions every caller reasons over; a unit that only
-        # summarizes another is recognized by the card naming its mirror
-        legend='\n'.join(_legend_entry(code, unit)
-                         for code, unit in by_code.items()),
-        chunks=_chunks_section(schema_head, chunks))
+    # the stable chunk block is built once — the recounts reuse this
+    # exact string, so the provider cache sees one prefix
+    chunks_part = _chunks_part(chunks)
+    # full cards: the header orients the unit, its field lines carry the
+    # descriptions every caller reasons over; a unit that only
+    # summarizes another is recognized by the card naming its mirror
+    legend = '\n'.join(_legend_entry(code, unit)
+                       for code, unit in by_code.items())
+    if instructions is None:
+        # stable user messages: chunks, schema, rules+legend; the overall
+        # instruction stays the final (uncached) message
+        parts = [chunks_part, schema_head,
+                 _INSTRUCTIONS.format(top=len(chunks) - 1, none=NONE,
+                                      legend=legend)]
+        instructions = overall_block or \
+            'Output the segment map and count declarations only.'
+        cache_blocks = 1 + len(parts)
+    else:
+        # a host override owns its prompt's shape; the stable material
+        # rides its {chunks} slot
+        parts = None
+        instructions = instructions.format(
+            top=len(chunks) - 1, none=NONE, overall=overall_block,
+            legend=legend, chunks=_chunks_section(schema_head, chunks))
+        cache_blocks = 2
     schema: JSONSchema = {'type': 'string',
                           'description': 'Segment map and count declarations '
                                          'only — no prose, no JSON.'}
@@ -689,9 +719,10 @@ async def route(runner: AgentRunner, *, payload: str,
             own = {c for c, ds in _cover(state.segments).items()
                    if any((dd[0], dd[2]) in merged_nested for dd in ds)}
             listing = [chunks[c] for c in sorted(own)]
-        answer = await _recount_shared(runner, payload, labels,
-                                       by_code, listing, overall_block=overall_block,
-                                       schema_head=schema_head)
+        answer = await _recount_shared(
+            runner, payload, labels, by_code, overall_block=overall_block,
+            chunks_part=chunks_part if listing is chunks
+            else _chunks_part(listing))
         adoption = _adopt_recount(state, answer, shared=shared,
                                   merged=merged_nested, by_code=by_code,
                                   chunks=chunks)
@@ -717,7 +748,7 @@ async def route(runner: AgentRunner, *, payload: str,
         # it — shared_and_zeros owns that round, and the caller
         # passes a non-empty zero list either way
         answer = await _recount(runner, payload, by_code, zeros,
-                                chunks,
+                                chunks, chunks_part,
                                 instructions=recount_instructions,
                                 overall_block=overall_block,
                                 schema_head=schema_head)
@@ -752,9 +783,8 @@ async def route(runner: AgentRunner, *, payload: str,
         # applies
         labels = merge_labels(shared, merged_nested)
         answer = await _recount_both(runner, payload, labels,
-                                     zeros, by_code, chunks,
-                                     overall_block=overall_block,
-                                     schema_head=schema_head)
+                                     zeros, by_code, chunks_part,
+                                     overall_block=overall_block)
         adoption = _adopt_recount(state, answer, zeros=zeros, shared=shared,
                                   merged=merged_nested, by_code=by_code,
                                   chunks=chunks,
@@ -863,10 +893,16 @@ async def route(runner: AgentRunner, *, payload: str,
     lenient = set()  # unit codes whose declared-vs-used mismatch passed
     # through after a replay (the count arbitration owns the number)
     for _ in range(5):  # initial call + four bounded repairs
+        # a fresh default call derives the cache boundary from its parts;
+        # an override and a repair round pass the count explicitly
+        explicit_blocks = None if parts is not None and last is None \
+            else cache_blocks
         result = await runner.run(instructions='' if last else instructions,
                                   result_schema=schema, content=payload,
                                   feedback=feedback,
-                                  history=last.history if last else None)
+                                  history=last.history if last else None,
+                                  prompt_parts=parts if last is None else None,
+                                  cache_blocks=explicit_blocks)
         last = result
         base, text = diff_base, result.data
         if base is not None:
@@ -922,9 +958,8 @@ async def route(runner: AgentRunner, *, payload: str,
                          _pending_zeros(by_code, state.counts,
                                         state.derived))
                 answer = await _recount_undrawn(runner, payload, pool,
-                                                zeros, by_code, chunks,
-                                                overall_block=overall_block,
-                                                schema_head=schema_head)
+                                                zeros, by_code, chunks_part,
+                                                overall_block=overall_block)
                 adoption = _adopt_recount(state, answer, zeros=zeros,
                                           pool=pool, by_code=by_code,
                                           chunks=chunks,
@@ -1013,15 +1048,26 @@ async def route(runner: AgentRunner, *, payload: str,
 
 
 async def _recount(runner: AgentRunner, payload: str, by_code: dict,
-                   zeros: list, chunks: list[str], schema_head: str,
-                   instructions: str = None, overall_block: str = '') -> str:
+                   zeros: list, chunks: list[str], chunks_part: str,
+                   schema_head: str,
+                   instructions: str = None,
+                   overall_block: str = '') -> str:
     """Fresh-attention recount of the units a valid map left at zero.
     Deliberately NOT a repair round: no history, so the model never
     sees the map it is re-examining — anchoring on its own finished
     map is exactly the failure being corrected (a repair round shown
-    the map re-emits it verbatim, measured). Returns the raw answer —
-    `_adopt_recount` reads its claims."""
-    instructions = (instructions or _CHECK).format(
+    the map re-emits it verbatim. The chunks ride their own stable
+    message; the schema is not repeated. A host override owns
+    its template and gets the schema+chunks material inline. Returns
+    the raw answer — `_adopt_recount` reads its claims."""
+    if instructions is None:
+        template, material = _CHECK_PRECEDING, ''
+        parts, blocks = [chunks_part], None
+    else:
+        template = instructions
+        material = _chunks_section(schema_head, chunks)
+        parts, blocks = None, None  # one-off override: system only
+    instructions = template.format(
         # only the recounted units appear — the other codes' mere
         # presence invited a full re-answer of every array (their
         # "final" counts re-derived from the chunks, measured: 137
@@ -1029,13 +1075,14 @@ async def _recount(runner: AgentRunner, payload: str, by_code: dict,
         # derivation needs no source code in the legend: _splice's
         # crossed-count adoption reads it off the misplaced claims
         legend=_recount_legend({c: c for c in zeros}, by_code),
-        chunks=_chunks_section(schema_head, chunks), overall=overall_block)
+        chunks=material, overall=overall_block)
     return await fresh_check(
-        runner, payload, instructions, RECOUNT_DESCRIPTION)
+        runner, payload, instructions, RECOUNT_DESCRIPTION,
+        prompt_parts=parts, cache_blocks=blocks)
 
 
-_SHARED_CHECK = '''A document's chunks are listed below. Some repeating units' instances
-were left merged as one; recount them.
+_SHARED_CHECK_PRECEDING = '''A document's chunks are in the preceding message. Some repeating units'
+instances were left merged as one; recount them.
 
 For each unit marked RECOUNT answer:
 1. a count line "<code>: <n>" — how many instances the DOCUMENT holds;
@@ -1043,29 +1090,27 @@ For each unit marked RECOUNT answer:
 
 Units:
 {units}
-
-{chunks}
 {overall}'''
 
 
 async def _recount_shared(runner: AgentRunner, payload: str,
-                          shared: dict, by_code: dict, chunks: list[str],
-                          schema_head: str,
+                          shared: dict, by_code: dict, chunks_part: str,
                           overall_block: str = '') -> str:
     """Fresh-attention recount of the units left merged into shared
     runs. Every shared unit is recounted in the one conversation — the
-    chunks listing, the costly part, is shared. The answer carries, per
-    unit, the count and each instance's opening text: quotes anchor to
-    chunks by content, the one coordinate the model quotes reliably —
-    index arithmetic echoes the prompt's own examples instead of the
-    chunks (measured: a stable count over hallucinated indexes).
-    Returns the raw answer; `_adopt_recount` reads the claims, keyed by
-    the labels the legend printed."""
-    instructions = _SHARED_CHECK.format(
-        units=_recount_legend(shared, by_code),
-        chunks=_chunks_section(schema_head, chunks), overall=overall_block)
+    chunks listing, the costly part, is shared and rides its own stable
+    message. The answer carries, per unit, the count and each
+    instance's opening text: quotes anchor to chunks by content, the
+    one coordinate the model quotes reliably — index arithmetic echoes
+    the prompt's own examples instead of the chunks. Returns the raw
+    answer;
+    `_adopt_recount` reads the claims, keyed by the labels the legend
+    printed."""
+    instructions = _SHARED_CHECK_PRECEDING.format(
+        units=_recount_legend(shared, by_code), overall=overall_block)
     return await fresh_check(
-        runner, payload, instructions, SHARED_RECOUNT_DESCRIPTION)
+        runner, payload, instructions, SHARED_RECOUNT_DESCRIPTION,
+        prompt_parts=[chunks_part])
 
 
 @dataclass(frozen=True)
@@ -1104,10 +1149,9 @@ def parse_claims(result, labels: dict | set) -> dict[str, Claim]:
 
 # The quote rule has one home in _OPENING_RULE; the firing modes differ
 # only in their state clause and shared-unit bullet.
-_MIXED_CHECK = '''A document's chunks are listed below. Some repeating units were left
-miscounted: {state_clause}
-Recount them in the DOCUMENT — read the whole chunk list; a brief
-mention inside an otherwise irrelevant run is still an instance.
+_MIXED_CHECK_PRECEDING = '''A document's chunks are in the preceding message. Some repeating units
+were left miscounted: {state_clause}
+Recount them in the DOCUMENT — ''' + _CHUNK_READ + '''.
 
 For each unit marked RECOUNT answer a count line "<code>: <n>" — how
 many instances the DOCUMENT holds — then, per its tag:
@@ -1120,8 +1164,6 @@ many instances the DOCUMENT holds — then, per its tag:
 
 Units:
 {units}
-
-{chunks}
 {overall}'''
 
 _MIXED_STATE = {
@@ -1134,30 +1176,29 @@ _ZERO_STATE = ', the ZERO ones were written off as absent.'
 
 
 async def _mixed_recount(runner: AgentRunner, payload: str, shared: dict,
-                         zeros: list, by_code: dict, chunks: list[str],
-                         schema_head: str, overall_block: str,
-                         tag: str) -> str:
+                         zeros: list, by_code: dict, chunks_part: str,
+                         overall_block: str, tag: str) -> str:
     """One fresh conversation for the units a map miscounted. The firing
     modes share the ZERO half, the legend builder and the result
     description; the tag selects the state clause and the shared-unit
-    bullet."""
+    bullet. The chunks listing rides its own stable message."""
     state, subject, punct = _MIXED_STATE[tag]
     units = {**shared, **{z: z for z in zeros}}
-    instructions = _MIXED_CHECK.format(
+    instructions = _MIXED_CHECK_PRECEDING.format(
         state_clause=state + _ZERO_STATE,
         shared_bullet=f'- {subject}:\n   {_OPENING_RULE}{punct}',
         units=_recount_legend(
             units, by_code,
             lambda label: ' ZERO' if label in zeros else f' {tag}'),
-        chunks=_chunks_section(schema_head, chunks), overall=overall_block)
+        overall=overall_block)
     description = _BOTH_RECOUNT_DESCRIPTION if zeros \
         else SHARED_RECOUNT_DESCRIPTION
-    return await fresh_check(runner, payload, instructions, description)
+    return await fresh_check(runner, payload, instructions, description,
+                             prompt_parts=[chunks_part])
 
 
 async def _recount_both(runner: AgentRunner, payload: str, shared: dict,
-                        zeros: list, by_code: dict, chunks: list[str],
-                        schema_head: str,
+                        zeros: list, by_code: dict, chunks_part: str,
                         overall_block: str = '') -> str:
     """Fresh-attention recount of the merged and the zero units in the
     one conversation — the chunks listing, the costly part, is shared.
@@ -1165,7 +1206,7 @@ async def _recount_both(runner: AgentRunner, payload: str, shared: dict,
     opening. Returns the raw answer: `_adopt_recount` reads its claims,
     each label's section skipping the other units' codes."""
     return await _mixed_recount(
-        runner, payload, shared, zeros, by_code, chunks, schema_head,
+        runner, payload, shared, zeros, by_code, chunks_part,
         overall_block, 'MERGED')
 
 
@@ -1291,7 +1332,7 @@ def _dest_tokens(dests, by_code: dict) -> str:
 
 async def _recount_undrawn(runner: AgentRunner, payload: str,
                            units: list, zeros: list, by_code: dict,
-                           chunks: list[str], schema_head: str,
+                           chunks_part: str,
                            overall_block: str = '') -> str:
     """Fresh-attention recount of the units a map declared but never
     drew. The state clause names the firing mode; the chain-scoping
@@ -1303,8 +1344,8 @@ async def _recount_undrawn(runner: AgentRunner, payload: str,
     shared = {_chain_label(code, parent, by_code): code
               for code, parent in units}
     return await _mixed_recount(
-        runner, payload, shared, zeros, by_code, chunks, schema_head,
-        overall_block, 'UNDRAWN')
+        runner, payload, shared, zeros, by_code, chunks_part, overall_block,
+        'UNDRAWN')
 
 
 _QUOTE_WRAP = '"\'“”「」『』'

@@ -6,12 +6,12 @@ import pytest
 
 from xtremeparse.arbitration import norm
 from xtremeparse.router import (NONE, RECOUNT_PLACEHOLDERS, ROUTE_PLACEHOLDERS,
-                                Claim, RouterError, Group, _CHECK,
-                                _INSTRUCTIONS, _MIXED_CHECK, _SHARED_CHECK,
-                                _anchors, _codes, _diff_text, _name_list,
-                                _overlay_text, _recount_legend, _resplit,
-                                _shared_hints, _shared_spans, parse_claims,
-                                route)
+                                Claim, RouterError, Group, _CHECK_PRECEDING,
+                                _INSTRUCTIONS, _MIXED_CHECK_PRECEDING,
+                                _SHARED_CHECK_PRECEDING, _anchors, _codes,
+                                _diff_text, _name_list, _overlay_text,
+                                _recount_legend, _resplit, _shared_hints,
+                                _shared_spans, parse_claims, route)
 from xtremeparse.units import MISC, decompose
 from xtremeparse.prompting import schema_head
 from tests.helpers import ScriptedRunner, agent_result
@@ -47,6 +47,12 @@ async def route_with(text):
                        payload=PAYLOAD, schema_head=HEAD, units=UNITS, chunks=CHUNKS)
 
 
+def rendered(call):
+    """The prompt's user-facing text: stable parts plus the volatile tail."""
+    return '\n'.join([*(call.get('prompt_parts') or []),
+                      call.get('instructions') or ''])
+
+
 async def test_groups_carry_unit_item_and_chunk_text():
     routing = await route(runner_ok(), payload=PAYLOAD, schema_head=HEAD, units=UNITS, chunks=CHUNKS)
     assert [(g.unit.path, g.item, g.chunk_ids) for g in routing.groups] == [
@@ -67,29 +73,48 @@ async def test_prompt_carries_legend_rules_and_numbered_chunks():
     runner = runner_ok()
     await route(runner, payload=PAYLOAD, schema_head=HEAD, units=UNITS, chunks=CHUNKS)
     call = runner.calls[0]
-    assert 'a = [basic_info | object] 基本信息' in call['instructions'] \
-        and f'c = [{MISC} | scalar] created 创建时间' in call['instructions']
-    flat = norm(call['instructions'])  # line-break-proof
+    text = rendered(call)
+    assert 'a = [basic_info | object] 基本信息' in text \
+        and f'c = [{MISC} | scalar] created 创建时间' in text
+    flat = norm(text)  # line-break-proof
     assert 'cover EVERY chunk id in 0..3.' in flat
     assert 'order you meet them across the WHOLE document' in flat
     assert 'distinct instances into one' in flat
-    assert '[0] 姓名张三' in call['instructions']
-    assert '4-9 x.1' in call['instructions']  # inline format anchor
-    assert 'one job' not in call['instructions']  # no domain leakage
+    assert '[0] 姓名张三' in text
+    assert '4-9 x.1' in text  # inline format anchor
+    assert 'one job' not in text  # no domain leakage
     assert call['result_schema']['type'] == 'string'
     assert call['feedback'] is None
 
 
-async def test_content_is_bare_text_and_schema_precedes_the_chunks_heading():
+async def test_stable_prompt_parts_split_chunks_schema_and_rules():
     """The cache contract: content is the document text alone — the one
-    system message the specialists' calls share — and the schema block
-    rides ahead of the Chunks: heading, never under it."""
-    runner = runner_ok()
-    await route(runner, payload=PAYLOAD, schema_head=HEAD, units=UNITS, chunks=CHUNKS)
+    system message every call shares — and the chunk listing, schema
+    and rules ride separate stable user messages."""
+    runner = ScriptedRunner(
+        agent_result('0 a\n1-3 -\nb: 0'),
+        agent_result('b: 0'))  # the recount confirms the zero
+    await route(runner, payload=PAYLOAD, schema_head=HEAD, units=UNITS,
+                chunks=CHUNKS)
     call = runner.calls[0]
     assert call['content'] == PAYLOAD
-    rendered = call['instructions']
-    assert rendered.index(HEAD) < rendered.index('Chunks:\n\n[0] 姓名张三')
+    parts = call['prompt_parts']
+    assert len(parts) == 3
+    assert parts[0].startswith('The document above is split into numbered chunks:')
+    assert '[0] 姓名张三' in parts[0]
+    assert 'JSON Schema:' in parts[1] and '"basic_info"' in parts[1]
+    assert 'a = [basic_info | object] 基本信息' in parts[2]
+    assert 'cover EVERY chunk id in 0..3.' in norm(parts[2])
+    assert call['cache_blocks'] is None  # the adapter derives 1 + len(parts)
+    assert 'JSON Schema:' not in call['instructions']
+    assert '[0] 姓名张三' not in call['instructions']
+    # the zero recount reuses the chunks block byte-for-byte, schema
+    # excluded; the adapter derives its cache boundary from the part
+    zero_parts = runner.calls[1]['prompt_parts']
+    assert zero_parts == [parts[0]]
+    assert runner.calls[1]['cache_blocks'] is None
+    assert 'chunk listing in the preceding message' \
+        in runner.calls[1]['instructions']
 
 
 @pytest.mark.parametrize('overall, present', [(None, False),
@@ -98,8 +123,11 @@ async def test_overall_block_in_the_route_prompt(overall, present):
     runner = runner_ok()
     kwargs = {'overall': overall} if overall is not None else {}
     await route(runner, payload=PAYLOAD, schema_head=HEAD, units=UNITS, chunks=CHUNKS, **kwargs)
-    rendered = 'Overall Instruction:\n\nChinese resumes only'
-    assert (rendered in runner.calls[0]['instructions']) is present
+    expected = 'Overall Instruction:\n\nChinese resumes only'
+    assert (expected in rendered(runner.calls[0])) is present
+    if present:
+        # the router's final message is exactly the overall block
+        assert runner.calls[0]['instructions'] == expected + '\n\n'
 
 
 async def test_overall_instruction_renders_into_the_recount_prompt():
@@ -116,11 +144,22 @@ def test_default_prompts_carry_all_placeholders():
     # drift guard: an edited default missing a slot would render empty
     # at call time — the same fail-fast hosts get for their overrides
     from xtremeparse.prompting import check_placeholders
-    check_placeholders(_INSTRUCTIONS, ROUTE_PLACEHOLDERS, 'router')
-    check_placeholders(_CHECK, RECOUNT_PLACEHOLDERS, 'recount')
-    check_placeholders(_MIXED_CHECK,
-                       {'state_clause', 'shared_bullet', 'units', 'chunks',
-                        'overall'}, 'mixed recount')
+    check_placeholders(_INSTRUCTIONS, {'top', 'none', 'legend'},
+                       'router default')
+    assert '{chunks}' not in _INSTRUCTIONS and '{overall}' not in _INSTRUCTIONS
+    check_placeholders('{top} {none} {legend} {chunks}',
+                       ROUTE_PLACEHOLDERS, 'router override')
+    check_placeholders('{legend} {chunks}', RECOUNT_PLACEHOLDERS,
+                       'recount override')
+    check_placeholders(_CHECK_PRECEDING, {'legend', 'overall'}, 'zero recount')
+    check_placeholders(_SHARED_CHECK_PRECEDING, {'units', 'overall'},
+                       'shared recount')
+    check_placeholders(_MIXED_CHECK_PRECEDING,
+                       {'state_clause', 'shared_bullet', 'units', 'overall'},
+                       'mixed recount')
+    for template in (_CHECK_PRECEDING, _SHARED_CHECK_PRECEDING,
+                     _MIXED_CHECK_PRECEDING):
+        assert '{chunks}' not in template  # the material is a stable part
 
 
 def test_zero_recount_examples_show_no_concrete_chunk_id():
@@ -128,15 +167,16 @@ def test_zero_recount_examples_show_no_concrete_chunk_id():
     # the listing (measured: a three-instance summary drawn as "4", "5",
     # "6" — the example's own ids) — the zero ask names the id, never
     # shows one
-    for template in (_CHECK, _MIXED_CHECK):
+    for template in (_CHECK_PRECEDING, _MIXED_CHECK_PRECEDING):
         assert not re.search(r'\d+\s+<code>\.', template)
 
 
-def test_overall_block_rides_last_in_every_default_prompt():
+def test_overall_block_rides_last_in_every_default_recount_prompt():
     # placement is the measured fix (docs/prompting.md): a layout edit
     # that drops the slot back mid-prompt must fail here, not silently
     # revert the routing behavior
-    for template in (_INSTRUCTIONS, _CHECK, _SHARED_CHECK, _MIXED_CHECK):
+    for template in (_CHECK_PRECEDING, _SHARED_CHECK_PRECEDING,
+                     _MIXED_CHECK_PRECEDING):
         assert template.rstrip().endswith('{overall}')
 
 
@@ -555,10 +595,11 @@ async def test_shared_unit_count_still_cross_checked():
 async def test_prompt_carries_sharing_rule():
     runner = ScriptedRunner(agent_result('0 a\n1 b.0,c.0\n2-3 -\nb: 1\nc: 1'))
     await route(runner, payload=PAYLOAD, schema_head=HEAD, units=SHARED_UNITS, chunks=CHUNKS)
-    assert 'comma-join' in runner.calls[0]['instructions']
-    assert '5 x.0,y.0' in runner.calls[0]['instructions']
-    assert '3 x.0,x.1,x.2' in runner.calls[0]['instructions']
-    assert '"x = y"' in runner.calls[0]['instructions']
+    text = rendered(runner.calls[0])
+    assert 'comma-join' in text
+    assert '5 x.0,y.0' in text
+    assert '3 x.0,x.1,x.2' in text
+    assert '"x = y"' in text
 
 
 # --- derived units: "c = b" after the map mirrors the source, no map lines ---
@@ -626,7 +667,7 @@ async def test_multiline_chunks_list_one_line_each():
     runner = ScriptedRunner(*[agent_result('0-1 -\nb: 0')] * 2)
     await route(runner, payload=PAYLOAD, schema_head=HEAD, units=UNITS,
                 chunks=['两行\n的块', 'x'])
-    assert '[0] 两行 ¶ 的块' in runner.calls[0]['instructions']
+    assert '[0] 两行 ¶ 的块' in rendered(runner.calls[0])
 
 
 async def test_budget_suffix_parses_into_routing():
@@ -741,11 +782,12 @@ def test_name_list_predicate():
 async def test_prompt_carries_the_budget_rule():
     runner = runner_ok()
     await route(runner, payload=PAYLOAD, schema_head=HEAD, units=UNITS, chunks=CHUNKS)
-    assert '"x: 3 @100%,80%,50%"' in runner.calls[0]['instructions']
-    assert '"x: 3 @300"' in runner.calls[0]['instructions']  # the abs example
-    assert '"@<n>%"' in runner.calls[0]['instructions']
-    assert '"@20x3"' not in runner.calls[0]['instructions']  # no numeric anchor
-    assert 'never words' in runner.calls[0]['instructions']  # char arithmetic stays
+    text = rendered(runner.calls[0])
+    assert '"x: 3 @100%,80%,50%"' in text
+    assert '"x: 3 @300"' in text  # the abs example
+    assert '"@<n>%"' in text
+    assert '"@20x3"' not in text  # no numeric anchor
+    assert 'never words' in text  # char arithmetic stays
 
 
 async def test_a_repaired_error_that_reappears_is_called_out():
@@ -1097,7 +1139,7 @@ async def test_ranged_initial_draw_adopts_its_blocks_without_a_round():
     runner = ScriptedRunner(agent_result('0 a\n1-7 b.0-5\n8 -\na: 1\nb: 6'))
     routing = await route(runner, payload=PAYLOAD, schema_head=HEAD, units=UNITS,
                           chunks=OVER_CHUNKS)
-    assert 'NEVER enumerate' in runner.calls[0]['instructions']
+    assert 'NEVER enumerate' in rendered(runner.calls[0])
     assert len(runner.calls) == 1
     blocks = [g for g in routing.groups if g.unit.path == 'jobs']
     assert [g.items for g in blocks] == [(), (1, 2), (), (4, 5)]
@@ -1723,7 +1765,7 @@ async def test_prompt_teaches_the_chain():
     runner = ScriptedRunner(agent_result(
         '0 a\n1-2 b.0.c.0\n3 b.1\n4 -\nb: 2\nb.0.c: 1'))
     await route(runner, payload=PAYLOAD, schema_head=HEAD, units=NESTED_UNITS, chunks=NESTED_CHUNKS)
-    text = runner.calls[0]['instructions']
+    text = rendered(runner.calls[0])
     assert 'c = [jobs.roles | array]' in text  # the legend names the parent path
     assert 'nests inside' in text
     assert 'c.0.d: 2' in text and '3-15 c.0.d.0' in text

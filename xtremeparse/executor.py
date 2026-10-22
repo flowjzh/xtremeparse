@@ -17,7 +17,7 @@ from typing import Literal, Optional
 from xtremeparse.contracts import AgentRunner, AgentResult, BATCH_BUDGET_CAP, JSONSchema
 from xtremeparse.evalkit import pair_at
 from xtremeparse.prompting import (SPECIALIST_INSTRUCTIONS, WHOLE_ARRAY_ADDENDUM,
-                                   estimate_tokens)
+                                   estimate_tokens, prompt_schema)
 from xtremeparse.router import Routing, items_of
 from xtremeparse.scheduling import TaskScheduler
 from xtremeparse.units import Unit
@@ -204,7 +204,8 @@ async def dispatch_specialist(runner: AgentRunner, call: Call, *, payload: str,
     JSON Patch or the full corrected value. Returns the dispatched
     task."""
     async def invoke() -> AgentResult:
-        reply_schema = schema if schema is not None else call.value_shape
+        reply_schema = prompt_schema(
+            schema if schema is not None else call.value_shape)
         instructions = (specialist_instructions or SPECIALIST_INSTRUCTIONS).format(
             card=call.unit.card)
         if call.array_shaped:

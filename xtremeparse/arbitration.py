@@ -3,7 +3,7 @@ arbitration built on it.
 
 A fresh call carries no history and no feedback — the model never sees
 the map or the extraction it is re-examining (a round shown its own
-answer re-emits it verbatim, measured). The discipline lives here so a
+answer re-emits it verbatim). The discipline lives here so a
 future "give it more context" edit cannot silently restore the anchor;
 the router's recount paths are its first consumers, the count
 arbitration its second: when a unit's declared count and its extracted
@@ -28,15 +28,21 @@ def norm(s: str) -> str:
 
 
 async def fresh_check(runner: AgentRunner, payload: str,
-                      instructions: str, description: str) -> str:
+                      instructions: str, description: str,
+                      prompt_parts: list[str] = None,
+                      cache_blocks: int = None) -> str:
     """One fresh-conversation call — no history (the model never sees
-    the answer it would anchor on and re-emit verbatim, measured), no
-    feedback. Shared by every check prompt this module and the router
-    run."""
+    the answer it would anchor on and re-emit verbatim), no feedback.
+    ``prompt_parts`` are the stable user messages the router plane
+    prepends before the ask; ``cache_blocks`` marks the leading messages
+    the provider cache should close on. Shared by every check prompt
+    this module and the router run."""
     result = await runner.run(instructions=instructions,
                               result_schema={'type': 'string',
                                              'description': description},
-                              content=payload, feedback=None)
+                              content=payload, feedback=None,
+                              prompt_parts=prompt_parts,
+                              cache_blocks=cache_blocks)
     return str(result.data)
 
 

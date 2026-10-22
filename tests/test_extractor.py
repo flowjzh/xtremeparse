@@ -233,12 +233,21 @@ def test_schema_head_renders_verbatim_cues_without_touching_the_schema():
     rendered = json.loads(schema_head(schema).removeprefix('JSON Schema:\n'))
     prop = rendered['properties']['detail']
     assert prop['description'] == '照抄原文 @verbatim'
-    assert prop['x-verbatim'] == 0.9
+    assert 'x-verbatim' not in prop  # enforcement key stays out of the prompt
     assert detail == {'type': 'string', 'description': '照抄原文', 'x-verbatim': 0.9}
     # a description already carrying the cue is not marked twice
     marked = {'type': 'object', 'properties': {'d': {
         'type': 'string', 'description': '照抄 @verbatim', 'x-verbatim': 0.9}}}
     assert schema_head(marked).count('@verbatim') == 1
+
+
+async def test_specialist_schema_drops_the_enforcement_key_too():
+    runner = VerbatimRunner()
+    await Extractor(runner).extract(VERBATIM_TEXT, VERBATIM_SCHEMA, lambda d: [])
+    schemas = [json.dumps(c['result_schema']) for c in runner.calls]
+    assert all('x-verbatim' not in s for s in schemas)
+    # the cue rides the specialist's field description as well
+    assert any('@verbatim' in s for s in schemas)
 
 
 async def test_over_budget_output_is_kept_not_retried():
