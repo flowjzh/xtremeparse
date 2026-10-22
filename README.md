@@ -29,7 +29,8 @@ from xtremeparse import Extractor
 
 class MyRunner:  # adapt your agent framework (PydanticAI, ...)
     async def run(self, *, instructions, result_schema, content,
-                  scope=None, tools=None, history=None, feedback=None): ...
+                  scope=None, tools=None, history=None, feedback=None,
+                  prompt_parts=None, cache_blocks=None): ...
 
 extractor = Extractor(MyRunner())
 
@@ -80,7 +81,7 @@ Eval support: `xtremeparse.evalkit` (zero-dep) reads budgets and router
 invariants back out of a trace; `xtremeparse.judging` runs one rubric
 call through the same `AgentRunner` neutrality (bring your own judge —
 a model other than the extraction fleet's and temperature 0 both read
-better, measured); `pip install xtremeparse[evals]` adds pydantic-evals
+better); `pip install xtremeparse[evals]` adds pydantic-evals
 adapters (`RouterOverlap`, `BudgetFit`, `RubricJudge`) over those
 mechanisms for hosts building regression suites.
 

@@ -134,9 +134,9 @@ async def correct(runner: AgentRunner, execution: Execution, *, validator: Valid
         # reply interpretation — they must never drift apart
         plan = [(call, feedback, _remedy(call, full_form))
                 for call, feedback in routed]
-        # every routed issue rides (a patch can fix them all at once —
-        # one per round serialized the repair and burned the budget);
-        # only the last is wrapped (see the PATCH_HOWTO note)
+        # every routed issue rides (a patch can fix them all at once;
+        # one issue per round serializes the repair and burns the
+        # budget); only the last is wrapped (see the PATCH_HOWTO note)
         tasks = [await dispatch_specialist(
             runner, call, payload=payload, scheduler=scheduler,
             specialist_instructions=specialist_instructions,
@@ -174,8 +174,8 @@ def _remedy(call: Call, full_form: set) -> str:
     untouched entries cannot collapse. 'full': the protocol broke — the
     whole value again, history kept. 'fresh': the previous result is an
     empty array — nothing to diff and a poor anchor (shown its own [],
-    the model re-declares it and a present entry stays lost: measured),
-    so the re-ask starts a clean conversation."""
+    the model re-declares it and a present entry stays lost), so the
+    re-ask starts a clean conversation."""
     if call.result is None or id(call) in full_form:
         return 'full'
     if isinstance(call.result.data, list) and not call.result.data:
@@ -189,8 +189,8 @@ def _route(calls: list, issues: list) -> list:
     paths. Count issues route by direction: shortfalls to the SHORT
     calls only (a call that returned its full slot count holds no
     missing instance, and re-running one under "return every instance"
-    feedback hazards its healthy result for nothing — measured: a full
-    batch re-emitted fewer entries and the merge replaced them);
+    feedback hazards its healthy result for nothing: a full batch
+    re-emits fewer entries and the merge replaces them);
     over-counts to the OVER-FULL calls, whose slices hold the
     duplicates."""
     grouped = {}
@@ -310,9 +310,9 @@ def count_mismatches(counts: dict, data: dict) -> dict:
     the arbitration view of count_issues: per-index shortfalls fold to
     their issue's ``key``, the values address an arbiter reads its
     items from and a revision writes back to. Folding the bare unit
-    path instead handed a lifted sub-array's mismatch to its parent
-    unit (measured: a sub-array holding 1 of 4 revised the healthy
-    parent's declared 4 down to a phantom 2). Which side of a mismatch
+    path instead hands a lifted sub-array's mismatch to its parent
+    unit: a sub-array holding 1 of 4 revises the healthy parent's
+    declared 4 down to a phantom 2. Which side of a mismatch
     is wrong is exactly what an arbitration must decide."""
     out = {}
     for i in count_issues(counts, data):

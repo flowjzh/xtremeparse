@@ -70,8 +70,8 @@ class AgentRunner(Protocol):
     override carries its material inline in ``instructions`` and sends
     no parts. ``instructions`` is the volatile role tail;
     ``cache_blocks`` is the leading-message count the provider cache
-    closes on (a fresh call derives it from the parts, a history round
-    passes it explicitly);
+    closes on (a fresh call derives it from the parts, or pins it — 0
+    marks nothing; a history round passes it explicitly);
     ``scope`` carries this call's private slice — the routed chunks of one
     group (None for the router). On ``history`` rounds the transcript
     already carries the card and scope, so the caller passes ``''`` for

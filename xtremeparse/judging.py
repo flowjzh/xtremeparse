@@ -46,13 +46,17 @@ async def judge(runner: AgentRunner, *, rubric: str, source: str, output: str,
     live at the adapter's model construction — recommendations, not
     requirements (see docs/prompting.md). The call goes straight to
     the runner, outside any scheduler budget — a judge should not
-    compete with the fleet for quota. ``instructions`` replaces the
-    judge template and must carry the ``rubric`` placeholder."""
+    compete with the fleet for quota — and pins ``cache_blocks=0``:
+    a one-off call whose wrapped material matches nothing in the cache
+    must not pay the explicit-cache creation premium.
+    ``instructions`` replaces the judge template and must carry the
+    ``rubric`` placeholder."""
     if instructions is not None:
         check_placeholders(instructions, JUDGE_PLACEHOLDERS, 'instructions')
     result = await runner.run(
         instructions=(instructions or JUDGE_INSTRUCTIONS).format(rubric=rubric),
         result_schema=VERDICT_SCHEMA,
-        content=f'Source:\n\n{source}\n\n---\nOutput:\n\n{output}')
+        content=f'Source:\n\n{source}\n\n---\nOutput:\n\n{output}',
+        cache_blocks=0)
     verdict = result.data if isinstance(result.data, dict) else {}
     return Verdict(bool(verdict.get('ok')), str(verdict.get('reason') or ''))

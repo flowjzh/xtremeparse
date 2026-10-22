@@ -16,6 +16,7 @@ async def test_judge_calls_the_runner_with_rubric_and_materials():
     assert 'Source:\n\nsource text' in call['content']
     assert 'Output:\n\n{"a": 1}' in call['content']
     assert call['result_schema']['required'] == ['ok', 'reason']
+    assert call['cache_blocks'] == 0  # one-off call: no creation premium
 
 
 async def test_judge_tolerates_a_shapeless_answer():

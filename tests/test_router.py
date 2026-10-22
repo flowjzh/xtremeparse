@@ -109,10 +109,10 @@ async def test_stable_prompt_parts_split_chunks_schema_and_rules():
     assert 'JSON Schema:' not in call['instructions']
     assert '[0] 姓名张三' not in call['instructions']
     # the zero recount reuses the chunks block byte-for-byte, schema
-    # excluded; the adapter derives its cache boundary from the part
+    # excluded; the router pins no cache count — the adapter derives it
     zero_parts = runner.calls[1]['prompt_parts']
     assert zero_parts == [parts[0]]
-    assert runner.calls[1]['cache_blocks'] is None
+    assert 'cache_blocks' not in runner.calls[1]
     assert 'chunk listing in the preceding message' \
         in runner.calls[1]['instructions']
 

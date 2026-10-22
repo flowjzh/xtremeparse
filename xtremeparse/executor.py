@@ -73,9 +73,8 @@ class Call:
         The merge collapses exact repeats in an over-returning ranged
         reply, so ``produced`` can exceed the entries it contributes;
         len() on a single's entry dict counts keys, not instances, and
-        read every healthy single as an over-full batch (measured:
-        phantom shortfalls then patched healthy entries into junk-keyed
-        dicts for two rounds)."""
+        would read every healthy single as an over-full batch: phantom
+        shortfalls then patch healthy entries into junk-keyed dicts."""
         if self.result is None or self.result.data is None:
             return 0
         data = self.result.data
@@ -291,9 +290,9 @@ def _batched(unit: Unit, item_rows, budgets: dict,
 
 def _strategy(unit: Unit, groups: list, unit_strategy: dict) -> Strategy:
     """Decode time is output-bound, so separable items fan out — parallel
-    small streams beat one long one even when the material is short
-    (measured 18s -> 8s). Whole is for what per-item scoping cannot
-    split: co-chunked instances, single items."""
+    small streams beat one long one even when the material is short.
+    Whole is for what per-item scoping cannot split: co-chunked
+    instances, single items."""
     if override := unit_strategy.get(unit.path):
         if override not in ('whole', 'per-item'):
             raise ValueError(f'unknown unit_strategy for {unit.path}: {override!r}')

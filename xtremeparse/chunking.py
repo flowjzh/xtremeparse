@@ -47,9 +47,9 @@ def chunk_text(text: str, *, max_chars: int = MAX_CHARS) -> list[str]:
 
     OCR and converted text break lines at layout boundaries, so a line
     is a chunk as it stands — the band a heading opens stays
-    addressable on its own (measured: 250-char windowing buried a
-    skills band inside another unit's chunk and the router could not
-    point at it). Shapes whose newlines carry no meaning fall to
+    addressable on its own; 250-char windowing would bury a skills band
+    inside another unit's chunk and the router could not point at it.
+    Shapes whose newlines carry no meaning fall to
     ``_breaks_meaningless`` and the tiered path; an oversized line in a
     respected text runs that path within itself. Every chunk is at
     most ``max_chars`` long.

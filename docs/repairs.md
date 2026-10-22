@@ -2,8 +2,8 @@
 
 Two loops re-contact the model after a first answer, and both ask for
 a diff against what it already answered — a rewrite re-decodes
-everything and can collapse entries that were correct (measured: a
-retry asked for one missing entry returned none). The grammar those
+everything and can collapse entries that were correct: a retry asked
+for one missing entry can return none. The grammar those
 answers must speak is [dsl.md](dsl.md); this doc is the machinery
 around it — what fires each loop, what it asks, when it declines.
 Hosts cannot reword them ([prompting.md](prompting.md)): repair and
@@ -23,8 +23,8 @@ answer, so every grammar rule holds of the RESULT, not the patch.
 
 A replay — the same applied map text twice in a row — ends the
 repairs for count mismatches: re-asking cannot move a number the
-model already could not localize (measured: every line re-quoted as
--x/+x until the budget burned), so the declared-vs-used error passes
+model already could not localize — every line re-quoted as -x/+x
+until the budget burns — so the declared-vs-used error passes
 through and the extraction's count arbitration owns the number. The
 path there starts one notch earlier: a verbatim -x/+x pair applies as
 no edit at all — the lines would only re-append, reordering a map
@@ -38,8 +38,8 @@ never-valid map whose only remaining flaws are count mismatches
 passes them to the arbitration too. A geometry flaw (an overlap, a
 coverage hole) still raises — chunks would be double-claimed
 silently, and the caller's fresh draw is the cure for an oscillating
-anchor (measured: shown the two conflicting lines by name, the model
-re-emits the corrected map in full within the budget).
+anchor: shown the two conflicting lines by name, the model re-emits
+the corrected map in full within the budget.
 
 Four degradations are accepted without ceremony: a reply with no diff
 markers parses as a full re-emission, a reply of chain lines alone
@@ -49,10 +49,9 @@ head and spend the next round re-typing lines that were never wrong),
 a bare line beside real markers is the lazy "+" it reads as — the
 contract bans re-emitting unchanged lines, so a line that speaks the
 grammar is an addition, and one the map already holds dedupes to a
-no-op (dropped as commentary it once silently zeroed a unit while the
-removal beside it landed, and the phantom burned the budget) — and an
-empty reply declines the
-suggestion (the previous map stands).
+no-op; dropped as commentary it silently zeroes a unit while the
+removal beside it lands, and the phantom burns the budget — and an
+empty reply declines the suggestion (the previous map stands).
 
 ## Fan-out suggestions
 
@@ -66,14 +65,14 @@ one fresh conversation — see the zero-count recount below):
   computes the even partition itself — one ranged line per call-sized
   block, the block count sized from the unit's own arranged budget
   over the executor's per-call cap — and splices the block lines into
-  the standing map itself; the ask round typed them verbatim every
-  time, a round spent re-taking code's dictation. The ask round
+  the standing map itself; the ask round would only transcribe them
+  verbatim, a round spent re-taking code's dictation. The ask round
   survives only for a run code may not redraw — a line inside it
   carrying another unit's destination or a chain — where the model
   ratifies the computed lines or declines by silence (the model never
   computes block boundaries at all: self-computed boundaries across a
-  long run's junk headings are measured round-losers — an overlapping
-  block sent the model into per-instance enumeration).
+  long run's junk headings are round-losers — an overlapping block
+  sends the model into per-instance enumeration).
 - Merged instances. Instances sharing a run far longer than their
   count get a fresh-conversation recount — count plus each instance's
   opening quotes, the one form that survives without the map — and
@@ -99,7 +98,7 @@ one fresh conversation — see the zero-count recount below):
   and only a chain-fed parent enters the pool on that reading
   (without the chains it is the lone-item case the arithmetic above
   owns). The re-split owns those chunks as well: a separate chain
-  line stranded under the old single instance drops where the
+  line stranded under the single instance drops where the
   recount re-homes its chunks to another top-level instance (the
   merge was the mis-parenting), the nested declarations re-derive
   from the survivors — a dropped chain takes its count with it — and
@@ -112,11 +111,11 @@ one fresh conversation — see the zero-count recount below):
   chain. One destination per line stays out of the pool: that fine
   partition is a legal draw, and on genuine multi-stint files its
   chains run long — recounted there, a miscount trims real
-  sub-entries (measured: 4 true stints demoted to 3).
+  sub-entries.
   They recount in the same fresh conversation, asked per parent
   instance, and when no top-level unit pends beside them the chunks
   listing is the parents' own material alone — a whole-document
-  listing let a fresh count stray into another parent's look-alike
+  listing lets a fresh count stray into another parent's look-alike
   material. Adoption is code's and per parent: the openings that
   anchor in the parent's footprint ARE its sub-entries — a quote
   landing elsewhere is another parent's instance, dropped — and they
@@ -131,16 +130,15 @@ one fresh conversation — see the zero-count recount below):
   (the parent keeps its chunks); openings all missing the
   footprint beside a positive count are no evidence to unmake the map —
   the lines stand. A count ABOVE the declaration is refused too,
-  anchored or not: an upward read is no demotion (measured: a recount
-  reading duty paragraphs as openings re-split 2 true stints into 4),
-  the recount's only mandate is trimming — the whole-array addendum's
+  anchored or not: an upward read is no demotion — a recount reading
+  duty paragraphs as openings re-splits 2 true stints into 4 — the
+  recount's only mandate is trimming; the whole-array addendum's
   card-deference clause keeps the specialist from padding the array,
-  so trimming-only stays safe. The
-  footprint arithmetic gates it: the footprint
-  must outrun the declared count, or the recount could only confirm —
-  an inseparable pair on one chunk is a legal draw. Demotion is the
-  point: the titles of a narrated
-  progression inside one band draw like sub-entries and are not.
+  so trimming-only stays safe. The footprint arithmetic gates it: the
+  footprint must outrun the declared count, or the recount could only
+  confirm — an inseparable pair on one chunk is a legal draw.
+  Demotion is the point: the titles of a narrated progression inside
+  one band draw like sub-entries and are not.
   The top-level re-split is adopted before this fold reads its
   footprints: a count-1 parent's chain-fed footprint can pool the
   parent in the same round a merged-nested recount pends, and the
@@ -180,14 +178,14 @@ unquoting makes it parse.
 Corrections ask for a JSON Patch (RFC 6902) against the call's
 previous result: an array of `{op, path, value}` operations, `add`
 (with `"/<index>"`, `-` appending), `remove`, `replace` (plus `move`,
-`copy`, `test`). Two tolerances, both observed in the wild: a pointer
-may be rooted at the unit path (`/jobs/2` for a bare `/2`), and a
-reply that is not a patch at all applies as the full corrected value —
-the pre-patch semantics, so a draw that ignores the protocol degrades
-gracefully. A patch that fails to apply keeps the previous result and
-the next round re-asks in full. An empty operation list is the no-fix
-declaration: the paths it was asked for are treated as absent and never
-asked again — a no-op on apply, never a wipe. One exception to the diff
-discipline: a call whose previous result is an empty array re-asks in
-full with no history — nothing to diff, and shown its own `[]` the
-model re-declares it instead of looking again (measured).
+`copy`, `test`). Two tolerances: a pointer may be rooted at the unit
+path (`/jobs/2` for a bare `/2`), and a reply that is not a patch at
+all applies as the full corrected value, so a draw that ignores the
+protocol degrades gracefully. A patch that fails to apply keeps the
+previous result and the next round re-asks in full. An empty
+operation list is the no-fix declaration: the paths it was asked for
+are treated as absent and never asked again — a no-op on apply,
+never a wipe. One exception to the diff discipline: a call whose
+previous result is an empty array re-asks in full with no history —
+nothing to diff, and shown its own `[]` the model re-declares it
+instead of looking again.

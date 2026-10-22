@@ -94,8 +94,8 @@ class RubricJudge(Evaluator):
     to a pydantic-ai model. ``source`` is the judged material's
     document, held at construction; ``output_of`` projects the case
     output into what the rubric asks about (e.g. a digest projection
-    for containment questions) — see docs/prompting.md for the
-    measured judge guidance. The judge's own model settings are
+    for containment questions) — see docs/prompting.md for the judge
+    guidance. The judge's own model settings are
     recommendations carried at the adapter."""
 
     def __init__(self, runner, rubric: str, source: str = '', *,

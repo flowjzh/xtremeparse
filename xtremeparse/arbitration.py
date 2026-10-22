@@ -29,20 +29,18 @@ def norm(s: str) -> str:
 
 async def fresh_check(runner: AgentRunner, payload: str,
                       instructions: str, description: str,
-                      prompt_parts: list[str] = None,
-                      cache_blocks: int = None) -> str:
+                      prompt_parts: list[str] = None) -> str:
     """One fresh-conversation call — no history (the model never sees
     the answer it would anchor on and re-emit verbatim), no feedback.
-    ``prompt_parts`` are the stable user messages the router plane
-    prepends before the ask; ``cache_blocks`` marks the leading messages
-    the provider cache should close on. Shared by every check prompt
-    this module and the router run."""
+    ``prompt_parts`` are the stable user messages — the chunk listing —
+    prepended before the ask; the runner derives the cache marking from
+    them. Shared by every check prompt this module and the router's
+    recounts."""
     result = await runner.run(instructions=instructions,
                               result_schema={'type': 'string',
                                              'description': description},
                               content=payload, feedback=None,
-                              prompt_parts=prompt_parts,
-                              cache_blocks=cache_blocks)
+                              prompt_parts=prompt_parts)
     return str(result.data)
 
 
@@ -79,7 +77,7 @@ repeating unit extracted from it, each quoted by its opening text:
 '''
 # the answer skeleton carries no holes — a list spliced into a verdict
 # section is unrepresentable, so the pre-filled-verdict failure mode
-# (measured on a live trace) cannot come back through a template edit
+# cannot come back through a template edit
 _ARBITRATION_SKELETON = '''Re-read the document and check the list: which document instances are
 MISSING from the list, and which list entries does the document NOT
 contain? Quote each as its opening text, one per line, verbatim —
@@ -156,7 +154,7 @@ async def arbitrate_extraction(runner: AgentRunner, *, items: list,
     under-declared one can only discard real ones; and a fresh
     free-form recount cannot count at all here — asked to enumerate a
     dense eighty-entry run it answers "0", asked for a plain count it
-    lands a third of the way off: measured). Counting is the one thing
+    lands a third of the way off). Counting is the one thing
     the model does worst and diffing the one it does best: hand it the
     extraction's entry openings and ask what is missing from the list
     and what on the list the document does not contain. No history, no
@@ -173,7 +171,7 @@ async def arbitrate_extraction(runner: AgentRunner, *, items: list,
         if not verdict['missing'] and not actual:
             return None, raw  # an empty list cannot bless itself: both
             # sections empty asserts zero instances and no guard can
-            # anchor a quoteless verdict — measured live, a collapse to
-            # [] got approved and wiped entries a recount had located.
+            # anchor a quoteless verdict — otherwise a collapse to []
+            # gets approved and wipes entries a recount had located.
         return actual + len(verdict['missing']) - len(verdict['extra']), raw
     return None, raw

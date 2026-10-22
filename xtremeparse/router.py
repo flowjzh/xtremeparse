@@ -65,15 +65,14 @@ RESHARE_LOAD = 8  # the recount's load bar, in chunks per instance, for
 # every shared shape: a decomposed line (one destination per instance)
 # and a declared-once lone item alike re-split only above this many
 # chunks per instance — below it the recount is pure decode-shaving,
-# confirmed and never adopted (a 2-instance band, a 6-chunk single —
-# measured)
+# confirmed and never adopted (a 2-instance band, a 6-chunk single)
 RANGED_LOAD = 1.5  # a ranged run's re-count bar, in chunks per
 # declared instance: the ranged form's premise is roughly one instance
 # per chunk, so more than one and a half chunks per instance means the
-# count is a guess (measured: a dense list drawn 57 chunks deep as 23)
+# count is a guess, not a reading
 SPLIT_MATERIAL_CAP = 1000  # mapped content chars one shared call may
 # absorb before the split ask pays for itself: past ~1k chars the
-# whole-array decode (~58 tok/s measured) outlasts the extra round.
+# whole-array decode outlasts the extra round.
 # Deliberately ~3x BATCH_BUDGET_CAP — a unit crossing this trigger at a
 # full ratio splits into at least three blocks, so the ask is never a
 # single-block no-op
@@ -371,8 +370,8 @@ def _flatten(item: str) -> str:
     """One destination's item token with sub-numbering flattened: the
     schema's instances are flat, but the model sub-numbers entries the
     document nests (one parent, two sub-entries) — 'c.0.1' claims
-    instance 0, its parent. Rejection sent a canary repair loop
-    circling to exhaustion: the model never abandons the spelling. The parser's
+    instance 0, its parent. Rejection sends a repair loop circling to
+    exhaustion: the model never abandons the spelling. The parser's
     chain reading takes the schema-aware cases first; this fold stays
     for the recount splice, where no schema shape can disambiguate."""
     if m := _SUBITEM.fullmatch(item):
@@ -515,7 +514,7 @@ def _chunks_part(chunks: list[str], label: str = _CHUNKS_LEAD) -> str:
     """The chunk listing as its own stable user message. The document
     rides the system message, so the listing never repeats it; the
     default label is the standard lead-in, and an override gets the
-    plain `Chunks:` heading it was written against."""
+    plain `Chunks:` heading."""
     return f'{label}\n\n{_listing(chunks)}'
 
 
@@ -652,13 +651,12 @@ async def route(runner: AgentRunner, *, payload: str,
         # a shared run holding more mapped material than one shared
         # call may absorb — the dense draw (span ≈ declared). The even
         # partition is computed in code, because the model's own
-        # boundary arithmetic across a long run's junk headings is what
-        # loses rounds (measured: 2 of 5 canary trials drew an
-        # overlapping block and fell into per-instance enumeration) —
-        # and adopted in code too: the ask round transcribed the block
-        # lines verbatim every time, a round spent re-typing what code
-        # already wrote. The round survives only for runs code may not
-        # redraw — a line shared with another unit or carrying a chain
+        # boundary arithmetic across a long run's junk headings loses
+        # rounds: an overlapping block falls into per-instance
+        # enumeration — and adopted in code too: the ask round would
+        # only transcribe the block lines verbatim, re-typing what
+        # code already wrote. The round survives only for runs code may
+        # not redraw — a line shared with another unit or carrying a chain
         rounds = []
         for code, (first, last, lines) in _overrun_hints(
                 state.segments, spans, state.counts, chunks, by_code,
@@ -694,8 +692,8 @@ async def route(runner: AgentRunner, *, payload: str,
     async def shared_ask(shared, merged_nested):
         # instances merged into one long run: the anchored
         # conversation will not unmerge its own map (a repair
-        # round shown the map re-emits it, measured — and the
-        # splits it does make scatter). A fresh conversation
+        # round shown the map re-emits it, and the splits it does
+        # make scatter). A fresh conversation
         # recounts every shared unit at once — count plus each
         # instance's opening text, the one form that survives
         # without the map — and code anchors the quotes back to
@@ -711,9 +709,9 @@ async def route(runner: AgentRunner, *, payload: str,
         # round
         labels = merge_labels(shared, merged_nested)
         # a nested-only round reads the parents' own material alone:
-        # the whole-document listing is what let a fresh count stray
-        # into another parent's look-alike material and fail the
-        # footprint seek (measured on the promotion-route canary)
+        # a whole-document listing lets a fresh count stray into
+        # another parent's look-alike material and fail the footprint
+        # seek
         listing = chunks
         if merged_nested and not shared:
             own = {c for c, ds in _cover(state.segments).items()
@@ -737,8 +735,8 @@ async def route(runner: AgentRunner, *, payload: str,
         # a zero is never trusted on the map's own say-so: the
         # model commits to its finished map and will not revisit
         # NONE'd material — not in the same pass, and not in a
-        # feedback round that shows it that map (measured: brief
-        # sections and summary units rubber-stamped as 0). A
+        # feedback round that shows it that map: brief sections and
+        # summary units rubber-stamp as 0. A
         # fresh conversation without the map re-counts them, and
         # code adopts its claims — the anchored conversation
         # would re-emit its own map verbatim. Its disagreement is
@@ -922,9 +920,9 @@ async def route(runner: AgentRunner, *, payload: str,
         if errors and not suggestion:
             replayed = text == stuck_text
             if replayed:
-                # the model replayed its map verbatim (measured: a count
-                # it cannot localize comes back as a no-op diff until
-                # the budget burns — every line re-quoted as -x/+x).
+                # the model replayed its map verbatim: a count it
+                # cannot localize comes back as a no-op diff until the
+                # budget burns — every line re-quoted as -x/+x.
                 # Re-asking cannot move it; downgrade the declared-vs-
                 # used mismatches to a pass-through and let the
                 # extraction's count arbitration own the number — the
@@ -939,10 +937,8 @@ async def route(runner: AgentRunner, *, payload: str,
             # declared-undrawn family: a count declared, no lines drawn.
             # Repair rounds fail it — the anchored conversation re-emits
             # its own map, and the chain/covering arithmetic its fixes
-            # need fumbles shared seams (measured: a large dense-list
-            # b-[] 1-3 rounds, the block-layout d-[] half the draws,
-            # the multi-entry chain d-[] burns on the under-merged
-            # run). The fresh recount is the zeros' discipline applied
+            # need fumbles shared seams. The fresh recount is the zeros'
+            # discipline applied
             # to the drawing: count each unit plus its instances'
             # opening text, and code anchors the quotes and lays the
             # lines itself — the declaration is right (the first pass
@@ -1028,8 +1024,8 @@ async def route(runner: AgentRunner, *, payload: str,
             continue
         return finalize()
     # exhausted: the model had its bounded repairs, and the flaws that
-    # remain are the ones it could not localize (measured: oscillation
-    # between two wrong redraws, or junk). Settle, on the replay
+    # remain are the ones it could not localize: oscillation between
+    # two wrong redraws, or junk. Settle, on the replay
     # downgrade's own trade — a settled 200 beats a 500: the last
     # valid round stands, and count-family mismatches on the final
     # text pass through to the extraction's count arbitration. A
@@ -1047,6 +1043,16 @@ async def route(runner: AgentRunner, *, payload: str,
     raise RouterError(f'router segment map invalid after repair: {errors}')
 
 
+async def _recount_call(runner: AgentRunner, payload: str, template: str,
+                        description: str, chunks_part: str,
+                        **fields) -> str:
+    """One fresh recount call: the chunk listing rides its own stable
+    user message — the one part every default recount reuses — and the
+    ask renders into the final message."""
+    return await fresh_check(runner, payload, template.format(**fields),
+                             description, prompt_parts=[chunks_part])
+
+
 async def _recount(runner: AgentRunner, payload: str, by_code: dict,
                    zeros: list, chunks: list[str], chunks_part: str,
                    schema_head: str,
@@ -1056,29 +1062,27 @@ async def _recount(runner: AgentRunner, payload: str, by_code: dict,
     Deliberately NOT a repair round: no history, so the model never
     sees the map it is re-examining — anchoring on its own finished
     map is exactly the failure being corrected (a repair round shown
-    the map re-emits it verbatim. The chunks ride their own stable
-    message; the schema is not repeated. A host override owns
-    its template and gets the schema+chunks material inline. Returns
-    the raw answer — `_adopt_recount` reads its claims."""
+    the map re-emits it verbatim). The schema is not repeated; a host
+    override owns its template and gets the schema+chunks material
+    inline. Returns the raw answer — `_adopt_recount` reads its
+    claims."""
+    legend = _recount_legend({c: c for c in zeros}, by_code)
     if instructions is None:
-        template, material = _CHECK_PRECEDING, ''
-        parts, blocks = [chunks_part], None
-    else:
-        template = instructions
-        material = _chunks_section(schema_head, chunks)
-        parts, blocks = None, None  # one-off override: system only
-    instructions = template.format(
-        # only the recounted units appear — the other codes' mere
-        # presence invited a full re-answer of every array (their
-        # "final" counts re-derived from the chunks, measured: 137
-        # output tokens for a one-line answer). A summarizing unit's
-        # derivation needs no source code in the legend: _splice's
-        # crossed-count adoption reads it off the misplaced claims
-        legend=_recount_legend({c: c for c in zeros}, by_code),
-        chunks=material, overall=overall_block)
+        return await _recount_call(
+            runner, payload, _CHECK_PRECEDING, RECOUNT_DESCRIPTION,
+            chunks_part,
+            # only the recounted units appear — the other codes' mere
+            # presence invites a full re-answer of every array, their
+            # "final" counts re-derived from the chunks. A summarizing
+            # unit's derivation needs no source code in the legend:
+            # _splice's crossed-count adoption reads it off the
+            # misplaced claims
+            legend=legend, overall=overall_block)
     return await fresh_check(
-        runner, payload, instructions, RECOUNT_DESCRIPTION,
-        prompt_parts=parts, cache_blocks=blocks)
+        runner, payload, instructions.format(
+            legend=legend, chunks=_chunks_section(schema_head, chunks),
+            overall=overall_block),
+        RECOUNT_DESCRIPTION)
 
 
 _SHARED_CHECK_PRECEDING = '''A document's chunks are in the preceding message. Some repeating units'
@@ -1098,19 +1102,17 @@ async def _recount_shared(runner: AgentRunner, payload: str,
                           overall_block: str = '') -> str:
     """Fresh-attention recount of the units left merged into shared
     runs. Every shared unit is recounted in the one conversation — the
-    chunks listing, the costly part, is shared and rides its own stable
-    message. The answer carries, per unit, the count and each
-    instance's opening text: quotes anchor to chunks by content, the
-    one coordinate the model quotes reliably — index arithmetic echoes
-    the prompt's own examples instead of the chunks. Returns the raw
-    answer;
+    chunks listing, the costly part, is shared. The answer carries, per
+    unit, the count and each instance's opening text: quotes anchor to
+    chunks by content, the one coordinate the model quotes reliably —
+    index arithmetic echoes the prompt's own examples instead of the
+    chunks. Returns the raw answer;
     `_adopt_recount` reads the claims, keyed by the labels the legend
     printed."""
-    instructions = _SHARED_CHECK_PRECEDING.format(
-        units=_recount_legend(shared, by_code), overall=overall_block)
-    return await fresh_check(
-        runner, payload, instructions, SHARED_RECOUNT_DESCRIPTION,
-        prompt_parts=[chunks_part])
+    return await _recount_call(
+        runner, payload, _SHARED_CHECK_PRECEDING, SHARED_RECOUNT_DESCRIPTION,
+        chunks_part, units=_recount_legend(shared, by_code),
+        overall=overall_block)
 
 
 @dataclass(frozen=True)
@@ -1181,20 +1183,19 @@ async def _mixed_recount(runner: AgentRunner, payload: str, shared: dict,
     """One fresh conversation for the units a map miscounted. The firing
     modes share the ZERO half, the legend builder and the result
     description; the tag selects the state clause and the shared-unit
-    bullet. The chunks listing rides its own stable message."""
+    bullet."""
     state, subject, punct = _MIXED_STATE[tag]
     units = {**shared, **{z: z for z in zeros}}
-    instructions = _MIXED_CHECK_PRECEDING.format(
+    description = _BOTH_RECOUNT_DESCRIPTION if zeros \
+        else SHARED_RECOUNT_DESCRIPTION
+    return await _recount_call(
+        runner, payload, _MIXED_CHECK_PRECEDING, description, chunks_part,
         state_clause=state + _ZERO_STATE,
         shared_bullet=f'- {subject}:\n   {_OPENING_RULE}{punct}',
         units=_recount_legend(
             units, by_code,
             lambda label: ' ZERO' if label in zeros else f' {tag}'),
         overall=overall_block)
-    description = _BOTH_RECOUNT_DESCRIPTION if zeros \
-        else SHARED_RECOUNT_DESCRIPTION
-    return await fresh_check(runner, payload, instructions, description,
-                             prompt_parts=[chunks_part])
 
 
 async def _recount_both(runner: AgentRunner, payload: str, shared: dict,
@@ -1426,8 +1427,8 @@ def _resplit(state, code: str, claim: Claim, by_code: dict,
         io = item_of.get(c)
         # a nested entry's separate chain line survives only on chunks
         # that stay under its declared parent instance; a chunk the
-        # recount moved to another top-level instance drops the old
-        # chain (the merge was the mis-parenting being corrected)
+        # recount moved to another top-level instance drops the chain
+        # (the merge was the mis-parenting being corrected)
         stripped = tuple(
             dd for dd in dests
             if dd[0] != code
@@ -1441,7 +1442,7 @@ def _resplit(state, code: str, claim: Claim, by_code: dict,
             if dd[2] is not None and dd[0] in subs:
                 used.setdefault((dd[0], dd[2]), set()).add(dd[1])
     # the surviving chains are the nested declarations: a dropped chain
-    # takes its count with it (the old count described the merge)
+    # takes its count with it (the count described the merge)
     nested = {}
     for key, declared in state.nested.items():
         unit = by_code.get(key[0])
@@ -1476,10 +1477,9 @@ def _diff_edits(reply) -> tuple | None:
     marker line shows the reply is a diff, a bare line that speaks the
     map's grammar rides along as an addition — the contract is never
     to re-emit an unchanged line, so a bare line is a lazy "+": asked
-    to attach items, the model drew the line with no prefix, and
-    dropped as commentary it silently zeroed the unit while the
-    removal beside it landed (measured: the b-[] repair burned to
-    exhaustion on the phantom)."""
+    to attach items, the model draws the line with no prefix; dropped
+    as commentary it silently zeroes the unit while the removal beside
+    it lands, and the phantom burns the repair budget."""
     removed, added, saw_marker = [], [], False
     for l in _lines(reply):
         if l.startswith(('---', '+++')):
@@ -1544,11 +1544,11 @@ def _apply_edits(base_text, removed: list, added: list) -> str:
 
 def _overlay_text(reply, base_text) -> str | None:
     """A marker-less reply of chain lines alone, read as the patch it
-    means — the one marker-less fragment the batteries measure: asked
-    to add the chain lines, the model answers with the chain lines
-    alone, and full-replacement dropped the map's head, spent the next
-    round re-typing lines that were never wrong, and left a legal map
-    to boot. The chains patch in (dedup included), the count lines
+    means: asked to add the chain lines, the model answers with the
+    chain lines alone, and full replacement drops the map's head,
+    spends the next round re-typing lines that were never wrong, and
+    leaves a legal map to boot. The chains patch in (dedup included),
+    the count lines
     replace their code's declaration, and every other base line
     stands. Any covering line keeps the replacement reading —
     omission-to-delete is the other marker-less intent, and one
@@ -1590,8 +1590,8 @@ def _cover(segments: list) -> dict:
     geometry, which the per-chunk form cannot express, and dropping the
     parent would leave the chains riding no run — the rebuild would
     reject the very map it started from, and a zeros recount that
-    merely CONFIRMED its zeros would burn a repair round on nothing
-    (measured: every confirm on a chain map did). The round-trip is
+    merely CONFIRMED its zeros would burn a repair round on nothing.
+    The round-trip is
     not shape-stable — a hosted parent run comes back as the chains'
     own slices with the parent riding each — but coverage is identical
     and the group layer re-coalesces adjacency."""
@@ -1633,7 +1633,7 @@ def _splice(state, answer, zeros, by_code: dict, n: int,
             lenient: set | None = None):
     """Fold a recount answer into a validated routing — the adoption is
     code's, not the model's: a repair round shown the map re-emits it
-    verbatim (measured), so nothing is asked of the anchored
+    verbatim, so nothing is asked of the anchored
     conversation. Claims over chunks the map marked irrelevant splice
     in directly. A unit whose claims land on already-mapped material
     reads as a summarizing unit that answered a count — when exactly
@@ -1664,7 +1664,6 @@ def _splice(state, answer, zeros, by_code: dict, n: int,
         # listing's own decorations on — wrapping quotes and the
         # bracketed chunk id ("[4] <code>.0"); strip them first, the
         # claim the decorations hide is the recount's whole point
-        # (measured on live draws)
         stripped = _LISTING_ID.sub(r'\1 ', line.strip().strip(_QUOTE_WRAP))
         if not (m := _LINE.match(stripped)):
             continue
@@ -1744,8 +1743,8 @@ def _quote_anchor(quote: str, domain: list, norms: dict) -> int | None:
     """The first chunk of ``domain`` holding the quote — ``norms`` the
     domain's normalized texts, precomputed once (one norm per chunk,
     not one per quote). The recount quotes the chunk listing verbatim,
-    so content seek is the one reliable coordinate (index arithmetic
-    echoes the prompt's own examples, measured)."""
+    so content seek is the one reliable coordinate: index arithmetic
+    echoes the prompt's own examples."""
     return next((c for form in _seek_forms(quote) if form
                  for c in domain if form in norms[c]), None)
 
@@ -1809,7 +1808,7 @@ def _adopt_recount(state, answer, *, zeros=(), pool=(), shared=(),
     last anchor, the run's head staying the parent's own and the tail
     following ``_lay_subentries``' rule; a
     lone opening cannot trim a multi-entry chain (the parent's own
-    heading is not a sub-entry, measured). A zero claim is absence: for
+    heading is not a sub-entry). A zero claim is absence: for
     a chain it drops the declaration, for a top-level unit it confirms
     the count. A unit whose section is unusable — missing, quotes
     unanchored, count and quotes disagreeing — keeps its error for the
@@ -1887,8 +1886,7 @@ def _adopt_recount(state, answer, *, zeros=(), pool=(), shared=(),
                 continue
             if len(hits) == 1 and count != len(hits):
                 # the recount merged the instances' openings into one
-                # quote — the dense list one chunk holds inseparably
-                # (measured: 2 of 3 answer the b-[] ask this way);
+                # quote — the dense list one chunk holds inseparably;
                 # every item claims the chunk
                 hits = [hits[0]] * count
             if len(hits) != count:
@@ -1953,7 +1951,7 @@ def _merged_nested(segments: list, nested: dict) -> set:
     One destination per line stays out: that fine partition is a legal
     draw the instructions bless, and its chains run long on genuine
     multi-stint files — recounted there, a miscount trims real
-    sub-entries (measured: 4 true stints demoted to 3). The footprint
+    sub-entries. The footprint
     arithmetic gates the pool: the footprint must outrun the declared
     count, or the recount could only confirm (an inseparable pair on
     one chunk is a legal draw) — a legal merge never buys a round."""
@@ -2028,13 +2026,12 @@ def _fold_nested_merged(state, merged, claims, by_code: dict, n: int,
             # unmake the map — the lines stand
             continue
         if len(anchors) > nested.get((code, parent), 0):
-            # an upward count is no demotion: the recount read duty
-            # paragraphs as openings (measured on a real multi-stint
-            # draw — 2 true sub-entries recounted as 4). The
-            # recount's only mandate is trimming — the lines stand
+            # an upward count is no demotion: the recount reads duty
+            # paragraphs as openings. The recount's only mandate is
+            # trimming — the lines stand
             continue
         pcode = _parent_code(by_code[code], by_code)
-        for c in footprint:  # the old lines go — the recount's stand
+        for c in footprint:  # the existing lines go — the recount's stand
             per_chunk[c] = [dd for dd in per_chunk[c]
                             if not (dd[0] == code and dd[2] == parent)]
         if anchors:
@@ -2211,8 +2208,8 @@ def _parse(text, by_code: dict, n: int,
                 elif (key := (chain[3], int(chain[2]))) in nested:
                     # an identical restatement is noise: the model
                     # re-declares the count after its chain lines to
-                    # attach the budget (measured on live draws), and the
-                    # restated line's budget prices last-wins below —
+                    # attach the budget, and the restated line's budget
+                    # prices last-wins below —
                     # only a contradicting number is an error
                     prior = nested[key]
                     if declared is None or int(declared) != prior:
@@ -2239,7 +2236,7 @@ def _parse(text, by_code: dict, n: int,
             elif unit.parent is not None and declared == '0':
                 pass  # a nested unit's bare zero says what silence says —
                 # noise, ignored (the prompt's declaration example pulls
-                # models into writing it; measured on live draws)
+                # models into writing it)
             elif unit.parent is not None:
                 errors.append(f'line {i + 1}: {code} counts per parent — '
                               f'declare "{_parent_code(unit, by_code)}.'
@@ -2390,8 +2387,8 @@ def _merge_line(segments: list, start: int, end: int, dests: tuple):
     absorbed it. Same-range repeats union their destinations (an exact
     re-emission is plain redundancy): the model lines a parent's run
     and its chains up as separate same-range lines, and one chunk set
-    is one line's semantics — rejecting that sent the repair loop
-    oscillating to exhaustion (measured). Lines at DIFFERENT ranges
+    is one line's semantics — rejecting that sends the repair loop
+    oscillating to exhaustion. Lines at DIFFERENT ranges
     stay apart: a chain line nesting in its parent's run is legal on
     its own (the fine partition fans the sub-entries out separately,
     merging it would collapse them into one whole call), anything else
@@ -2483,7 +2480,7 @@ def _attach_chain(destinations, d, code, rest, unit, by_code):
     """A bare nested-unit destination ('c.0,d.0-3' — the model
     comma-joins a parent instance and its ranged sub-entries) folds
     into the parent destination the line already claims: one more
-    spelling of the chain, measured on a live draw. Unambiguous
+    spelling of the chain. Unambiguous
     only — several parent instances on the line keep the named error."""
     parents = [dd for dd in destinations
                if dd[2] is None and isinstance(dd[1], int)
@@ -2551,9 +2548,9 @@ def _block_lines(code: str, first: int, last: int, declared: int,
     lines cover the run's chunks and the declared items exactly — the
     map they patch in validates by construction. Computing the
     boundaries here is the point: the model's own even split of a long
-    run fumbled the junk headings between entries (measured: 2 of 5
-    canary trials drew an overlapping block, then recovered by
-    enumerating every instance). Never more blocks than instances or
+    run fumbles the junk headings between entries — an overlapping
+    block sends it into per-instance enumeration. Never more blocks
+    than instances or
     chunks — either way a block would come out empty."""
     blocks = min(blocks, declared, last - first + 1)
     span = last - first + 1
@@ -2579,7 +2576,7 @@ def _overrun_hint(code: str, first: int, last: int, lines: str) -> str:
     form instead). The model ratifies or declines — reading the chunks,
     it knows what code cannot: whether a block boundary would cut an
     entry in half. No rationale — the executor's economics mean nothing
-    to the router (measured: 'parallel calls' phrasing was ignored).
+    to the router ('parallel calls' phrasing is ignored).
     Silence declines."""
     return (f'{code}: rewrite its line(s) into these blocks — one ranged '
             f'line per block, exactly as written:\n{lines}\n'
@@ -2591,8 +2588,8 @@ def _adopt_blocks(text: str, code: str, first: int, last: int,
                   lines: str) -> str | None:
     """The overrun ask's adoption: the computed block lines splice into
     the standing map text in place of the run's own lines. The ask
-    round transcribed them verbatim every time (measured) — the
-    adoption re-validates by construction, the blocks covering the
+    round would only transcribe them verbatim — the adoption
+    re-validates by construction, the blocks covering the
     run's chunks and declared items exactly. None when code may not
     own the rewrite: a line inside the run carrying another unit's
     destination or a chain would lose it, and that run's ask keeps
@@ -2643,7 +2640,7 @@ def _shared_spans(segments: list, counts: dict, by_code: dict) -> tuple:
     decode-shaving, in only past RESHARE_LOAD chunks per instance —
     a unit declared once obeys the same arithmetic (a lone item over a
     handful of chunks reads as one long entry as plausibly as a merge;
-    measured: its recount confirmed every time and never adopted).
+    its recount only confirms, never adopts).
     The third names ranged runs whose own count is a guess: more than
     RANGED_LOAD chunks per named instance, the arithmetic the ranged
     form leaves to the model while the unit total can sit near one.
@@ -2705,8 +2702,8 @@ def _shared_hints(spans: dict, counts: dict, short: dict) -> dict:
     chunks than one entry plausibly reads alone (the recount-worthy
     subset of ``_shared_spans``; already-decomposed thin lines are
     filtered there). Several chunks per
-    instance may still separate at chunk boundaries (measured lazy
-    draw: a whole section mapped as one shared item). A genuinely huge
+    instance may still separate at chunk boundaries: a lazy draw can
+    map a whole section as one shared item. A genuinely huge
     single entry is indistinguishable from the merged form — the
     recount lets the model confirm it; a declined suggestion costs one
     round. Already-separated maps (each instance its own line) never
@@ -2746,7 +2743,7 @@ def _overrun_hints(segments: list, spans: dict, counts: dict,
     adopted in code (``_adopt_blocks``) — the ask round only survives
     where the adoption declines the redraw.
     Lazy-shaped units stay the recount's (the anchored model will not
-    unmerge those, measured), and so do ``skip`` codes: a guessed ranged
+    unmerge those), and so do ``skip`` codes: a guessed ranged
     count must not size a split. Returns ``{code: (first chunk, last
     chunk, block lines)}``."""
     wanted = [code for code, span in spans.items()
@@ -2813,9 +2810,9 @@ def _chain_remedy(start, end, dests, prev_start, prev_end, prev_dests,
     if prev_start <= start and end <= prev_end and any(
             dd[2] is not None and dd in prev_dests for dd in dests):
         # a slice re-drawing a destination the wide line already
-        # holds is a split whose whole the model forgot to remove
-        # (measured: the split added both halves, the original line
-        # stayed, and the rounds no-op'd out) — name the removal
+        # holds is a split whose whole the model forgot to remove:
+        # the split adds both halves, the original line stays, and the
+        # rounds no-op out — name the removal
         return (f'add "- {prev_start}-{prev_end} '
                 f'{_dest_tokens(prev_dests, by_code)}" and the slices '
                 f'replace it')
@@ -3114,9 +3111,9 @@ def _nested_errors(code: str, unit: Unit, segments, counts, nested,
         else:
             # single remedy, stated once: the declaration stands (it was
             # the map that skipped the sub-entries) — offering "drop the
-            # declaration" here read as an equal branch and the model
-            # took it after drawing the chains, then got whipsawed by
-            # this same check one round later (measured). Every missing
+            # declaration" here reads as an equal branch: the model
+            # takes it after drawing the chains, then gets whipsawed by
+            # this same check one round later. Every missing
             # index named: a draw that runs one chain short is where
             # the split cascades start
             names = [f'"{chain}.{i}"'

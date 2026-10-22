@@ -2,15 +2,15 @@
 
 A correction round shows the specialist its previous result and asks
 for a patch — the minimal set of operations that fixes the routed
-issues. Untouched entries cannot collapse in a rewrite (the measured
-failure: a retry asked for one missing entry re-decoded the whole batch
-and returned none), and the decode shrinks to the size of the fix.
+issues. Untouched entries cannot collapse in a rewrite: a retry asked
+for one missing entry re-decodes the whole batch and can return none.
+The decode shrinks to the size of the fix.
 
-The apply is tolerant in exactly two ways, both measured: a pointer may
-be rooted at the unit path (``/project_experiences/81`` for a bare
-``/81``) — the model reaches for the document root — and a reply that
-is not a patch at all reads as the full corrected value (the pre-patch
-semantics), so a draw that ignores the protocol degrades gracefully.
+The apply is tolerant in exactly two ways: a pointer may be rooted at
+the unit path (``/project_experiences/81`` for a bare ``/81``) — the
+model reaches for the document root — and a reply that is not a patch
+at all reads as the full corrected value, so a draw that ignores the
+protocol degrades gracefully.
 An empty operation list is an empty patch — the model's no-fix
 declaration (the requested value does not exist in the material), a
 no-op on apply, never a wipe.
