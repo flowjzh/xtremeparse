@@ -378,6 +378,22 @@ async def test_merge_grafts_a_lifted_sub_array_in_either_arrival_order():
     assert parent_first == child_first == expected
 
 
+def test_an_empty_lifted_claim_overrides_the_cards_entries():
+    # claim level: the dedicated read owns the field — its empty says
+    # the parent holds none, not that the details went missing
+    values = {'career.jobs': [{'company': '公司甲', 'roles': [{'title': '工程师'}]}],
+              'career.jobs[0].roles': []}
+    assert merge(values)['career']['jobs'][0]['roles'] == []
+
+
+def test_a_lifted_read_blanks_no_list_field_the_card_filled():
+    values = {'career.jobs': [{'company': '公司甲', 'roles': [
+        {'title': '工程师', 'description': ['职责一', '职责二']}]}],
+        'career.jobs[0].roles': [{'title': '工程师', 'description': []}]}
+    assert merge(values)['career']['jobs'][0]['roles'] == [
+        {'title': '工程师', 'description': ['职责一', '职责二']}]
+
+
 def _batch_call(reply: list) -> Call:
     return Call(UNITS['career.jobs'], None, 'ranged', [0, 1], 'scope',
                 batch=(0, 1), result=agent_result(reply))

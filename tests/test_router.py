@@ -2207,6 +2207,29 @@ async def test_undrawn_single_quote_cannot_demote_a_multi_entry_chain():
         [(0, 0, [2]), (1, 0, [3])]
 
 
+async def test_undrawn_recount_quoting_the_parent_heading_is_refused():
+    # the recount answers with the parent's own heading as the first
+    # opening — a claim that cannot tell parent from sub-entry; the
+    # claim is refused and the diff path redraws the chain
+    chunks = ['姓名张三', '### 公司甲', '### 公司甲·工程师', '工程师描述',
+              '### 公司甲·经理', '经理描述', '无关页脚']
+    runner = ScriptedRunner(
+        agent_result('0 a\n1-5 b.0\n6 -\nb: 1\nb.0.c: 2'),
+        agent_result('b.0.c: 2\n### 公司甲\n### 公司甲·工程师'),
+        *[agent_result('0 a\n1 b.0\n2-3 b.0.c.0\n4-5 b.0.c.1\n6 -\n'
+                       'b: 1\nb.0.c: 2')] * 3)
+    routing = await route(runner, payload=PAYLOAD, schema_head=HEAD,
+                          units=NESTED_UNITS, chunks=chunks)
+    assert len(runner.calls) >= 3
+    assert runner.calls[2]['feedback'] is not None
+    assert routing.raw['nested_counts'] == {'jobs.roles': {0: 2}}
+    roles = [g for g in routing.groups if g.unit.path == 'jobs.roles']
+    assert [(g.item, g.parent, g.chunk_ids) for g in roles] == \
+        [(0, 0, [2, 3]), (1, 0, [4, 5])]
+    jobs = [g for g in routing.groups if g.unit.path == 'jobs']
+    assert [(g.item, g.chunk_ids) for g in jobs] == [(0, [1, 2, 3, 4, 5])]
+
+
 async def test_undrawn_recount_number_overrides_the_declaration():
     # the recount counted fewer instances than the map declared — the
     # fresh read is authoritative, the declaration follows

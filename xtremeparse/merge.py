@@ -62,11 +62,15 @@ def _slot(node: dict, key: str, i: int) -> list:
 
 
 def _fuse(old, new):
-    """Two units' claims on one slot: objects merge field-wise, lists
-    element-wise (a parent unit's items and a lifted sub-array's
-    grafts meet here), either side absent yields."""
+    """Two units' claims on one slot: objects merge field-wise — an
+    empty list in the newer claim keeps the older field (a narrow
+    slice's blank never blanks what the wider read copied verbatim);
+    lists merge element-wise (a parent unit's items and a lifted
+    sub-array's grafts meet here), either side absent yields."""
     if isinstance(old, dict) and isinstance(new, dict):
-        return {**old, **{k: _fuse(old.get(k), v) for k, v in new.items()}}
+        return {**old, **{k: _fuse(old.get(k), v) for k, v in new.items()
+                          if not (v == [] and isinstance(old.get(k), list)
+                                  and old[k])}}
     if isinstance(old, list) and isinstance(new, list):
         pad = old + [None] * (len(new) - len(old))
         return [_fuse(o, n) for o, n in zip(pad, new)]

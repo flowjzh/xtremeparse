@@ -53,7 +53,7 @@ from dataclasses import dataclass, replace
 from typing import Optional
 
 from xtremeparse.arbitration import fresh_check, norm, sectioned
-from xtremeparse.chunking import content_len, is_heading
+from xtremeparse.chunking import content_len, section_opens
 from xtremeparse.contracts import AgentRunner, BATCH_BUDGET_CAP, JSONSchema
 from xtremeparse.schema import type_set, value_branches
 from xtremeparse.units import Unit
@@ -1806,14 +1806,16 @@ def _adopt_recount(state, answer, *, zeros=(), pool=(), shared=(),
     reading whose quotes locate the chunks holding its fields; a
     chained claim partitions the parent's run from the first to the
     last anchor, the run's head staying the parent's own and the tail
-    following ``_lay_subentries``' rule; a
-    lone opening cannot trim a multi-entry chain (the parent's own
-    heading is not a sub-entry). A zero claim is absence: for
+    following ``_lay_subentries``' rule. A lone opening cannot trim a
+    multi-entry chain (the parent's own section head is not a
+    sub-entry), and a claim that quotes it cannot tell the two apart —
+    refused for the diff path to redraw. A zero claim is absence: for
     a chain it drops the declaration, for a top-level unit it confirms
     the count. A unit whose section is unusable — missing, quotes
     unanchored, count and quotes disagreeing — keeps its error for the
     diff path. Returns None when nothing was adoptable."""
     n = len(chunks)
+    opens = section_opens(chunks)
     labels = set(shared) | set(zeros) | {
         _chain_label(code, parent, by_code)
         for code, parent in (*pool, *merged)}
@@ -1832,7 +1834,7 @@ def _adopt_recount(state, answer, *, zeros=(), pool=(), shared=(),
             st, changed = resplit, True
     if merged:
         folded = _fold_nested_merged(st, set(merged), claims, by_code, n,
-                                     chunks)
+                                     chunks, opens)
         if folded is not None:
             st, changed = folded, True
     zero_codes = set() if zeros_ok else set(zeros)
@@ -1916,9 +1918,14 @@ def _adopt_recount(state, answer, *, zeros=(), pool=(), shared=(),
             if (hits := _anchors(list(quotes), owned, chunks)) is None:
                 continue
             anchors = sorted(hits)  # quotes may not arrive in document order
+            if owned[0] in anchors and opens[owned[0]]:
+                continue  # a quote on the parent instance's own section
+                # head — the opening the legend rules out; a claim that
+                # quotes it cannot tell parent from sub-entry, so its
+                # partition is unreadable and the diff path redraws
             if len(anchors) == 1 and nested.get((code, parent), 0) > 1:
                 continue  # one opening cannot trim a multi-entry chain
-            _lay_subentries(per_chunk, owned, anchors, code, parent, chunks)
+            _lay_subentries(per_chunk, owned, anchors, code, parent, opens)
             nested = {**nested, (code, parent): count}
         changed = True
     if zero_codes and not failed_zeros:
@@ -1969,18 +1976,18 @@ def _merged_nested(segments: list, nested: dict) -> set:
 
 
 def _lay_subentries(per_chunk: dict, domain: list, anchors: list,
-                    code: str, parent: int, chunks: list) -> None:
+                    code: str, parent: int, opens: list[bool]) -> None:
     """Lay recounted sub-entry lines over the parent's chunks: each
     chunk takes the index of the last anchor at or before it — the
     partition both nested folds adopt at their quotes. The run's head
     stays the parent's own; so does the tail after the last anchor,
-    unless that anchor opens a heading — a heading is the sub-entry's
-    opening and the blocks that follow are its continuation, riding
-    the last sub-entry up to the next heading: from a heading that
-    opens later in the footprint on, the blocks are an opening the
-    recount missed and stay the parent's own."""
-    limit = min([c for c in domain if c > anchors[-1] and is_heading(chunks[c])],
-                default=max(domain) + 1 if is_heading(chunks[anchors[-1]])
+    unless that anchor opens a section — a section head is the
+    sub-entry's opening and the chunks that follow are its
+    continuation, riding the last sub-entry up to the next section:
+    from a section opening later in the footprint on, the chunks are
+    an opening the recount missed and stay the parent's own."""
+    limit = min([c for c in domain if c > anchors[-1] and opens[c]],
+                default=max(domain) + 1 if opens[anchors[-1]]
                 else anchors[-1] + 1)
     for c in domain:
         if c >= anchors[0] and c < limit:
@@ -1988,7 +1995,7 @@ def _lay_subentries(per_chunk: dict, domain: list, anchors: list,
 
 
 def _fold_nested_merged(state, merged, claims, by_code: dict, n: int,
-                        chunks: list[str]):
+                        chunks: list[str], opens: list[bool]):
     """Fold a merged-nested recount into the validated map — the
     adoption is code's, as for every recount. Each recounted (code,
     parent) re-lines its sub-entries over the chains' own footprint:
@@ -2036,7 +2043,7 @@ def _fold_nested_merged(state, merged, claims, by_code: dict, n: int,
                             if not (dd[0] == code and dd[2] == parent)]
         if anchors:
             _lay_subentries(per_chunk, footprint, anchors, code, parent,
-                            chunks)
+                            opens)
             nested = {**nested, (code, parent): len(anchors)}
         else:
             # the parent holds none that meets the card: the chains

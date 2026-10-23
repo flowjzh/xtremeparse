@@ -31,9 +31,17 @@ _ENTRY = re.compile(r'^\s*[\x80-\x9f•]')
 MAX_CHARS = 250
 
 
-def is_heading(text: str) -> bool:
-    """Whether a chunk opens a markdown heading."""
+def _is_heading(text: str) -> bool:
+    """Whether a line opens a markdown heading."""
     return bool(_HEADING.match(text))
+
+
+def section_opens(chunks: list[str]) -> list[bool]:
+    """Which chunks open a section — the one read of the normalized
+    text's section markup: the route plane consumes the fact (a
+    section head's followers are its continuation, and a section head
+    is a frame, not an instance opening), never the markup itself."""
+    return [_is_heading(c) for c in chunks]
 
 
 def normalize_newlines(text: str) -> str:
@@ -92,7 +100,7 @@ def _blocks(text: str) -> list[str]:
             para.clear()
 
     for line in text.split('\n'):
-        if is_heading(line):
+        if _is_heading(line):
             flush()
             para.append(line)
         elif not line.strip():
