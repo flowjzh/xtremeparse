@@ -17,11 +17,12 @@ repeating (array) unit.
     <start>-<end> <dest>[,<dest>...]
     <start> <dest>            # a single chunk may omit "-<end>"
 
-- `start`/`end` are chunk ids. Lines never overlap and together cover
-  every chunk id in `0..top` exactly once; line ORDER carries no
-  meaning — the ranges are explicit, and code sorts by start before
-  validating (a diff reply's `+` insert lands at its own editing
-  position).
+- `start`/`end` are chunk ids. Every chunk id in `0..top` is covered,
+  and covering lines never overlap; a chain line may instead nest
+  inside its parent's own run (the host carries the run, the chain
+  keeps its slice). Line ORDER carries no meaning — the ranges are
+  explicit, and code sorts by start before validating (a diff reply's
+  `+` insert lands at its own editing position).
 - A destination is `<code>`, `<code>.<item>`, or a chain through a
   lifted sub-array:
   - `code` is a letter code from the legend the prompt carries —
@@ -37,23 +38,24 @@ repeating (array) unit.
     sub-entry of a nested unit under one parent instance
     (`3-15 c.0.d.0` — parent instance 0's first sub-entry). A parent's
     plain line plus a count line maps no sub-entries — only chain
-    lines do; every chain line also feeds the parent instance the
-    chunks it covers, so those chunks take no separate parent line.
-    The sub-item follows the
+    lines do. A chain line claims its chunks for the sub-entry alone,
+    never for the parent instance: the parent takes its own plain line
+    over the chunks carrying its fields, and a chunk holding both
+    takes both codes on one line (`8 c.0,c.0.d.0`). The sub-item
+    follows the
     same numbering rules as an item; the doubled range spelling
     (`c.0.d.0-d.2`) normalizes like the flat form. A nested unit is
     never written bare (`d.0`, `d: 2`, `d = c.0.d`) — validation names
     the chain instead; a bare `d: 0` is tolerated as the silence it
     restates, an identical repeat of the chain count as the restatement
     it is, and a sub-entry takes no count line of its own.
-    A chain line drawn inside the parent instance's own run
-    becomes the fine partition of that run: the parent's line stays
-    the one carrying the coverage, and each sub-entry keeps its own
-    slice as its own extraction scope (the executor fans them out
-    separately); a chain line no parent run contains covers those
-    chunks for the parent itself. A parent whose sub-entries take
-    chain lines takes plain per-item lines for its own chunks —
-    never a ranged parent line beside its chain lines.
+    A chain line stands on its own chunks — the fine partition, each
+    sub-entry keeping its own slice as its own extraction scope (the
+    executor fans them out separately) — or nests inside the parent
+    instance's own run, where the parent's line carries the coverage.
+    A parent whose sub-entries take chain lines takes plain per-item
+    lines for its own chunks — never a ranged parent line beside its
+    chain lines.
 - A bare repeating code (`4-9 x`) means several instances share the run
   unsplit — that material is extracted once, whole.
 - A ranged run (`12-93 x.0-92`) is the compact shared form: those chunks

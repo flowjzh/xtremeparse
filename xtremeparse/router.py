@@ -216,8 +216,11 @@ Rules:
   the material that follows it, up to the next sub-entry or the
   parent's next instance; never leave its description on the parent
   line. A parent line plus a count line maps no sub-entries: only
-  chain lines do. Every chain line also feeds its parent instance the
-  chunks it covers, so those chunks take no separate parent line:
+  chain lines do. A chain line claims its chunks for the sub-entry
+  alone — never for the parent instance. The parent takes its own
+  plain line over the chunks carrying the parent's own fields (the
+  company/heading line, any material before the first sub-entry); a
+  chunk holding both takes both codes on one line ("8 c.0,c.0.d.0"):
       12-14 c.0
       15-20 c.0.d.0
       21-26 c.0.d.1
@@ -244,7 +247,7 @@ Rules:
   instances) stay per-item lines. Length alone never makes a ranged line —
   density does; and a parent whose sub-entries take chain lines takes plain
   per-item lines for its own chunks, never a ranged parent line beside its
-  chain lines (the chains feed the parent those chunks).
+  chain lines (the chains claim their own chunks).
 - Every declared item receives at least one chunk. A unit sharing
   another's run may repeat one item across several lines (one instance
   spanning what another unit splits into many).
@@ -1318,17 +1321,14 @@ def _dest_token(code: str, item, parent, by_code: dict) -> str:
 
 
 def _dest_tokens(dests, by_code: dict) -> str:
-    """A line's right-hand side, comma-joined. A parent whose own
-    chains ride the line is dropped — the chain token re-adds its
-    parent at parse, so an explicit parent beside them is redundancy.
-    The one spelling a map line's destinations take: the rebuilt map
-    and the repair hints both come here, so a removal the hint quotes
-    matches the line the base text holds."""
-    chained = {(_parent_code(by_code[scode], by_code), p)
-               for scode, _, p in dests if p is not None}
+    """A line's right-hand side, comma-joined verbatim — a parent
+    destination sharing the line with a chain is the chunk's joint
+    claim, not redundancy: the chain claims only its sub-entry. The one
+    spelling a map line's destinations take: the rebuilt map and the
+    repair hints both come here, so a removal the hint quotes matches
+    the line the base text holds."""
     return ','.join(_dest_token(code, item, parent, by_code)
-                    for code, item, parent in dests
-                    if (code, item) not in chained)
+                    for code, item, parent in dests)
 
 
 async def _recount_undrawn(runner: AgentRunner, payload: str,
@@ -1390,28 +1390,32 @@ def _resplit(state, code: str, claim: Claim, by_code: dict,
              chunks: list[str]):
     """Replace a merged unit's map lines with per-instance lines built
     from a fresh recount: each quoted opening anchors to its chunk
-    (content seek, whitespace-normalized) and the unit's owned chunks
-    partition at those anchors — quotes may not arrive in document
-    order, so anchors sort rather than assume a direction; a quote
-    whose chunk is already anchored reads as
-    two instances sharing one chunk and fails the seek. Other units'
-    destinations on the same chunks are preserved. Adoption is code's;
-    any unusable piece returns None for the caller's fallback. Returns
-    the rebuilt state."""
+    (content seek, whitespace-normalized) and the unit's count
+    footprint partitions at those anchors — quotes may not arrive in
+    document order, so anchors sort rather than assume a direction; a
+    quote whose chunk is already anchored reads as
+    two instances sharing one chunk and fails the seek. The rebuilt
+    parent draws its own chunks plus each instance's opening anchor;
+    the rest of the chain-fed footprint stays the sub-entries'
+    material. Other units' destinations on the same chunks are
+    preserved. Adoption is code's; any unusable piece returns None for
+    the caller's fallback. Returns the rebuilt state."""
     if not (count := claim.total) or count != len(claim.quotes):
         return None
     cover = _cover(state.segments)
     parent_path = by_code[code].path
     subs = {c for c, u in by_code.items() if u.parent == parent_path}
-    owned, joint, used = set(), {}, {}
+    owned, joint, used, own = set(), {}, {}, set()
     for c, dests in cover.items():
         if any(dd[0] == code for dd in dests):
             owned.add(c)
         plain = any(dd[0] == code and dd[2] is None for dd in dests)
+        if plain:
+            own.add(c)
         for dd in dests:
             if dd[2] is None or dd[0] not in subs:
                 continue
-            owned.add(c)  # the parent's material through its child's chain
+            owned.add(c)  # the parent's count footprint through its chain
             if plain:  # a chain riding the parent's own line is one
                 # chunk's joint destination — it moves with the chunk,
                 # never dropped
@@ -1420,6 +1424,7 @@ def _resplit(state, code: str, claim: Claim, by_code: dict,
     if not owned or (hits := _anchors(list(claim.quotes), owned, chunks)) is None:
         return None
     hits = sorted(hits)
+    anchors = set(hits)
     # before the first anchor the material rides instance 0
     item_of = {c: max(0, bisect_right(hits, c) - 1) for c in owned}
     per_chunk = {}
@@ -1432,12 +1437,14 @@ def _resplit(state, code: str, claim: Claim, by_code: dict,
         stripped = tuple(
             dd for dd in dests
             if dd[0] != code
-            and not (io is not None and dd[2] is not None
-                     and dd[0] in subs
+            and not (dd[2] is not None and dd[0] in subs
                      and dd[2] != io
                      and c not in joint.get((dd[0], dd[2]), ())))
+        # the parent draws its own chunks and each instance's opening
+        # anchor; the rest of the chain-fed footprint stays the sub-
+        # entries' material
         per_chunk[c] = (stripped + ((code, io, None),)
-                        if io is not None else stripped)
+                        if c in own or c in anchors else stripped)
         for dd in stripped:
             if dd[2] is not None and dd[0] in subs:
                 used.setdefault((dd[0], dd[2]), set()).add(dd[1])
@@ -1576,25 +1583,21 @@ def _overlay_text(reply, base_text) -> str | None:
 
 
 def _pure_chain(dests: tuple) -> bool:
-    """A segment of nothing but chain destinations — the settled form of
-    a chain line nested in its parent's run."""
+    """A segment of nothing but chain destinations — a chain line that
+    claims its sub-entries alone."""
     return bool(dests) and all(dd[2] is not None for dd in dests)
 
 
 def _cover(segments: list) -> dict:
     """Per chunk id: the destinations owning it — the expanded form the
     adoptions (recount splice, shared-run resplit, undrawn laying,
-    nested fold) edit before re-segmenting. A pure-chain segment
-    nesting in a parent run keeps
-    the parent's destinations underneath it: containment is segment
-    geometry, which the per-chunk form cannot express, and dropping the
-    parent would leave the chains riding no run — the rebuild would
-    reject the very map it started from, and a zeros recount that
-    merely CONFIRMED its zeros would burn a repair round on nothing.
-    The round-trip is
-    not shape-stable — a hosted parent run comes back as the chains'
-    own slices with the parent riding each — but coverage is identical
-    and the group layer re-coalesces adjacency."""
+    nested fold) edit before re-segmenting. A chain line hosted by its
+    parent's own run keeps that run's destinations underneath it:
+    containment is segment geometry, which the per-chunk form cannot
+    express, and dropping the parent would lose the run the model drew.
+    The round-trip is not shape-stable — a hosted parent run comes back
+    as the chains' own slices with the parent riding each — but
+    coverage is identical and the group layer re-coalesces adjacency."""
     plain, chains = {}, {}
     for s, e, dests in segments:
         into = chains if _pure_chain(dests) else plain
@@ -1609,9 +1612,8 @@ def _resegment(per_chunk: dict, state, by_code: dict, n: int,
     """The adoption tail shared by every path that edits the expanded
     map: a per-chunk destination map → coalesced segments (adjacent
     equal destinations merge into one run; the result is a disjoint
-    partition, so containment needs no re-settling — ``_cover`` already
-    carried the parents beneath the chains), validated against the
-    declared counts — None when the result is not a valid map. A
+    partition), validated against the declared counts — None when the
+    result is not a valid map. A
     rebuild redraws repeating units' lines only, so presence skips
     re-validation here. ``lenient`` passes count-family mismatches
     through (the undrawn adoption validates its claims while unrelated
@@ -2328,7 +2330,6 @@ def _parse(text, by_code: dict, n: int,
     segments.sort(key=lambda s: s[0])  # line order carries no meaning —
     # ranges are explicit; a diff reply's "+" insert lands at its own
     # editing position, so out-of-order lines are normal, not an error
-    _settle_chains(segments, by_code)
     drawn = _drawn_pairs(segments)  # one reading per parse: validation
     # and the zero fill read the same set; later pools recompute —
     # adoptions may have redrawn the lines by then
@@ -2356,37 +2357,14 @@ def _chain_parents(dests: tuple, by_code: dict) -> set:
 
 
 def _hosted_chain(start: int, end: int, parents: set, candidates) -> bool:
-    """The one home of the chain-hosting rule: whether some candidate
-    segment spans [start, end] and carries every parent destination in
-    ``parents`` among its plain destinations."""
+    """Whether a chain line nests inside its parent's own run: some
+    candidate segment spans [start, end], carries no chain destination
+    of its own (a joint line is a chunk's claim, not the run a chain
+    partitions), and carries every parent destination in ``parents``."""
     return any(s <= start and end <= e
-               and parents <= {(x[0], x[1]) for x in ds if x[2] is None}
+               and all(x[2] is None for x in ds)
+               and parents <= {(x[0], x[1]) for x in ds}
                for s, e, ds in candidates)
-
-
-def _settle_chains(segments: list, by_code: dict) -> None:
-    """A chain-borne line — nothing but chains and their implicit parent
-    destinations — that nests in a run of the parent's own line drops
-    the implicit parents: the fine partition stands, each sub-entry
-    keeping its slice as its own segment (the executor fans them out
-    separately; a kept implicit parent would re-extract the run the
-    host line already covers). One no run contains stays as it is —
-    covering, the parent's coverage there, exactly what the prompt
-    promises."""
-
-    def implicit_only(ds):
-        chains = [dd for dd in ds if dd[2] is not None]
-        parents = _chain_parents(ds, by_code)
-        return bool(chains) and all(
-            dd[2] is not None or (dd[0], dd[1]) in parents for dd in ds)
-
-    bases = [(s, e, ds) for s, e, ds in segments if not implicit_only(ds)]
-    for k, (s, e, ds) in enumerate(segments):
-        if not implicit_only(ds):
-            continue
-        if _hosted_chain(s, e, _chain_parents(ds, by_code), bases):
-            segments[k] = (s, e, tuple(dd for dd in ds
-                                       if dd[2] is not None))
 
 
 def _merge_line(segments: list, start: int, end: int, dests: tuple):
@@ -2395,11 +2373,11 @@ def _merge_line(segments: list, start: int, end: int, dests: tuple):
     re-emission is plain redundancy): the model lines a parent's run
     and its chains up as separate same-range lines, and one chunk set
     is one line's semantics — rejecting that sends the repair loop
-    oscillating to exhaustion. Lines at DIFFERENT ranges
-    stay apart: a chain line nesting in its parent's run is legal on
-    its own (the fine partition fans the sub-entries out separately,
-    merging it would collapse them into one whole call), anything else
-    overlapping is an overlap error."""
+    oscillating to exhaustion. Lines at DIFFERENT ranges stay apart:
+    a chain line nesting in its parent's own run is legal on its own
+    (the fine partition fans the sub-entries out separately, merging it
+    would collapse them into one whole call); anything else overlapping
+    is an overlap error the validator names."""
 
     for k, (s, e, ds) in enumerate(segments):
         if (s, e) == (start, end):
@@ -2417,8 +2395,9 @@ def _destination(d, code, rest, unit, by_code, seen, multi):
     """One destination token parsed against the schema — ``(destinations,
     error)``. Top-level destinations are ``(code, item)``; a chain
     through a lifted sub-array adds ``(sub-code, sub-item, parent)`` to
-    the same line, the parent instance riding with its sub-entry. Two
-    spellings normalize to the chain — the field name
+    the same line, the parent index naming where the sub-entry hangs —
+    the chain claims the sub-entry alone, never the parent instance.
+    Two spellings normalize to the chain — the field name
     ('c.0.sub_experiences.0') and, when the unit holds exactly one
     sub-array, the bare numeric tail ('c.0.0': the schema's shape says
     what the tail numbers). Anything else dotted folds to the leading
@@ -2437,14 +2416,10 @@ def _destination(d, code, rest, unit, by_code, seen, multi):
         children = [c for c, u in by_code.items() if u.parent == unit.path]
         if (sub is None and unit.kind == 'array' and item and item.isdigit()
                 and len(children) == 1):
-            parent_dest = [] if (code, item) in seen \
-                else [(code, int(item), None)]
             if (children[0], mid, item) in seen:
-                return parent_dest, None  # re-claimed: idempotent
+                return [], None  # re-claimed: idempotent
             seen.add((children[0], mid, item))
-            seen.add((code, item))
-            return [*parent_dest,
-                    (children[0], int(mid), int(item))], None
+            return [(children[0], int(mid), int(item))], None
         return [(code, _fold(dotted, unit), None)], None
     sub_code = _nested_unit(mid, unit, by_code)
     if sub_code is None:
@@ -2466,21 +2441,15 @@ def _destination(d, code, rest, unit, by_code, seen, multi):
         a, b = int(m2.group(1)), int(m2.group(2))
         if b < a:
             return [], f'{d!r} is unordered'
-        # a second chain of the same parent on one line rides the
-        # parent destination already claimed — the co-chunked shared
-        # form ('c.0.d.0,c.0.d.1') is exactly that spelling; a
-        # re-claimed destination is idempotent, never an error
+        # a second chain of the same parent on one line — the co-chunked
+        # shared form ('c.0.d.0,c.0.d.1') — is one line's ordinary
+        # comma-join; a re-claimed destination is idempotent
         ks = _claim_range(a, b, lambda k: (sub_code, str(k), item), seen)
-        parent_dest = [] if (code, item) in seen \
-            else [(code, parent, None)]
-        seen.add((code, item))
-        return [*parent_dest, *[(sub_code, k, parent) for k in ks]], None
-    parent_dest = [] if (code, item) in seen else [(code, parent, None)]
-    seen.add((code, item))
+        return [(sub_code, k, parent) for k in ks], None
     if (sub_code, sub, item) in seen:
-        return parent_dest, None  # re-claimed: idempotent
+        return [], None  # re-claimed: idempotent
     seen.add((sub_code, sub, item))
-    return [*parent_dest, (sub_code, int(sub), parent)], None
+    return [(sub_code, int(sub), parent)], None
 
 
 def _attach_chain(destinations, d, code, rest, unit, by_code):
@@ -2621,10 +2590,11 @@ def _adopt_blocks(text: str, code: str, first: int, last: int,
 
 
 def _chain_fed(segments: list, by_code: dict) -> dict:
-    """Chunks each parent unit receives through its nested units' chain
-    lines — the extractor-facing material of the parent. A chain
-    destination names the nested unit and the parent instance; the
-    parent code is the nested unit's declared parent."""
+    """Chunks each parent unit counts through its nested units' chain
+    lines — its count footprint, not extraction material (the parent
+    extracts only its own lines). A chain destination names the nested
+    unit and the parent instance; the parent code is the nested unit's
+    declared parent."""
     fed = {}
     for start, end, dests in segments:
         for dd in dests:
@@ -2657,8 +2627,8 @@ def _shared_spans(segments: list, counts: dict, by_code: dict) -> tuple:
     chain (a lifted sub-array's destination) is excluded with them —
     redrawing that line would swallow the chain, and the recount sees
     none of the sub-entries. A parent declared once still counts the
-    chunks its chain lines feed it: its footprint is its own lines
-    plus its nested units', the material the extractor will see."""
+    chunks its chain lines feed it: its count footprint is its own
+    lines plus its nested units'."""
     chained = {dd[0] for _, _, dests in segments
                if any(x[2] is not None for x in dests)
                for dd in dests if dd[2] is None}
@@ -2809,9 +2779,8 @@ def _chain_remedy(start, end, dests, prev_start, prev_end, prev_dests,
     parent instance overlapping name the earlier slice's end — the
     chunk before the later one begins. None when the overlap is
     ordinary. The containment check reads ranged parent claims
-    deliberately — hosting (`_hosted_chain`) stays strict: a ranged
-    run is the inseparable batched form, and only the remedy names
-    its chains' chunks."""
+    deliberately — a ranged run is the inseparable batched form, and
+    only the remedy names its chains' chunks."""
     if not any(dd[2] is not None for dd in dests):
         return None
     if prev_start <= start and end <= prev_end and any(
@@ -2846,8 +2815,11 @@ def _chain_remedy(start, end, dests, prev_start, prev_end, prev_dests,
         named = ', '.join(str(a) if a == b else f'{a}-{b}'
                           for a, b in _runs(outside))
         if not named:
-            return (f'the parent line\'s chunks are all its chains\' — '
-                    f'drop the parent line, the chains feed the parent')
+            return ('the parent line\'s chunks are all its chains\' — a '
+                    'chain never carries its parent: drop this line and '
+                    f'give {pcode} a line over the chunks holding its own '
+                    'fields, comma-joined where such a chunk is also a '
+                    'sub-entry\'s')
         return (f'the parent line covers chunks its own chain lines carry '
                 f'— the parent keeps only the chunks outside its chains '
                 f'({named}); then the count line must match the '
@@ -2885,28 +2857,26 @@ def _map_errors(state, by_code: dict, n: int,
     items per destination — top level and, per parent instance, lifted
     sub-arrays — derivation sanity, non-repeating presence, and full
     coverage (reported even alongside line errors, so the model gets
-    the complete picture in one repair). A pure chain line claims no
-    coverage of its own: it must sit inside a line that carries its
-    parent destination, where it reads as the fine partition of that
-    run — each sub-entry keeps its own slice and fans out on its own;
-    overlapping it with anything else is an error. The validator never
-    edits the state it reads. ``drawn`` is the parse's one drawn-ness
-    set; a rebuild computes its own. ``validate_presence`` is False on
-    a segment rebuild: a rebuild redraws repeating units' lines only —
-    presence travels beside it untouched, and the caller's full
-    validation re-checks it."""
+    the complete picture in one repair). A chain line claims its
+    sub-entry alone, never the parent instance: it either stands on
+    its own chunks (the fine partition, checked for overlaps like any
+    other claim) or nests inside its parent's own run (the host
+    carries the coverage; the chains keep their slices). The validator
+    never edits the state it reads. ``drawn`` is the parse's one
+    drawn-ness set; a rebuild computes its own. ``validate_presence``
+    is False on a segment rebuild: a rebuild redraws repeating units'
+    lines only — presence travels beside it untouched, and the
+    caller's full validation re-checks it."""
     segments, counts, nested, derived = (
         state.segments, state.counts, state.nested, state.derived)
     present = state.present
     drawn = _drawn_pairs(segments) if drawn is None else drawn
-    covering, chains = [], []
-    for seg in segments:
-        if _pure_chain(seg[2]):
-            chains.append(seg)
-        else:
-            covering.append(seg)
+    hosts = [seg for seg in segments if not _pure_chain(seg[2])]
     errors, prev_start, prev_end, prev_dests = [], -1, -1, ()
-    for start, end, dests in covering:
+    for start, end, dests in segments:
+        if _pure_chain(dests) and _hosted_chain(
+                start, end, _chain_parents(dests, by_code), hosts):
+            continue  # its host carries the coverage; the chain keeps its slice
         if start <= prev_end:
             codes = ','.join(sorted({dd[0] for dd in prev_dests}))
             tail = _chain_remedy(start, end, dests, prev_start, prev_end,
@@ -2933,15 +2903,6 @@ def _map_errors(state, by_code: dict, n: int,
                           f'chunk sits on exactly one line; {tail}')
         if end > prev_end:
             prev_start, prev_end, prev_dests = start, end, dests
-    for start, end, dests in chains:
-        if not _hosted_chain(start, end, _chain_parents(dests, by_code),
-                             covering):
-            pcode = _parent_code(by_code[dests[0][0]], by_code)
-            errors.append(
-                f'{dests[0][0]}: chain line {start}-{end} rides no run of '
-                f'its parent — draw {pcode}.<item>\'s own line over the '
-                f'chain lines, or put the chains on the parent\'s line '
-                f'("{start}-{end} {pcode}.<item>.{dests[0][0]}.<sub>")')
     for code, source in derived.items():
         src = by_code.get(source)
         if src is None:
@@ -3143,12 +3104,11 @@ def _nested_errors(code: str, unit: Unit, segments, counts, nested,
 
 def _groups(segments: list, by_code: dict, chunks: list[str],
             derived: dict = None) -> list:
-    """Validated line ranges are disjoint by construction; each
-    destination gets its own group, chunk-adjacent same-destination
-    pieces coalesce (a shared unit's items may interleave with the
-    detailed unit's; a parent instance's chunks coalesce across the
-    chain lines that ride them). Derived units mirror their source's
-    groups."""
+    """Each destination gets its own group from the lines naming it;
+    chunk-adjacent same-destination pieces coalesce (a shared unit's
+    items may interleave with the detailed unit's). A hosted chain's
+    group keeps its own slice — the host line's destination is not
+    carried onto it. Derived units mirror their source's groups."""
     groups, last = [], {}
     for start, end, destinations in segments:
         ids, text = list(range(start, end + 1)), '\n'.join(

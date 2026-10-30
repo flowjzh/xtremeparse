@@ -90,20 +90,23 @@ one fresh conversation — see the zero-count recount below):
   arithmetic (a lone item over a handful of chunks reads as one long
   entry as plausibly as a merge: recounted, confirmed, and never
   adopted while thin — the recount is for the merge, not the
-  spelling). A parent declared once whose material arrives mostly
-  through its nested units' chains counts those chunks too — the
-  chains carry a parent index, not the parent code, so its own lines
-  can read as a lone single-chunk item while the extractor sees the
-  whole run; the footprint is its lines plus its chain-fed chunks,
-  and only a chain-fed parent enters the pool on that reading
-  (without the chains it is the lone-item case the arithmetic above
-  owns). The re-split owns those chunks as well: a separate chain
+  spelling). A parent declared once whose countable material arrives
+  mostly through its nested units' chains counts those chunks too —
+  the chains carry a parent index, not the parent code, so its own
+  lines can read as a lone single-chunk item while the document holds
+  a whole run; the count footprint is its lines plus its chain-fed
+  chunks (extraction material stays the parent's own lines), and only
+  a chain-fed parent enters the pool on that reading (without the
+  chains it is the lone-item case the arithmetic above owns). The
+  re-split re-homes chunks to the counted instances: a separate chain
   line stranded under the single instance drops where the
-  recount re-homes its chunks to another top-level instance (the
+  recount moves its chunks to another top-level instance (the
   merge was the mis-parenting), the nested declarations re-derive
   from the survivors — a dropped chain takes its count with it — and
   a chain riding the parent's own line is one chunk's joint
-  destination, moving with the chunk.
+  destination, moving with the chunk. The rebuilt parent keeps its
+  own chunks plus each instance's opening anchor; the rest of the
+  chain-fed footprint stays the sub-entries' material.
 - Merged sub-entries. A lifted sub-array's sub-entries riding one line
   together — a ranged chain or comma-joined chains of one parent
   instance — are the merged shape the previous bullet cannot see:

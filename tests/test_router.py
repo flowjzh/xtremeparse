@@ -349,7 +349,7 @@ async def test_a_quoted_zero_recount_anchors_instead_of_repairing():
 
 
 async def test_zero_confirm_adopts_silently_on_a_chain_map():
-    # the covering chain form (parent line over its chains) must
+    # the hosted chain form (parent line over its chains) must
     # round-trip the adoption tail — see _cover
     schema = {**NESTED_SCHEMA, 'properties': {
         **NESTED_SCHEMA['properties'],
@@ -1109,7 +1109,7 @@ async def test_multi_chunk_chain_range_shared_expands_like_the_flat_form():
     # declines the recount, the inseparable draw stands confirmed as
     # drawn
     runner = ScriptedRunner(
-        agent_result('0 -\n1-2 a,b.0.c.0-1\n3 -\nb: 1\nb.0.c: 2'))
+        agent_result('0 -\n1-2 a,b.0,b.0.c.0-1\n3 -\nb: 1\nb.0.c: 2'))
     routing = await route(runner, payload=PAYLOAD, schema_head=HEAD, units=NESTED_UNITS,
                           chunks=NESTED_CHUNKS[:4])
     assert len(runner.calls) == 1
@@ -1479,45 +1479,47 @@ async def route_nested(text):
                        payload=PAYLOAD, schema_head=HEAD, units=NESTED_UNITS, chunks=NESTED_CHUNKS)
 
 
-async def test_chain_line_feeds_parent_and_sub_entry():
-    routing = await route_nested('0 a\n1-2 b.0.c.0\n3 b.1\n4 -\nb: 2\nb.0.c: 1')
+async def test_chain_line_claims_only_its_sub_entry():
+    routing = await route_nested('0 a\n1 b.0\n2-3 b.0.c.0\n4 b.1\nb: 2\nb.0.c: 1')
     assert [(g.unit.path, g.item, g.parent, g.chunk_ids)
             for g in routing.groups] == [
         ('basic_info', None, None, [0]),
-        ('jobs', 0, None, [1, 2]),
-        ('jobs.roles', 0, 0, [1, 2]),
-        ('jobs', 1, None, [3])]
+        ('jobs', 0, None, [1]),
+        ('jobs.roles', 0, 0, [2, 3]),
+        ('jobs', 1, None, [4])]
     assert routing.raw['counts'] == {'jobs': 2}
     assert routing.raw['nested_counts'] == {'jobs.roles': {0: 1}}
-    assert {'unit': 'jobs.roles', 'item': 0, 'parent': 0, 'chunks': [1, 2]} \
+    assert {'unit': 'jobs.roles', 'item': 0, 'parent': 0, 'chunks': [2, 3]} \
         in routing.raw['assignments']
 
 
 async def test_field_name_and_bare_tail_spellings_normalize_to_the_chain():
     expected = [('basic_info', None, None), ('jobs', 0, None),
                 ('jobs.roles', 0, 0), ('jobs', 1, None)]
-    for text in ('0 a\n1-2 b.0.roles.0\n3 b.1\n4 -\nb: 2\nb.0.c: 1',
-                 '0 a\n1-2 b.0.0\n3 b.1\n4 -\nb: 2\nb.0.c: 1'):
+    for text in ('0 a\n1 b.0\n2-3 b.0.roles.0\n4 b.1\nb: 2\nb.0.c: 1',
+                 '0 a\n1 b.0\n2-3 b.0.0\n4 b.1\nb: 2\nb.0.c: 1'):
         routing = await route_nested(text)
         assert [(g.unit.path, g.item, g.parent) for g in routing.groups] == expected
 
 
 async def test_ranged_chain_carries_its_sub_items_inseparably():
-    routing = await route_nested('0 a\n1-3 b.0.c.0-1\n4 -\nb: 1\nb.0.c: 2')
+    routing = await route_nested(
+        '0 a\n1-3 b.0,b.0.c.0-1\n4 -\nb: 1\nb.0.c: 2')
     assert [(g.unit.path, g.item, g.parent, g.chunk_ids)
             for g in routing.groups if g.parent is not None] == [
         ('jobs.roles', 0, 0, [1, 2, 3]), ('jobs.roles', 1, 0, [1, 2, 3])]
 
 
 async def test_doubled_chain_range_normalizes_like_the_flat_form():
-    routing = await route_nested('0 a\n1-3 b.0.c.0-c.1\n4 -\nb: 1\nb.0.c: 2')
+    routing = await route_nested(
+        '0 a\n1-3 b.0,b.0.c.0-c.1\n4 -\nb: 1\nb.0.c: 2')
     assert [g.item for g in routing.groups if g.parent is not None] == [0, 1]
 
 
 async def test_bare_nested_code_rides_its_parent():
     runner = ScriptedRunner(
         agent_result('0 a\n1 c.0\n2-3 -\nb: 0'),
-        agent_result('0 a\n1-2 b.0.c.0\n3 b.1\n4 -\nb: 2\nb.0.c: 1'))
+        agent_result('0 a\n1 b.0\n2 b.0.c.0\n3 b.1\n4 -\nb: 2\nb.0.c: 1'))
     await route(runner, payload=PAYLOAD, schema_head=HEAD, units=NESTED_UNITS, chunks=NESTED_CHUNKS)
     assert 'rides its parent' in runner.calls[1]['feedback'][0].message
 
@@ -1525,7 +1527,7 @@ async def test_bare_nested_code_rides_its_parent():
 async def test_top_level_count_on_a_nested_unit_is_named():
     runner = ScriptedRunner(
         agent_result('0 a\n1-2 b.0.c.0\n3 b.1\n4 -\nb: 2\nc: 1'),
-        agent_result('0 a\n1-2 b.0.c.0\n3 b.1\n4 -\nb: 2\nb.0.c: 1'))
+        agent_result('0 a\n1 b.0\n2 b.0.c.0\n3 b.1\n4 -\nb: 2\nb.0.c: 1'))
     await route(runner, payload=PAYLOAD, schema_head=HEAD, units=NESTED_UNITS, chunks=NESTED_CHUNKS)
     assert 'counts per parent' in runner.calls[1]['feedback'][0].message
 
@@ -1537,8 +1539,8 @@ async def test_nested_units_bare_zero_count_is_silent_noise():
 
 async def test_nested_units_bare_zero_still_hides_no_real_mismatch():
     runner = ScriptedRunner(
-        agent_result('0 a\n1-2 b.0.c.0\n3 b.1\n4 -\nb: 2\nc: 0'),
-        agent_result('0 a\n1-2 b.0.c.0\n3 b.1\n4 -\nb: 2\nb.0.c: 1'))
+        agent_result('0 a\n1 b.0\n2 b.0.c.0\n3 b.1\n4 -\nb: 2\nc: 0'),
+        agent_result('0 a\n1 b.0\n2 b.0.c.0\n3 b.1\n4 -\nb: 2\nb.0.c: 1'))
     await route(runner, payload=PAYLOAD, schema_head=HEAD, units=NESTED_UNITS, chunks=NESTED_CHUNKS)
     assert 'sub-entries used' in runner.calls[1]['feedback'][0].message
 
@@ -1585,7 +1587,7 @@ async def test_replayed_blocking_errors_still_exhaust():
 async def test_chain_without_sub_item_is_named():
     runner = ScriptedRunner(
         agent_result('0 a\n1-2 b.0.c\n3 b.1\n4 -\nb: 2\nb.0.c: 1'),
-        agent_result('0 a\n1-2 b.0.c.0\n3 b.1\n4 -\nb: 2\nb.0.c: 1'))
+        agent_result('0 a\n1 b.0\n2 b.0.c.0\n3 b.1\n4 -\nb: 2\nb.0.c: 1'))
     await route(runner, payload=PAYLOAD, schema_head=HEAD, units=NESTED_UNITS, chunks=NESTED_CHUNKS)
     assert 'needs its sub-item' in runner.calls[1]['feedback'][0].message
 
@@ -1601,7 +1603,7 @@ async def test_chain_under_a_childless_parent_is_named():
 async def test_nested_chain_count_line_for_a_foreign_unit_is_named():
     runner = ScriptedRunner(
         agent_result('0 a\n1-2 b.0.c.0\n3 b.1\n4 -\nb: 2\nb.0.a: 1'),
-        agent_result('0 a\n1-2 b.0.c.0\n3 b.1\n4 -\nb: 2\nb.0.c: 1'))
+        agent_result('0 a\n1 b.0\n2 b.0.c.0\n3 b.1\n4 -\nb: 2\nb.0.c: 1'))
     await route(runner, payload=PAYLOAD, schema_head=HEAD, units=NESTED_UNITS, chunks=NESTED_CHUNKS)
     assert 'not a nested unit chain' in runner.calls[1]['feedback'][0].message
 
@@ -1611,7 +1613,7 @@ async def test_an_identical_chain_count_restatement_is_noise():
     # attach the budget — an identical restatement parses with no
     # repair round, the restated budget pricing last-wins
     runner = ScriptedRunner(
-        agent_result('0 a\n1-2 b.0.c.0\n3 b.1\n4 -\nb: 2'
+        agent_result('0 a\n1 b.0\n2 b.0.c.0\n3 b.1\n4 -\nb: 2'
                      '\nb.0.c: 1\nb.0.c: 1 @100'))
     routing = await route(runner, payload=PAYLOAD, schema_head=HEAD,
                           units=NESTED_UNITS, chunks=NESTED_CHUNKS)
@@ -1624,7 +1626,7 @@ async def test_a_contradicting_chain_count_restatement_is_named():
     runner = ScriptedRunner(
         agent_result('0 a\n1-2 b.0.c.0\n3 b.1\n4 -\nb: 2'
                      '\nb.0.c: 1\nb.0.c: 2 @100'),
-        agent_result('0 a\n1-2 b.0.c.0\n3 b.1\n4 -\nb: 2\nb.0.c: 1'))
+        agent_result('0 a\n1 b.0\n2 b.0.c.0\n3 b.1\n4 -\nb: 2\nb.0.c: 1'))
     await route(runner, payload=PAYLOAD, schema_head=HEAD,
                 units=NESTED_UNITS, chunks=NESTED_CHUNKS)
     assert 'declared twice — 1 stands, drop this line' \
@@ -1633,16 +1635,16 @@ async def test_a_contradicting_chain_count_restatement_is_named():
 
 async def test_nested_declared_count_must_match_mapped_sub_items():
     runner = ScriptedRunner(
-        agent_result('0 a\n1-2 b.0.c.0\n3 b.1\n4 -\nb: 2\nb.0.c: 2'),
-        agent_result('0 a\n1-2 b.0.c.0\n3 b.0.c.1\n4 -\nb: 1\nb.0.c: 2'))
+        agent_result('0 a\n1 b.0\n2 b.0.c.0\n3 b.1\n4 -\nb: 2\nb.0.c: 2'),
+        agent_result('0 a\n1 b.0\n2 b.0.c.0\n3 b.0.c.1\n4 -\nb: 1\nb.0.c: 2'))
     await route(runner, payload=PAYLOAD, schema_head=HEAD, units=NESTED_UNITS, chunks=NESTED_CHUNKS)
     assert 'declared 2 items under b.0' in runner.calls[1]['feedback'][0].message
 
 
 async def test_sub_item_beyond_the_declaration_names_the_fold():
     runner = ScriptedRunner(
-        agent_result('0 a\n1 b.0.c.0\n2 b.0.c.1\n3 b.0.c.2\n4 -\nb: 1\nb.0.c: 2'),
-        agent_result('0 a\n1 b.0.c.0\n2-3 b.0.c.1\n4 -\nb: 1\nb.0.c: 2'))
+        agent_result('0 a\n1 b.0,b.0.c.0\n2 b.0.c.1\n3 b.0.c.2\n4 -\nb: 1\nb.0.c: 2'),
+        agent_result('0 a\n1 b.0,b.0.c.0\n2-3 b.0.c.1\n4 -\nb: 1\nb.0.c: 2'))
     await route(runner, payload=PAYLOAD, schema_head=HEAD, units=NESTED_UNITS, chunks=NESTED_CHUNKS)
     messages = ' '.join(i.message for i in runner.calls[1]['feedback'])
     assert ("sub-item 2 under b.0 is beyond the declared 2 (0..1) — extend "
@@ -1676,7 +1678,7 @@ async def test_a_split_of_an_undropped_line_names_the_removal():
     # without removing the wide line — the remedy quotes the removal
     runner = ScriptedRunner(
         agent_result('0 a\n1-3 b.0.c.1\n1-2 b.0.c.1\n4 -\nb: 1\nb.0.c: 2'),
-        agent_result('0 a\n1-2 b.0.c.1\n3 b.0.c.0\n4 -\nb: 1\nb.0.c: 2'))
+        agent_result('0 a\n1-2 b.0,b.0.c.1\n3 b.0.c.0\n4 -\nb: 1\nb.0.c: 2'))
     await route(runner, payload=PAYLOAD, schema_head=HEAD, units=NESTED_UNITS, chunks=NESTED_CHUNKS)
     messages = ' '.join(i.message for i in runner.calls[1]['feedback'])
     assert 'add "- 1-3 b.0.c.1" and the slices replace it' in messages
@@ -1689,7 +1691,7 @@ async def test_a_removal_uncovering_chunks_names_the_re_add():
         agent_result('0 a\n1-3 -\n4 -\nb: 1\nb.0.c: 1'),
         agent_result('b.0.c: 1\n无此内容'),  # recount quotes anchor nowhere
         agent_result('- 1-3 -\n+ 1-2 b.0.c.0'),
-        agent_result('0 a\n1-2 b.0.c.0\n3-4 -\nb: 1\nb.0.c: 1'))
+        agent_result('0 a\n1-2 b.0,b.0.c.0\n3-4 -\nb: 1\nb.0.c: 1'))
     await route(runner, payload=PAYLOAD, schema_head=HEAD, units=NESTED_UNITS, chunks=NESTED_CHUNKS)
     messages = ' '.join(i.message for i in runner.calls[3]['feedback'])
     assert 'chunks not covered: [3]' in messages
@@ -1722,7 +1724,7 @@ async def test_chain_parent_index_out_of_range_is_named():
 async def test_nested_declaration_before_the_map_is_rejected():
     runner = ScriptedRunner(
         agent_result('b.0.c: 1\n0 a\n1-2 b.0.c.0\n3 b.1\n4 -\nb: 2'),
-        agent_result('0 a\n1-2 b.0.c.0\n3 b.1\n4 -\nb: 2\nb.0.c: 1'))
+        agent_result('0 a\n1 b.0\n2 b.0.c.0\n3 b.1\n4 -\nb: 2\nb.0.c: 1'))
     await route(runner, payload=PAYLOAD, schema_head=HEAD, units=NESTED_UNITS, chunks=NESTED_CHUNKS)
     assert 'follow the map' in runner.calls[1]['feedback'][0].message
 
@@ -1763,7 +1765,7 @@ async def test_chain_fragment_repair_keeps_the_map_head():
 
 async def test_prompt_teaches_the_chain():
     runner = ScriptedRunner(agent_result(
-        '0 a\n1-2 b.0.c.0\n3 b.1\n4 -\nb: 2\nb.0.c: 1'))
+        '0 a\n1 b.0\n2 b.0.c.0\n3 b.1\n4 -\nb: 2\nb.0.c: 1'))
     await route(runner, payload=PAYLOAD, schema_head=HEAD, units=NESTED_UNITS, chunks=NESTED_CHUNKS)
     text = rendered(runner.calls[0])
     assert 'c = [jobs.roles | array]' in text  # the legend names the parent path
@@ -1771,17 +1773,17 @@ async def test_prompt_teaches_the_chain():
     assert 'c.0.d: 2' in text and '3-15 c.0.d.0' in text
 
 
-async def test_chain_lines_coalesce_parent_chunks_but_not_sub_entries():
-    # parent item 0 rides both chain lines — its groups coalesce across
-    # them; the sub-entries stay apart
-    routing = await route_nested('0 a\n1-2 b.0.c.0\n3-4 b.0.c.1\nb: 1\n'
-                                 'b.0.c: 2')
+async def test_chain_lines_keep_their_slices_out_of_the_parent():
+    # the parent's own line covers its own chunk; each chain line covers
+    # its sub-entry's slice and neither feeds the parent
+    routing = await route_nested('0 a\n1 b.0\n2-3 b.0.c.0\n4 b.0.c.1\n'
+                                 'b: 1\nb.0.c: 2')
     assert [(g.unit.path, g.item, g.parent, g.chunk_ids)
             for g in routing.groups] == [
         ('basic_info', None, None, [0]),
-        ('jobs', 0, None, [1, 2, 3, 4]),
-        ('jobs.roles', 0, 0, [1, 2]),
-        ('jobs.roles', 1, 0, [3, 4])]
+        ('jobs', 0, None, [1]),
+        ('jobs.roles', 0, 0, [2, 3]),
+        ('jobs.roles', 1, 0, [4])]
 
 
 async def test_shared_resplit_reads_chain_destinations_through():
@@ -1822,7 +1824,7 @@ async def test_parent_run_and_chain_on_same_range_lines_merge():
 
 async def test_comma_joined_chains_share_one_parent_destination():
     routing = await route_nested(
-        '0 a\n1-2 b.0.c.0,b.0.c.1\n3 b.1\n4 -\nb: 2\nb.0.c: 2')
+        '0 a\n1-2 b.0,b.0.c.0,b.0.c.1\n3 b.1\n4 -\nb: 2\nb.0.c: 2')
     chain = [g for g in routing.groups if g.parent is not None]
     parents = [g for g in routing.groups if g.unit.path == 'jobs']
     assert [(g.item, g.parent) for g in chain] == [(0, 0), (1, 0)]
@@ -1851,17 +1853,15 @@ async def test_chain_lines_inside_the_parent_run_stay_the_fine_partition():
         [(0, 0, [2]), (1, 0, [3])]
 
 
-async def test_standalone_chain_line_is_its_parent_coverage_there():
-    # a chain line no parent run contains covers those chunks FOR the
-    # parent (the prompt's promise): the implicit parent destination
-    # stays, parent and sub-entry each see their own scope, one group
-    # apiece — no repair round
+async def test_standalone_chain_line_claims_only_its_sub_entry():
+    # a chain line no parent run contains stands on its own chunks; the
+    # parent keeps only the chunks its own line draws
     routing = await route_nested(
         '0 a\n1-2 b.0\n3 b.0.c.0\n4 -\nb: 1\nb.0.c: 1')
     assert [(g.unit.path, g.item, g.parent, g.chunk_ids)
             for g in routing.groups] == [
         ('basic_info', None, None, [0]),
-        ('jobs', 0, None, [1, 2, 3]),
+        ('jobs', 0, None, [1, 2]),
         ('jobs.roles', 0, 0, [3])]
 
 
@@ -1870,7 +1870,7 @@ async def test_chain_line_overlapping_another_units_run_is_named():
     # instance — a genuine two-claim conflict, the overlap repair names it
     runner = ScriptedRunner(
         agent_result('0 a\n1-3 b.1\n2 b.0.c.0\n4 -\nb: 2\nb.0.c: 1'),
-        agent_result('0 a\n1 b.1\n2-3 b.0.c.0\n4 -\nb: 2\nb.0.c: 1'))
+        agent_result('0 a\n1 b.1\n2-3 b.0,b.0.c.0\n4 -\nb: 2\nb.0.c: 1'))
     await route(runner, payload=PAYLOAD, schema_head=HEAD, units=NESTED_UNITS,
                 chunks=NESTED_CHUNKS)
     assert 'overlaps line' \
@@ -1896,7 +1896,7 @@ async def test_sub_slice_overlapping_its_sibling_names_the_boundary():
     # earlier one ends where the later begins
     runner = ScriptedRunner(
         agent_result('0 a\n1-2 b.0\n1-2 b.0.c.0\n2 b.0.c.1\n3 -\n4 -\nb: 1\nb.0.c: 2'),
-        agent_result('0 a\n1 b.0.c.0\n2 b.0.c.1\n3 -\n4 -\nb: 1\nb.0.c: 2'))
+        agent_result('0 a\n1 b.0,b.0.c.0\n2 b.0.c.1\n3 -\n4 -\nb: 1\nb.0.c: 2'))
     await route(runner, payload=PAYLOAD, schema_head=HEAD, units=NESTED_UNITS,
                 chunks=NESTED_CHUNKS)
     assert 'end the earlier one at 1, where b.0.c.1 begins' \
@@ -1981,7 +1981,7 @@ async def test_comma_joined_nested_token_with_two_parents_stays_named():
     # line is ambiguous and keeps the named error
     runner = ScriptedRunner(
         agent_result('0 a\n1 b.0,b.1,c.0-1\n2-4 -\nb: 2\nb.0.c: 2'),
-        agent_result('0 a\n1-2 b.0.c.0,b.0.c.1\n3 b.1\n4 -\n'
+        agent_result('0 a\n1-2 b.0,b.0.c.0,b.0.c.1\n3 b.1\n4 -\n'
                      'b: 2\nb.0.c: 2'))
     await route(runner, payload=PAYLOAD, schema_head=HEAD, units=NESTED_UNITS,
                 chunks=NESTED_CHUNKS)
@@ -1994,7 +1994,7 @@ async def test_merged_nested_recount_demotes_the_sub_entries():
     # footprint — the promotion-route shape the anchored map cannot
     # revisit (the chains ride one line, the nested recount's case)
     runner = ScriptedRunner(
-        agent_result('0 a\n1-3 b.0.c.0-1\n4 -\nb: 1\nb.0.c: 2'),
+        agent_result('0 a\n1-3 b.0,b.0.c.0-1\n4 -\nb: 1\nb.0.c: 2'),
         agent_result('b.0.c: 1\n公司甲·工程师'))
     routing = await route(runner, payload=PAYLOAD, schema_head=HEAD, units=NESTED_UNITS,
                           chunks=NESTED_CHUNKS)
@@ -2008,7 +2008,7 @@ async def test_merged_nested_recount_demotes_the_sub_entries():
 
 async def test_merged_nested_recount_zero_strips_chains_and_declaration():
     runner = ScriptedRunner(
-        agent_result('0 a\n1-3 b.0.c.0-1\n4 -\nb: 1\nb.0.c: 2'),
+        agent_result('0 a\n1-3 b.0,b.0.c.0-1\n4 -\nb: 1\nb.0.c: 2'),
         agent_result('b.0.c: 0'))
     routing = await route(runner, payload=PAYLOAD, schema_head=HEAD, units=NESTED_UNITS,
                           chunks=NESTED_CHUNKS)
@@ -2026,7 +2026,7 @@ async def test_merged_nested_recount_cross_parent_quote_is_dropped():
     # 2 with one quote outside the footprint — the in-footprint opening
     # is this parent's sub-entry, the stray is not evidence here
     runner = ScriptedRunner(
-        agent_result('0 a\n1-3 b.0.c.0-1\n4 -\nb: 1\nb.0.c: 2'),
+        agent_result('0 a\n1-3 b.0,b.0.c.0-1\n4 -\nb: 1\nb.0.c: 2'),
         agent_result('b.0.c: 2\n公司甲·工程师\n姓名张三'))
     routing = await route(runner, payload=PAYLOAD, schema_head=HEAD, units=NESTED_UNITS,
                           chunks=NESTED_CHUNKS)
@@ -2041,7 +2041,7 @@ async def test_merged_nested_recount_all_openings_outside_keeps_the_lines():
     # a recount whose openings all miss the footprint named nothing of
     # this parent's — not evidence enough to unmake the map
     runner = ScriptedRunner(
-        agent_result('0 a\n1-3 b.0.c.0-1\n4 -\nb: 1\nb.0.c: 2'),
+        agent_result('0 a\n1-3 b.0,b.0.c.0-1\n4 -\nb: 1\nb.0.c: 2'),
         agent_result('b.0.c: 2\n姓名张三\n无关页脚'))
     routing = await route(runner, payload=PAYLOAD, schema_head=HEAD, units=NESTED_UNITS,
                           chunks=NESTED_CHUNKS)
@@ -2056,7 +2056,7 @@ async def test_separated_nested_chains_draw_no_recount():
     # one chain per line at chunk boundaries is the fine partition —
     # nothing merged, nothing to recount
     runner = ScriptedRunner(
-        agent_result('0 a\n1 b.0.c.0\n2 b.0.c.1\n3 b.1\n4 -\nb: 2\nb.0.c: 2'))
+        agent_result('0 a\n1 b.0,b.0.c.0\n2 b.0.c.1\n3 b.1\n4 -\nb: 2\nb.0.c: 2'))
     routing = await route(runner, payload=PAYLOAD, schema_head=HEAD, units=NESTED_UNITS,
                           chunks=NESTED_CHUNKS)
     assert len(runner.calls) == 1
@@ -2227,7 +2227,7 @@ async def test_undrawn_recount_quoting_the_parent_heading_is_refused():
     assert [(g.item, g.parent, g.chunk_ids) for g in roles] == \
         [(0, 0, [2, 3]), (1, 0, [4, 5])]
     jobs = [g for g in routing.groups if g.unit.path == 'jobs']
-    assert [(g.item, g.chunk_ids) for g in jobs] == [(0, [1, 2, 3, 4, 5])]
+    assert [(g.item, g.chunk_ids) for g in jobs] == [(0, [1])]
 
 
 async def test_undrawn_recount_number_overrides_the_declaration():
@@ -2369,6 +2369,25 @@ def test_map_text_round_trips_through_the_parser():
     assert reparsed == state
 
 
+def test_map_text_round_trips_joint_and_hosted_chains():
+    # the renderer keeps every destination the state carries: a chain
+    # no longer re-adds its parent at parse, so a joint line (parent
+    # and chain sharing a chunk set) and a hosted chain (a chain line
+    # nested in the parent's own run) must both survive the round trip
+    from xtremeparse.router import _codes, _map_text, _parse
+    by_code = _codes(NESTED_UNITS)
+    for text in (
+            '0 a\n1-2 b.0,b.0.c.0-1\n3 b.1\n4 -\nb: 2\nb.0.c: 2',
+            '0 a\n1-3 b.0\n2 b.0.c.0\n3 b.0.c.1\n4 b.1\nb: 2\nb.0.c: 2'):
+        errors, state = _parse(text, by_code, len(NESTED_CHUNKS))
+        assert not errors
+        rendered = _map_text(state, by_code)
+        reparsed_errors, reparsed = _parse(rendered, by_code,
+                                           len(NESTED_CHUNKS))
+        assert not reparsed_errors, rendered
+        assert reparsed == state
+
+
 def test_map_text_round_trips_derived_units():
     from xtremeparse.router import _codes, _map_text, _parse
     text = '0 a\n1 b.0\n2 b.1\n3 -\nb: 2\nc = b @30%'
@@ -2388,7 +2407,7 @@ async def test_merged_nested_recount_upward_count_keeps_the_lines():
     # trimming, so the standing lines stay (measured 2 true stints
     # recounted as 4 on a real multi-stint draw)
     runner = ScriptedRunner(
-        agent_result('0 a\n1-3 b.0.c.0-1\n4 -\nb: 1\nb.0.c: 2'),
+        agent_result('0 a\n1-3 b.0,b.0.c.0-1\n4 -\nb: 1\nb.0.c: 2'),
         agent_result('b.0.c: 3\n公司甲·工程师\n公司甲·经理\n公司乙'))
     routing = await route(runner, payload=PAYLOAD, schema_head=HEAD, units=NESTED_UNITS,
                           chunks=NESTED_CHUNKS)
