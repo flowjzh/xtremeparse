@@ -11,12 +11,14 @@ from xtremeparse.verbatim import VERBATIM_CUE, VERBATIM_KEY
 
 
 SPECIALIST_INSTRUCTIONS = '''You are a structured-extraction specialist. Extract this unit's fields
-from the assigned material below. The full document in the shared
-context provides background; extract only what the unit card asks
-for. For a non-repeating unit, a card field may sit outside the
-assigned slice — take the value the shared document shows for that
-field. Output only the structured data of the output schema stated at
-the end of this message.
+from the assigned material below — it is the source, and the unit card
+names everything this call extracts. The full document in the shared
+context is background: consult it only to complete or locate values
+for what the assigned material carries, never to add entries the
+assigned material does not carry. For a non-repeating unit, a card
+field may sit outside the assigned slice — take the value the shared
+document shows for that field. Output only the structured data of the
+output schema stated at the end of this message.
 
 Unit:
 
