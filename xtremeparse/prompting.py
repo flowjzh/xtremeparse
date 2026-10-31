@@ -7,6 +7,7 @@ import json
 from string import Formatter
 
 from xtremeparse.contracts import JSONSchema
+from xtremeparse.units import OVERRIDE_KEY
 from xtremeparse.verbatim import VERBATIM_CUE, VERBATIM_KEY
 
 
@@ -65,16 +66,17 @@ def overall(schema: JSONSchema) -> str | None:
 
 
 def prompt_schema(node):
-    """The model-facing copy of a schema: the ``x-verbatim`` keyword is
-    dropped — it is an enforcement key, not model vocabulary — and
-    folded into its description as the inline ``@verbatim`` cue. Both
-    planes render the cue: the router's budget clause prices a verbatim
-    copy, and the specialist's output schema carries the copy rule the
-    model reads. The caller's schema is untouched; enforcement still
-    reads the keyword there."""
+    """The model-facing copy of a schema: enforcement keywords are
+    dropped — ``x-verbatim`` folds into its description as the inline
+    ``@verbatim`` cue (both planes render the cue: the router's budget
+    clause prices a verbatim copy, and the specialist's output schema
+    carries the copy rule the model reads), ``x-override`` vanishes
+    without a trace — the overridden field's own departure from a call
+    is the model's only cue. The caller's schema is untouched;
+    enforcement still reads the keywords there."""
     if isinstance(node, dict):
         out = {k: prompt_schema(v) for k, v in node.items()
-               if k != VERBATIM_KEY}
+               if k not in (VERBATIM_KEY, OVERRIDE_KEY)}
         if VERBATIM_KEY in node:
             desc = out.get('description', '')
             if VERBATIM_CUE not in desc:

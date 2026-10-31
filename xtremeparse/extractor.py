@@ -127,7 +127,8 @@ class Extractor:
                 counts.update({values_key(unit, i): n
                                for i, n in per_parent.items()})
             values = values_from_calls(execution.calls)
-            if mismatches := count_mismatches(counts, merge(values)):
+            if mismatches := count_mismatches(counts, merge(values,
+                                                             execution.yields)):
                 # declared vs actual disagree before any correction round
                 # — arbitrate_extraction owns the why. This seam keeps
                 # only the caller-side policy: an unanchored verdict

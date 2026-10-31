@@ -6,13 +6,19 @@ from xtremeparse.paths import split_index
 from xtremeparse.units import MISC
 
 
-def merge(values: dict) -> dict:
+def merge(values: dict, yields: dict = None) -> dict:
     """Assemble unit-path values into one nested dict, order-independent.
     ``$misc`` values scatter to top level; dotted paths nest; sibling
     object and array units at overlapping paths dict-merge; a lifted
     sub-array's ``parent[n].field`` values graft into the parent
-    array's n-th instance; None values stay absent."""
-    data = {}
+    array's n-th instance; None values stay absent. ``yields`` — parent
+    path → {lifted sibling: fields that yield to it} — is the
+    ``x-override`` contract's merge half: an item whose sibling claim
+    landed truthy loses those fields, the render contract's own
+    resolution of the both-truthy quadrant (an empty claim means the
+    item holds none of the sibling, so the fallback field keeps its
+    content and renders)."""
+    data, claims = {}, []
     for path, value in values.items():
         if value is None:
             continue
@@ -24,6 +30,19 @@ def merge(values: dict) -> dict:
         for part in parts[:-1]:
             node = _open(node, part)
         _graft(node, parts[-1], value)
+        if len(parts) > 1 and (split := split_index(parts[-2])) \
+                and (drops := (yields or {}).get(
+                    '.'.join(parts[:-2] + [split[0]]), {}).get(parts[-1])):
+            claims.append((parts[:-2], split[0], split[1], parts[-1], drops))
+    for parents, key, i, field, drops in claims:
+        node = data
+        for part in parents:
+            node = _open(node, part)
+        entries = node.get(key) or []
+        item = entries[i] if i < len(entries) else None
+        if isinstance(item, dict) and item.get(field):
+            for drop in drops:
+                item.pop(drop, None)
     return data
 
 

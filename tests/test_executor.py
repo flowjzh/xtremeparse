@@ -199,6 +199,43 @@ def test_merge_is_order_independent_for_sibling_units():
         == {'career': {'title': '工程师', 'jobs': [{'company': '腾讯'}]}}
 
 
+YIELDS = {'work': {'sub_experiences': frozenset({'whole'})}}
+
+
+def test_a_truthy_lifted_claim_blanks_the_field_that_yields_to_it():
+    values = {'work': [{'company': '甲', 'whole': {'title': '重复'}}],
+              'work[0].sub_experiences': [{'company': 's'}]}
+    data = merge(values, YIELDS)
+    assert data['work'][0]['company'] == '甲'
+    assert 'whole' not in data['work'][0]
+    assert data['work'][0]['sub_experiences'] == [{'company': 's'}]
+
+
+def test_the_blanking_is_order_independent_and_item_scoped():
+    parent_only = merge({'work': [{'company': '甲', 'whole': {'title': 't'}}, {'company': '乙'}],
+                         'work[0].sub_experiences': [{'company': 's'}]}, YIELDS)
+    child_first = merge({'work[0].sub_experiences': [{'company': 's'}],
+                         'work': [{'company': '甲', 'whole': {'title': 't'}}, {'company': '乙'}]},
+                        YIELDS)
+    expected = {'work': [{'company': '甲', 'sub_experiences': [{'company': 's'}]},
+                         {'company': '乙'}]}
+    assert parent_only == child_first == expected
+
+
+def test_an_empty_lifted_claim_keeps_the_field_that_yields_to_it():
+    # the claim says the item holds no sub-entries — the fallback field
+    # is then the content's only carrier and renders
+    values = {'work': [{'company': '甲', 'whole': {'title': '独段'}}],
+              'work[0].sub_experiences': []}
+    assert merge(values, YIELDS)['work'][0]['whole'] == {'title': '独段'}
+
+
+def test_without_a_yields_map_merge_stays_pure():
+    values = {'work': [{'company': '甲', 'whole': {'title': 't'}}],
+              'work[0].sub_experiences': [{'company': 's'}]}
+    assert merge(values)['work'][0]['whole'] == {'title': 't'}
+
+
 async def test_duplicate_item_rows_coalesce_into_one_call():
     routing_ = routing(
         group('career.jobs', item=0, text='腾讯前半', ids=(1,)),
@@ -418,3 +455,119 @@ def test_per_item_batch_keeps_exact_repeats():
                 batch=(0, 1), result=agent_result([{'company': '甲'}] * 3))
     assert values_from_calls([call]) == {
         'career.jobs': [{'company': '甲'}] * 3}
+
+
+# --- x-override: a field yields once its sibling is lifted for the item ---
+
+OVERRIDE_SCHEMA = {
+    'type': 'object',
+    'properties': {
+        'work': {'type': 'array', 'description': '工作经历',
+                 'items': {'type': 'object', 'properties': {
+                     'company': {'type': 'string', 'description': '公司'},
+                     'whole': {'type': ['object', 'null'],
+                               'description': '整体经历', 'x-override': 'sub_experiences',
+                               'properties': {
+                                   'title': {'type': 'string', 'description': '职位'},
+                               }},
+                     'sub_experiences': {'type': 'array', 'description': '分段经历',
+                                         'items': {'type': 'object', 'properties': {
+                                             'title': {'type': 'string',
+                                                       'description': '职位'},
+                                         }}},
+                 }}},
+    },
+}
+OVERRIDE_UNITS = {u.path: u for u in decompose(OVERRIDE_SCHEMA)}
+
+
+def override_group(path, item=None, text='x', ids=(0,), parent=None):
+    return Group(OVERRIDE_UNITS[path], item, list(ids), text, parent=parent)
+
+
+def _parent_calls(runner):
+    """The work-item calls: array-shaped ones carry the parent item's own
+    company property, the lifted sub-array's do not."""
+    return [c for c in runner.calls
+            if 'company' in ((c['result_schema'].get('items')
+                              or c['result_schema']).get('properties') or {})]
+
+
+async def test_overridden_field_leaves_calls_whose_item_is_lifted():
+    routing_ = routing(
+        override_group('work', item=0, text='甲', ids=(1,)),
+        override_group('work', item=1, text='乙', ids=(2,)),
+        override_group('work.sub_experiences', item=0, text='s1', ids=(1,), parent=0),
+    )
+    runner = ProbeRunner()
+    execution = await execute(runner, routing_, payload='p',
+                              scheduler=TaskScheduler(2))
+    assert execution.yields == YIELDS
+    assert execution.values['work[0].sub_experiences'] == [{'company': 's1'}]
+    data = merge(execution.values, execution.yields)
+    assert 'whole' not in data['work'][0]
+    assert data['work'][1]['whole']
+    parents = _parent_calls(runner)
+    schema = {c['scope']: c['result_schema']['properties'] for c in parents}
+    assert 'whole' not in schema['甲']
+    assert 'whole' in schema['乙']
+    cards = {c['scope']: c['instructions'] for c in parents}
+    assert '整体经历' not in cards['甲']
+    assert '整体经历' in cards['乙']
+
+
+async def test_overridden_field_survives_when_a_covered_item_is_unlifted():
+    # co-chunked items force a whole call; item 1 reads no sub of its
+    # own, so the field stays — it is that item's only carrier
+    routing_ = routing(
+        override_group('work', item=0, text='甲', ids=(3,)),
+        override_group('work', item=1, text='乙', ids=(3,)),
+        override_group('work.sub_experiences', item=0, text='s1', ids=(1,), parent=0),
+    )
+    runner = ProbeRunner()
+    await execute(runner, routing_, payload='p', scheduler=TaskScheduler(2))
+    [call] = [c for c in _parent_calls(runner)
+              if c['result_schema'].get('type') == 'array']
+    assert 'whole' in call['result_schema']['items']['properties']
+    assert '整体经历' in call['instructions']
+
+
+async def test_overridden_field_leaves_a_whole_call_when_every_item_is_lifted():
+    routing_ = routing(
+        override_group('work', item=0, text='甲', ids=(3,)),
+        override_group('work', item=1, text='乙', ids=(3,)),
+        override_group('work.sub_experiences', item=0, text='s1', ids=(1,), parent=0),
+        override_group('work.sub_experiences', item=1, text='s2', ids=(2,), parent=1),
+    )
+    runner = ProbeRunner()
+    await execute(runner, routing_, payload='p', scheduler=TaskScheduler(2))
+    [call] = [c for c in _parent_calls(runner)
+              if c['result_schema'].get('type') == 'array']
+    assert 'whole' not in call['result_schema']['items']['properties']
+    assert '整体经历' not in call['instructions']
+
+
+async def test_a_ranged_call_strips_when_its_span_is_fully_lifted():
+    # the block's span is its coverage: both items of the span read the
+    # sibling on their own, so the fallback leaves the ranged call too
+    ranged = Group(OVERRIDE_UNITS['work'], None, [4, 5], '甲\n乙', items=(0, 1))
+    routing_ = routing(
+        ranged,
+        override_group('work.sub_experiences', item=0, text='s1', ids=(4,), parent=0),
+        override_group('work.sub_experiences', item=1, text='s2', ids=(5,), parent=1),
+    )
+    runner = ProbeRunner()
+    await execute(runner, routing_, payload='p', scheduler=TaskScheduler(2))
+    [call] = [c for c in _parent_calls(runner)
+              if c['result_schema'].get('type') == 'array']
+    assert 'whole' not in call['result_schema']['items']['properties']
+    assert '整体经历' not in call['instructions']
+
+
+def test_prompt_schema_drops_the_override_keyword():
+    from xtremeparse.prompting import prompt_schema
+    node = prompt_schema(OVERRIDE_SCHEMA)
+    assert 'x-override' not in str(node)
+    assert node['properties']['work']['items']['properties']['whole'] \
+        == {'type': ['object', 'null'], 'description': '整体经历',
+            'properties': {'title': {'type': 'string', 'description': '职位'}}}

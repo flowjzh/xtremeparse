@@ -7,7 +7,7 @@ without descriptions degrade to name-only cards.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Literal
 
 from xtremeparse.contracts import JSONSchema
@@ -15,6 +15,10 @@ from xtremeparse.schema import type_set
 
 MISC = '$misc'  # sentinel path for the top-level scalar group; a real
 # object/array property named '$misc' would collide
+
+OVERRIDE_KEY = 'x-override'  # the schema extension keyword naming the
+# sibling a field yields to at render (docxcast's @override directive);
+# a call whose items all read that sibling on their own drops the field
 
 
 @dataclass(frozen=True)
@@ -80,15 +84,25 @@ def _card_header(path: str, kind: str, prop: JSONSchema) -> str:
     return f'[{path} | {kind}] {_card_text(prop.get("description", ""))}'.strip()
 
 
+def _without(schema: JSONSchema, names: set[str]) -> JSONSchema:
+    """``schema`` re-wrapped without the named properties, its
+    ``required`` list kept in sync — the one home of the
+    properties-minus rule the lift and the call-time strip share."""
+    props = schema.get('properties') or {}
+    rest = {k: v for k, v in props.items() if k not in names}
+    out = {**schema, 'properties': rest}
+    if 'required' in schema:
+        out['required'] = [k for k in schema['required'] if k in rest]
+    return out
+
+
 def _object_units(path: str, prop: JSONSchema) -> list[Unit]:
     props = prop.get('properties') or {}
     arrays = {k for k, v in props.items() if 'array' in type_set(v)}
     rest = {k: v for k, v in props.items() if k not in arrays}
     units = []
     if rest:
-        sub = {**prop, 'properties': rest}
-        if 'required' in prop:
-            sub['required'] = [k for k in prop['required'] if k in rest]
+        sub = _without(prop, arrays)
         header = _card_header(path, 'object', prop)
         units.append(Unit(path, 'object', sub, f'{header}\n  {_fields_card(rest)}'))
     return units + [u for k in arrays for u in _array_units(f'{path}.{k}', props[k])]
@@ -108,9 +122,7 @@ def _array_units(path: str, prop: JSONSchema) -> list[Unit]:
     if not nested:
         return [_array_unit(path, prop)]
     rest = {k: v for k, v in props.items() if k not in nested}
-    sub = {**items, 'properties': rest}
-    if 'required' in items:
-        sub['required'] = [k for k in items['required'] if k in rest]
+    sub = _without(items, nested)
     unit = Unit(path, 'array', sub, _array_card(path, prop, sub))
     return [unit, *(_array_unit(f'{path}.{k}', v, parent=path)
                     for k, v in nested.items())]
@@ -131,6 +143,37 @@ def _array_card(path: str, prop: JSONSchema, items: JSONSchema) -> str:
 
 def _fields_card(props: dict) -> str:
     return ' · '.join(_field_card(name, prop) for name, prop in props.items())
+
+
+def stripped_unit(unit: Unit, names: set[str]) -> Unit:
+    """The call-time variant of a unit whose overridden fields yield:
+    ``sub_schema`` re-wrapped without the named properties (the leaf
+    dicts stay shared — consumers wrap, never mutate), the card's field
+    listing re-rendered to match. The original card ends in exactly
+    ``_fields_card`` of the original properties, so the listing is cut
+    by that string and the remainder — header plus its ``per item:``
+    lead-in — is kept verbatim."""
+    props = unit.sub_schema.get('properties') or {}
+    head = unit.card.rpartition(_fields_card(props))[0]
+    sub = _without(unit.sub_schema, names)
+    card = head + fields if (fields := _fields_card(sub.get('properties')
+                                                     or {})) else head.rstrip()
+    return replace(unit, sub_schema=sub, card=card)
+
+
+def unit_yields(unit: Unit, lifted: set[str]) -> dict[str, frozenset[str]]:
+    """``{lifted sibling: fields that yield to it}`` over one array
+    unit's item schema — the merge-plane half of the ``x-override``
+    contract: the declaring fields are the sibling's fallback rendering,
+    so once that sibling's own reads land on an item they must not
+    survive beside them. ``lifted`` names the item's array properties
+    the decomposition raised into units of their own — the lift strips
+    them from the item schema, so the target is invisible without it."""
+    out = {}
+    for k, v in (unit.sub_schema.get('properties') or {}).items():
+        if (sib := v.get(OVERRIDE_KEY)) in lifted:
+            out[sib] = out.get(sib, frozenset()) | {k}
+    return out
 
 
 def _field_card(name: str, prop: JSONSchema) -> str:

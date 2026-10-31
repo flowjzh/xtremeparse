@@ -28,8 +28,8 @@ from typing import Optional
 from xtremeparse.contracts import AgentResult, AgentRunner, Validator
 from xtremeparse.evalkit import pair_at
 from xtremeparse.paths import resolve, resolve_list
-from xtremeparse.executor import Call, Execution, dispatch_specialist, values_from_calls
-from xtremeparse.merge import merge
+from xtremeparse.executor import (Call, Execution, dispatch_specialist,
+                                  execution_data)
 from xtremeparse.patching import (PATCH_ARRAY, PATCH_NO_FIX, apply_patch,
                                   is_no_fix, is_patch)
 from xtremeparse.prompting import value_chars
@@ -103,7 +103,7 @@ async def correct(runner: AgentRunner, execution: Execution, *, validator: Valid
     round ran with — a correction round continues that call's
     conversation history."""
     calls = execution.calls
-    data = merge(values_from_calls(calls))
+    data = execution_data(execution)
     issues = list(validator(data) or [])
     rounds, seen, full_form, no_fix = [], {}, set(), {}
     for _ in range(max_rounds):
@@ -164,7 +164,7 @@ async def correct(runner: AgentRunner, execution: Execution, *, validator: Valid
             else:  # protocol broke: forget the baseline, re-ask in full
                 full_form.add(id(call))
                 seen.pop(id(call), None)
-        data = merge(values_from_calls(calls))
+        data = execution_data(execution)
         issues = list(validator(data) or [])
     return data, issues, rounds
 

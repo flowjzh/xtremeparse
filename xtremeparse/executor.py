@@ -16,11 +16,12 @@ from typing import Literal, Optional
 
 from xtremeparse.contracts import AgentRunner, AgentResult, BATCH_BUDGET_CAP, JSONSchema
 from xtremeparse.evalkit import pair_at
+from xtremeparse.merge import merge
 from xtremeparse.prompting import (SPECIALIST_INSTRUCTIONS, WHOLE_ARRAY_ADDENDUM,
                                    estimate_tokens, prompt_schema)
 from xtremeparse.router import Routing, items_of
 from xtremeparse.scheduling import TaskScheduler
-from xtremeparse.units import Unit
+from xtremeparse.units import Unit, stripped_unit, unit_yields
 
 Strategy = Literal['whole', 'per-item', 'ranged']
 
@@ -101,6 +102,9 @@ def values_key(unit: Unit, parent: Optional[int]) -> str:
 class Execution:
     values: dict
     calls: list
+    yields: dict | None = None  # parent path -> {lifted sibling: fields
+    # that yield to it} — the x-override map every merge of these values
+    # needs, so a truthy sibling claim blanks the overridden field
 
 
 async def execute(runner: AgentRunner, routing: Routing, *, payload: str,
@@ -114,7 +118,17 @@ async def execute(runner: AgentRunner, routing: Routing, *, payload: str,
     call's own partial schema rides per call beside its unit card, so
     the full document schema's bytes are never re-sent here."""
     calls, tasks = [], []
+    yields: dict = {}
+    lifted_fields: dict[str, set[str]] = {}
+    covered: dict[str, set[int]] = {}
+    for g in routing.groups:
+        if g.unit.parent:
+            lifted_fields.setdefault(g.unit.parent, set()).add(g.unit.field)
+            covered.setdefault(g.unit.path, set()).add(g.parent)
     for unit, groups in _by_unit(routing.groups):
+        unit_yields_map = unit_yields(unit, lifted_fields.get(unit.path) or ())
+        if unit_yields_map:
+            yields[unit.path] = unit_yields_map
         # a lifted sub-array fans out per parent instance: each parent's
         # sub-entries are one array's worth of material, strategy and
         # batching scoped to it — one parent's whole never carries
@@ -146,7 +160,9 @@ async def execute(runner: AgentRunner, routing: Routing, *, payload: str,
                                [i for g in unique for i in g.chunk_ids], None,
                                _arranged(budgets, unit, None))]
             for strat, item, scope, ids, batch, budget in specs:
-                call = Call(unit, item, strat, ids, scope, budget=budget,
+                call = Call(_unit_for_call(unit, rows, unit_yields_map,
+                                           covered, item, batch),
+                            item, strat, ids, scope, budget=budget,
                             batch=batch, parent=parent)
                 calls.append(call)
                 tasks.append(await dispatch_specialist(
@@ -154,7 +170,7 @@ async def execute(runner: AgentRunner, routing: Routing, *, payload: str,
                     specialist_instructions=specialist_instructions))
     for call, result in zip(calls, await asyncio.gather(*tasks)):
         call.result = result
-    return Execution(values_from_calls(calls), calls)
+    return Execution(values_from_calls(calls), calls, yields)
 
 
 def _first_occurrences(items: list) -> list:
@@ -187,6 +203,13 @@ def values_from_calls(calls: list) -> dict:
         else:
             values[path] = data
     return values
+
+
+def execution_data(execution: Execution) -> dict:
+    """The execution's current merged data — every merged view of an
+    execution applies its yields map, so a truthy sibling claim blanks
+    the overridden field in every stage's view."""
+    return merge(values_from_calls(execution.calls), execution.yields)
 
 
 async def dispatch_specialist(runner: AgentRunner, call: Call, *, payload: str,
@@ -301,6 +324,36 @@ def _strategy(unit: Unit, groups: list, unit_strategy: dict) -> Strategy:
     if len(ids) != len(set(ids)):
         return 'whole'  # co-chunked items: one call must split the instances
     return 'whole' if len({g.item for g in groups}) <= 1 else 'per-item'
+
+
+def _unit_for_call(unit: Unit, rows: list, yields_entry: dict[str, frozenset[str]],
+                   covered: dict[str, set[int]], item: Optional[int],
+                   batch: tuple) -> Unit:
+    """The call's unit: a field the schema marks ``x-override`` yields to
+    the sibling it names — once the lift gives that sibling its own
+    reads for every item this call extracts, the field is that item's
+    fallback rendering of the same content and only re-extracts (and
+    re-teaches) what the sibling owns, so it leaves the contract and the
+    card alike. Calls whose coverage is partial keep the field — a whole
+    run over unlifted items holds the field as that item's only
+    carrier; a ranged block's span is its coverage, so it strips when
+    the span is fully lifted."""
+    items = (set(batch) if batch else {item} if item is not None
+             else _routed_items(rows))
+    if not (items and yields_entry):
+        return unit
+    drops = set()
+    for sib, names in yields_entry.items():
+        if items <= covered.get(f'{unit.path}.{sib}', ()):
+            drops |= names
+    return stripped_unit(unit, drops) if drops else unit
+
+
+def _routed_items(rows: list) -> set:
+    """The items a whole-shaped call extracts from this partition — its
+    plain groups; a ranged block in the partition carries its own span
+    as the batch, so its items are not this call's."""
+    return {g.item for g in rows if not g.items}
 
 
 def _by_unit(groups) -> list:

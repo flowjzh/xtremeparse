@@ -216,6 +216,36 @@ then enforces the contract without host wiring:
   the specialist holds the document in its transcript, so a round can
   re-copy.
 
+## The @override contract
+
+A docxcast Tag ending in `@override=<sibling>` (a bare sibling name in
+the same scope — the grammar has no path addressing) declares the
+field's value wins the render: when it is truthy, the sibling's block
+does not render (docxcast's SYNTAX.md owns that half). docxcast
+strips the directive off the Tag at derive and emits the JSON Schema
+extension keyword `x-override`, the sibling's name; hand-written
+schemas set the keyword directly. The pipeline enforces the inverse
+duty where the lift exists — the declaring field is the sibling's
+fallback rendering, so once the sibling's own reads land the fallback
+must not fill beside it. A keyword naming anything but a lifted
+array-under-array sibling arms nothing: the enforcement addresses
+per-item claims, which only exist where the lift does:
+
+- **Prompt plane**: every model-facing schema copy drops the keyword
+  without a cue — a lifted sibling's item calls drop the overridden
+  field from the contract and the unit card outright (per call, only
+  when every item that call extracts reads the sibling on its own; a
+  call spanning an unlifted item keeps the field, that item's only
+  carrier). The departure is the model's only cue — no text teaches
+  the sibling's name.
+- **Merge plane**: `merge` takes the map (`parent path → {lifted
+  sibling: fields that yield to it}`) and re-enacts the render rule on
+  the data: an item whose sibling claim landed truthy loses the
+  overridden fields, an empty claim keeps them (the item holds none of
+  the sibling, so the fallback renders). A shared schema that had to
+  keep the field for unlifted items — or an off-schema emission —
+  cannot leak a both-truthy item out of the merge.
+
 ## Repair rounds
 
 Violations come back as bounded repair rounds, and a reply decodes in
