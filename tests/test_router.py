@@ -9,9 +9,10 @@ from xtremeparse.router import (NONE, RECOUNT_PLACEHOLDERS, ROUTE_PLACEHOLDERS,
                                 Claim, RouterError, Group, _CHECK_PRECEDING,
                                 _INSTRUCTIONS, _MIXED_CHECK_PRECEDING,
                                 _SHARED_CHECK_PRECEDING, _anchors, _codes,
-                                _diff_text, _name_list, _overlay_text,
-                                _recount_legend, _resplit, _shared_hints,
-                                _shared_spans, parse_claims, route)
+                                _diff_text, _map_errors, _name_list,
+                                _overlay_text, _parse, _recount_legend,
+                                _resplit, _shared_hints, _shared_spans,
+                                parse_claims, route)
 from xtremeparse.units import MISC, decompose
 from xtremeparse.prompting import schema_head
 from tests.helpers import ScriptedRunner, agent_result
@@ -1564,9 +1565,9 @@ async def test_replayed_count_mismatch_passes_through():
 
 async def test_replayed_nested_mismatch_passes_through():
     runner = ScriptedRunner(
-        agent_result('0 a\n1-2 b.0.c.0\n3 b.1\n4 -\nb: 2\nb.0.c: 2'),
-        agent_result('-0 a\n-1-2 b.0.c.0\n-3 b.1\n-4 -\n-\n-b: 2\n'
-                     '-b.0.c: 2\n+0 a\n+1-2 b.0.c.0\n+3 b.1\n+4 -\n+\n'
+        agent_result('0 a\n1-2 b.0,b.0.c.0\n3 b.1\n4 -\nb: 2\nb.0.c: 2'),
+        agent_result('-0 a\n-1-2 b.0,b.0.c.0\n-3 b.1\n-4 -\n-\n-b: 2\n'
+                     '-b.0.c: 2\n+0 a\n+1-2 b.0,b.0.c.0\n+3 b.1\n+4 -\n+\n'
                      '+b: 2\n+b.0.c: 2'))
     routing = await route(runner, payload=PAYLOAD, schema_head=HEAD, units=NESTED_UNITS,
                           chunks=NESTED_CHUNKS)
@@ -1803,7 +1804,130 @@ async def test_shared_resplit_reads_chain_destinations_through():
                       by_code, NESTED_CHUNKS)
     assert merged is not None
     assert merged.counts == {'b': 2}
-    assert merged.segments[1][2] == (('c', 0, 0), ('b', 1, None))
+    assert merged.nested == {('c', 1): 1}
+    assert merged.segments[1][2] == (('c', 0, 1), ('b', 1, None))
+
+
+async def test_resplit_repoints_the_joint_chain_the_recount_moves():
+    # a joint chain is one chunk's claim: when the recount moves the
+    # chunk to another top-level instance, the chain moves with it, its
+    # parent pointer following — a stale pointer would extract the
+    # chunk's sub-entry text into the instance it left behind
+    from xtremeparse.router import _State
+    by_code = {c: u for c, u in zip('abcd', NESTED_UNITS)}
+    segments = [(0, 0, (('b', 0, None),)),
+                (1, 1, (('b', 0, None), ('c', 0, 0)))]
+    state = _State(segments=segments, counts={'b': 1}, present={},
+                   nested={('c', 0): 1}, derived={}, budgets={})
+    merged = _resplit(state, 'b',
+                      Claim(2, quotes=('姓名张三', '公司甲·工程师')),
+                      by_code, NESTED_CHUNKS)
+    assert merged is not None
+    assert merged.nested == {('c', 1): 1}
+    assert [(s[0], s[1], s[2]) for s in merged.segments] == [
+        (0, 0, (('b', 0, None),)),
+        (1, 1, (('c', 0, 1), ('b', 1, None))),
+        (2, 4, ())]
+
+
+async def test_quote_spanning_chunks_anchors_at_its_opening_prefix():
+    # a quote spanning the company header and the first stint's opening
+    # — written with the listing's line break as a literal \n so it
+    # stays on one reply line — has no chunk holding it whole; its
+    # longest qualifying opening prefix marks the chunk it opens on
+    zh = ['公司甲', '职位甲·2024至今', '职责甲', '职位乙·2022至2024']
+    assert _anchors(['公司甲\\n职位甲·2024至今', '职位乙·2022至2024'],
+                    [0, 1, 2, 3], zh) == [0, 3]
+    en = ['## SIEMENS MOBILITY Singapore', '*Bid Manager* Jan 2024 - Present',
+          '- closed 3 proposals', '*Procurement PM* Jul 2022 - Jan 2024']
+    assert _anchors(['SIEMENS MOBILITY Singapore\\n*Bid Manager* Jan 2024'
+                     ' - Present'], [0, 1, 2, 3], en) == [0]
+
+
+async def test_unmarked_loose_quote_is_no_evidence():
+    # a quote that misses whole-chunk seek and carries no spanning
+    # marker anchors nothing: a chunk that merely mentions the opening
+    # text — a summary, a repeated company name — is a coincidence, not
+    # an opening, and the recount stays refused for the diff path
+    zh = ['工作职责：公司甲与职位甲·2024至今一览', '公司甲', '职位甲·2024至今']
+    assert _anchors(['公司甲 职位甲·2024至今'], [0, 1, 2], zh) is None
+    en = ['Summary: Siemens Mobility Singapore bid led by Bid Manager Jan 2024',
+          'Siemens Mobility Singapore — Bid Manager Jan 2024 - Present']
+    assert _anchors(['Siemens Mobility Singapore Bid Manager Jan 2024'
+                     ' - Present'], [0, 1], en) is None
+
+
+async def test_edge_marker_folds_clean_into_the_seek():
+    # the fold runs before norm: a marker at the quote's edge (or a
+    # doubled one) leaves no stray blank to defeat the seek
+    zh = ['公司甲', '职位甲·2024至今', '职责甲']
+    assert _anchors(['公司甲\\n'], [0, 1, 2], zh) == [0]
+    assert _anchors(['公司甲\\n\\n职位甲·2024至今'], [0, 1, 2], zh) == [0]
+
+
+async def test_chain_only_parent_instance_is_named():
+    # the entry's own fields (company, dates) have chunks of their own;
+    # a parent call exists only where a plain destination does — a map
+    # that claims the entry solely through its chains loses those
+    # fields, so validation names the plain line the entry still needs
+    runner = ScriptedRunner(
+        agent_result('0 a\n1-2 b.0.c.0\n3 b.1\n4 -\nb: 2\nb.0.c: 1'),
+        agent_result('0 a\n1-2 b.0,b.0.c.0\n3 b.1\n4 -\nb: 2\nb.0.c: 1'))
+    await route(runner, payload=PAYLOAD, schema_head=HEAD,
+                units=NESTED_UNITS, chunks=NESTED_CHUNKS)
+    assert any('no line claims b.0 itself' in f.message
+               for f in runner.calls[1]['feedback'])
+
+
+async def test_chain_only_remedy_defers_to_the_existence_error():
+    # a parent instance beyond the declared count gets the existence
+    # error alone: drawing it a plain line cannot fix an instance the
+    # map does not declare — the two remedies together would whipsaw
+    # the repair
+    by_code = {c: u for c, u in zip('abcd', NESTED_UNITS)}
+    errors, st = _parse('0 a\n1-2 b.5.c.0\n3 -\nb: 2\nb.5.c: 1', by_code, 5)
+    messages = _map_errors(st, by_code, 5)
+    assert not any('no line claims b.5 itself' in m for m in messages)
+    assert any('the parent instance does not exist' in m for m in messages)
+
+
+async def test_chain_only_remedy_names_the_undeclared_count():
+    # with the parent's count undeclared, drawing the plain line alone
+    # would only move the error to used-but-undeclared: the remedy
+    # names the declaration the same state still needs
+    by_code = {c: u for c, u in zip('abcd', NESTED_UNITS)}
+    errors, _st = _parse('0 a\n1-2 b.0.c.0\n3-4 -\nb.0.c: 1', by_code, 5)
+    assert any("declare b's count" in e for e in errors)
+
+
+async def test_resplit_dissolves_chain_lines_the_recount_unfolds():
+    # the chain-fed recount unfolds the parent's merge into per-stint
+    # instances: a separate chain line's claim dissolves with the merge
+    # and its chunks ride the instance the recount gave them to — never
+    # destinationless, the sub-entry declaration going with the claim
+    from xtremeparse.router import _State
+    by_code = {c: u for c, u in zip('abcd', NESTED_UNITS)}
+    chunks = ['公司甲', '职位甲·2024至今', '职责甲一', '职责甲二',
+              '职位乙·2022至2024', '职位丙·2021至2022', '页脚']
+    segments = [(0, 3, (('b', 0, None),)),
+                (4, 4, (('c', 0, 0),)),
+                (5, 5, (('c', 1, 0),)),
+                (6, 6, ((NONE, None, None),))]
+    state = _State(segments=segments, counts={'b': 1}, present={},
+                   nested={('c', 0): 2}, derived={}, budgets={})
+    merged = _resplit(state, 'b',
+                      Claim(3, quotes=('公司甲\\n职位甲·2024至今',
+                                       '职位乙·2022至2024',
+                                       '职位丙·2021至2022')),
+                      by_code, chunks)
+    assert merged is not None
+    assert merged.counts == {'b': 3}
+    assert merged.nested == {}
+    assert [(s[0], s[1], s[2]) for s in merged.segments] == [
+        (0, 3, (('b', 0, None),)),
+        (4, 4, (('b', 1, None),)),
+        (5, 5, (('b', 2, None),)),
+        (6, 6, ((NONE, None, None),))]
 
 
 async def test_parent_run_and_chain_on_same_range_lines_merge():
@@ -1949,14 +2073,14 @@ async def test_per_sub_entry_declarations_fold_into_the_parent_count():
     # tolerated, and folded: with no explicit parent declaration, the
     # highest numbered sub-entry is the count (map-first)
     routing = await route_nested(
-        '0 a\n1 b.0.c.0\n2 b.0.c.1\n3 b.1\n4 -\nb: 2\n'
+        '0 a\n1 b.0,b.0.c.0\n2 b.0,b.0.c.1\n3 b.1\n4 -\nb: 2\n'
         'b.0.c.0: 1 @90%\nb.0.c.1: 1 @90%')
     assert routing.raw['nested_counts'] == {'jobs.roles': {0: 2}}
 
 
 async def test_per_sub_entry_declarations_yield_to_the_explicit_count():
     routing = await route_nested(
-        '0 a\n1 b.0.c.0\n2 b.0.c.1\n3 b.1\n4 -\nb: 2\n'
+        '0 a\n1 b.0,b.0.c.0\n2 b.0,b.0.c.1\n3 b.1\n4 -\nb: 2\n'
         'b.0.c: 2\nb.0.c.0: 1')
     assert routing.raw['nested_counts'] == {'jobs.roles': {0: 2}}
 

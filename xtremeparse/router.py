@@ -1355,15 +1355,70 @@ _LISTING_ID = re.compile(r'^[<\[（(【〔]\s*(\d+)\s*[>\]）)】〕]\s*')
 
 def _seek_forms(quote: str) -> list[str]:
     """The quote's seek texts, as written first — normed, with wrapping
-    quotation marks stripped. The recount is asked for verbatim
-    openings and sometimes answers with the listing's ``[id] `` prefix
-    the chunk text does not carry; the stripped form is the fallback,
-    never the first form: a quote that legitimately opens with a
-    bracketed number must be sought as written before its decoration
-    is removed."""
-    written = norm(quote).strip(_QUOTE_WRAP)
+    quotation marks stripped and the listing's line break escaped as a
+    literal ``\\n`` folded back to a space (a quote spanning the break
+    between two instances' texts is written escaped to stay on one
+    line). The recount is asked for verbatim openings and sometimes
+    answers with the listing's ``[id] `` prefix the chunk text does not
+    carry; the stripped form is the fallback, never the first form: a
+    quote that legitimately opens with a bracketed number must be
+    sought as written before its decoration is removed."""
+    written = norm(quote.replace('\\n', ' ')).strip(_QUOTE_WRAP)
     bare = _LISTING_ID.sub('', written)
     return [written] if not bare or bare == written else [written, bare]
+
+
+QUOTE_ANCHOR_MIN = 12  # characters — below it a prefix anchors noise
+
+
+def _cjk(text: str) -> int:
+    return sum('一' <= ch <= '鿿' or '㐀' <= ch <= '䶿' or ch == '〇'
+               for ch in text)
+
+
+def _prefixes(form: str) -> list[str]:
+    """The seek form's opening prefixes, longest first — a quote no
+    chunk holds whole (it spans a chunk boundary) still opens ON one of
+    them. A prefix qualifies by length, or by carrying two CJK
+    characters (a Chinese name's two characters outrank twelve latin
+    ones); the floor keeps a stub from anchoring the wrong chunk."""
+    words = form.split()
+    return [p for k in range(len(words) - 1, 0, -1)
+            if (p := ' '.join(words[:k]))
+            and (len(p) >= QUOTE_ANCHOR_MIN or _cjk(p) >= 2)]
+
+
+def _quote_anchor(quote: str, domain, norms: dict,
+                  taken=frozenset()) -> int | None:
+    """The first chunk of ``domain`` holding the quote — ``norms`` the
+    domain's normalized texts, precomputed once (one norm per chunk,
+    not one per quote); ``taken`` excludes chunks an earlier quote of
+    the same set anchored. The recount quotes the chunk listing
+    verbatim, so content seek is the one reliable coordinate: index
+    arithmetic echoes the prompt's own examples. Every seek form is
+    tried whole before any prefix: the stripped form stays the
+    fallback, never beaten by a prefix of the written one. Only a
+    quote written spanning the listing's break (the literal ``\\n``
+    marker) falls back to its longest qualifying opening prefix, the
+    chunk it opens on — an unmarked quote that misses is no evidence,
+    and None refuses it rather than anchor a coincidence."""
+    def seek(text):
+        return next((c for c in domain
+                     if c not in taken and text in norms[c]), None)
+
+    forms = _seek_forms(quote)
+    for form in forms:
+        if not form:
+            continue
+        if (hit := seek(form)) is not None:
+            return hit
+    if '\\n' not in norm(quote):
+        return None
+    for form in forms:
+        for prefix in _prefixes(form):
+            if (hit := seek(prefix)) is not None:
+                return hit
+    return None
 
 
 def _anchors(quotes: list, domain: list, chunks: list[str]) -> list | None:
@@ -1372,17 +1427,17 @@ def _anchors(quotes: list, domain: list, chunks: list[str]) -> list | None:
     quote. A quote that misses (or lands where another already
     anchored: two instances sharing one chunk) fails the whole set —
     the shared-run recount's own rule, the one coordinate the model
-    quotes reliably. None on any miss; the caller sorts before
-    partitioning (quotes may not arrive in document order)."""
+    quotes reliably; a quote written spanning the listing's break
+    anchors instead at its opening prefix. None on any miss; the
+    caller sorts before partitioning (quotes may not arrive in
+    document order)."""
     norms = {c: norm(chunks[c]) for c in domain}
-    hits = []
+    hits, taken = [], set()
     for q in quotes:
-        hit = next((c for form in _seek_forms(q) if form
-                    for c in domain if c not in hits and form in norms[c]),
-                   None)
-        if hit is None:
+        if (hit := _quote_anchor(q, domain, norms, taken=taken)) is None:
             return None
         hits.append(hit)
+        taken.add(hit)
     return hits
 
 
@@ -1394,12 +1449,21 @@ def _resplit(state, code: str, claim: Claim, by_code: dict,
     footprint partitions at those anchors — quotes may not arrive in
     document order, so anchors sort rather than assume a direction; a
     quote whose chunk is already anchored reads as
-    two instances sharing one chunk and fails the seek. The rebuilt
+    two instances sharing one chunk and fails the seek — unless it is
+    written spanning the listing's break, in which case its opening
+    prefix anchors the chunk it opens on. The rebuilt
     parent draws its own chunks plus each instance's opening anchor;
     the rest of the chain-fed footprint stays the sub-entries'
-    material. Other units' destinations on the same chunks are
-    preserved. Adoption is code's; any unusable piece returns None for
-    the caller's fallback. Returns the rebuilt state."""
+    material. A chain whose declared parent instance the recount moved
+    its chunks away from dissolves (a chain riding its parent's own
+    line moves with the chunk instead, its parent pointer following) —
+    the merge was the
+    mis-parenting being corrected, and the chunk rides the instance
+    the recount gave it to, the sub-entry's declaration going with the
+    claim. Other
+    units' destinations on the same chunks are preserved. Adoption is
+    code's; any unusable piece returns None for the caller's fallback.
+    Returns the rebuilt state."""
     if not (count := claim.total) or count != len(claim.quotes):
         return None
     cover = _cover(state.segments)
@@ -1432,31 +1496,46 @@ def _resplit(state, code: str, claim: Claim, by_code: dict,
         io = item_of.get(c)
         # a nested entry's separate chain line survives only on chunks
         # that stay under its declared parent instance; a chunk the
-        # recount moved to another top-level instance drops the chain
-        # (the merge was the mis-parenting being corrected)
-        stripped = tuple(
-            dd for dd in dests
-            if dd[0] != code
-            and not (dd[2] is not None and dd[0] in subs
-                     and dd[2] != io
-                     and c not in joint.get((dd[0], dd[2]), ())))
+        # recount moved to another top-level instance strands the chain
+        # (the merge was the mis-parenting being corrected) — the chunk
+        # rides its new instance plain, never destinationless. A chain
+        # riding its parent's own line is one chunk's joint claim: it
+        # moves with the chunk, its parent pointer following — the
+        # sub-entry text on the chunk belongs to the instance the
+        # recount gave the chunk to
+        kept, dropped = [], False
+        for dd in dests:
+            if dd[0] == code and dd[2] is None:
+                continue  # the parent's own plain dest, re-added below
+            if dd[2] is not None and dd[0] in subs and dd[2] != io:
+                if c in joint.get((dd[0], dd[2]), ()):
+                    kept.append((dd[0], dd[1], io))
+                else:
+                    dropped = True  # stranded: the claim dissolves
+                continue
+            kept.append(dd)
+        stripped = tuple(kept)
         # the parent draws its own chunks and each instance's opening
-        # anchor; the rest of the chain-fed footprint stays the sub-
-        # entries' material
+        # anchor; a stranded chunk rides its new instance with them;
+        # the rest of the chain-fed footprint stays the sub-entries'
+        # material
         per_chunk[c] = (stripped + ((code, io, None),)
-                        if c in own or c in anchors else stripped)
+                        if c in own or c in anchors or dropped
+                        else stripped)
         for dd in stripped:
             if dd[2] is not None and dd[0] in subs:
                 used.setdefault((dd[0], dd[2]), set()).add(dd[1])
     # the surviving chains are the nested declarations: a dropped chain
-    # takes its count with it (the count described the merge)
+    # takes its count with it (the count described the merge), and a
+    # joint chain's re-pointed parent names the declaration that counts it
     nested = {}
     for key, declared in state.nested.items():
         unit = by_code.get(key[0])
         if unit is None or unit.parent != parent_path:
             nested[key] = declared
-        elif key in used:
-            nested[key] = len(used[key])
+    for (sub, parent), items in used.items():
+        if by_code[sub].parent == parent_path:
+            nested[(sub, parent)] = len(items)
     st = replace(state, counts={**state.counts, code: count},
                  nested=nested)
     rebuilt = _resegment(per_chunk, st, by_code, len(chunks))
@@ -1739,16 +1818,6 @@ def _budget_suffix(b) -> str:
         return ''
     text = _budget_text(b)
     return '@' + ','.join(text) if isinstance(text, list) else f'@{text}'
-
-
-def _quote_anchor(quote: str, domain: list, norms: dict) -> int | None:
-    """The first chunk of ``domain`` holding the quote — ``norms`` the
-    domain's normalized texts, precomputed once (one norm per chunk,
-    not one per quote). The recount quotes the chunk listing verbatim,
-    so content seek is the one reliable coordinate: index arithmetic
-    echoes the prompt's own examples."""
-    return next((c for form in _seek_forms(quote) if form
-                 for c in domain if form in norms[c]), None)
 
 
 def _map_text(state, by_code) -> str:
@@ -3034,18 +3103,42 @@ def _nested_errors(code: str, unit: Unit, segments, counts, nested,
     """Per-parent consistency for one lifted sub-array: the chain's
     parent instance must exist under the parent unit's declared count,
     and every parent naming a count sees its sub-items 0..n-1 — the
-    declared-vs-used contract one level down. A parent holding no
-    sub-entries declares nothing, so a missing declaration is only an
-    error where the map already claims sub-entries."""
+    declared-vs-used contract one level down. A parent instance the
+    chains address is also claimed by a plain destination — the
+    entry's own fields have chunks of their own to ride, and a parent
+    call exists only where a plain destination does; a parent holding
+    no sub-entries declares nothing, so a missing declaration is only
+    an error where the map already claims sub-entries."""
     pcode = next(c for c, u in by_code.items() if u.path == unit.parent)
-    used = {}
+    used, plain = {}, set()
     for _, _, dests in segments:
         for dd in dests:
             if dd[0] == code:
                 for i in items_of(dd[1]):
                     used.setdefault(dd[2], set()).add(i)
+            elif dd[0] == pcode and dd[2] is None:
+                plain.update(items_of(dd[1]))
     declared = {p: v for (c, p), v in nested.items() if c == code}
     errors = []
+    have = counts.get(pcode)
+    if by_code[pcode].parent is None:
+        # a top-level parent instance owns plain destinations; a lifted
+        # parent is itself chain-addressed and skips this check
+        for p in sorted(set(used) - plain):
+            if isinstance(have, int) and p >= have:
+                continue  # the existence error names it — a plain line
+                # cannot fix an instance the map does not declare
+            token = _dest_token(pcode, p, None, by_code)
+            undeclared = ('' if isinstance(have, int) else
+                          f', and declare {pcode}\'s count — it is '
+                          f'undeclared ("{pcode}: <n>")')
+            errors.append(
+                f'{code}: chained under {token} but no line claims '
+                f'{token} itself — the entry\'s own fields need their '
+                f'own chunks: draw {token} a plain line over them '
+                f'("4-6 {token}"), or share one chunk with its first '
+                f'sub-entry ("8 {token},'
+                f'{_dest_token(code, 0, p, by_code)}"){undeclared}')
     for p in sorted(used.keys() | declared.keys()):
         chain = _chain_label(code, p, by_code)
         if code in (lenient or ()) and p in declared:
@@ -3094,7 +3187,7 @@ def _nested_errors(code: str, unit: Unit, segments, counts, nested,
                 f'everything else stays; '
                 f'keep the declaration: it is correct when the document '
                 f'holds the sub-entries the lines should cover')
-    if isinstance(have := counts.get(pcode), int):
+    if isinstance(have, int):
         for p in sorted(p for p in used if p >= have):
             errors.append(
                 f'{code}: chained under {pcode}.{p} but {pcode} declares '

@@ -127,7 +127,12 @@ Violations are fed back as repair errors (bounded rounds, then
 - the item set each unit uses in the map equals `0..declared-1` — and,
   per parent instance, the sub-item set of each nested unit equals
   `0..declared-1` under that parent; a chain's parent instance must
-  exist under the parent unit's declared count
+  exist under the parent unit's declared count, and a parent instance
+  the chains address must also be claimed by a plain destination —
+  the entry's own fields ride chunks of their own, on a line that may
+  also carry the first sub-entry's chain (a parent call exists only
+  where a plain destination does, so a chain-only entry renders
+  field-less)
 - every repeating unit is declared (a missing declaration reads as 0,
   which triggers a separate fresh-conversation recount before it is
   trusted); every parent instance claiming a nested unit's sub-entries
