@@ -21,7 +21,7 @@ from xtremeparse.prompting import (SPECIALIST_INSTRUCTIONS, WHOLE_ARRAY_ADDENDUM
                                    estimate_tokens, prompt_schema)
 from xtremeparse.router import Routing, items_of
 from xtremeparse.scheduling import TaskScheduler
-from xtremeparse.units import Unit, stripped_unit, unit_yields
+from xtremeparse.units import Unit, stripped_unit, unit_yields, values_key
 
 Strategy = Literal['whole', 'per-item', 'ranged']
 
@@ -86,16 +86,6 @@ class Call:
         """The merged-data path the call's result fills — the unit path,
         or the parent instance's field a lifted sub-array fills."""
         return values_key(self.unit, self.parent)
-
-
-def values_key(unit: Unit, parent: Optional[int]) -> str:
-    """The one spelling of a call's merged-data address: the unit path,
-    or ``parent[n].field`` for a lifted sub-array under one parent
-    instance (values_from_calls keys by it, corrections routes by it,
-    the extractor flattens declared counts into it)."""
-    if parent is None:
-        return unit.path
-    return f'{unit.parent}[{parent}].{unit.field}'
 
 
 @dataclass

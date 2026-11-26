@@ -8,7 +8,7 @@ without descriptions degrade to name-only cards.
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
-from typing import Literal
+from typing import Literal, Optional
 
 from xtremeparse.contracts import JSONSchema
 from xtremeparse.schema import type_set
@@ -52,6 +52,16 @@ class Unit:
         """The parent's property this unit fills — the path's last
         segment, which for a nested unit is the parent item's field."""
         return self.path.rsplit('.', 1)[-1]
+
+
+def values_key(unit: Unit, parent: Optional[int]) -> str:
+    """The one spelling of a call's merged-data address: the unit path,
+    or ``parent[n].field`` for a lifted sub-array under one parent
+    instance (values_from_calls keys by it, corrections routes by it,
+    the extractor flattens declared counts into it)."""
+    if parent is None:
+        return unit.path
+    return f'{unit.parent}[{parent}].{unit.field}'
 
 
 def decompose(schema: JSONSchema) -> list[Unit]:

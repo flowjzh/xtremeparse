@@ -7,6 +7,8 @@ from xtremeflow.scheduler import TaskScheduler
 
 from xtremeparse import Extractor, ExtractionResult
 from xtremeparse.arbitration import CHECK_DESCRIPTION
+from xtremeparse.merge import _phantom, drop_phantom_items
+from xtremeparse.patching import is_patch_round
 from xtremeparse.prompting import estimate_tokens, schema_head
 from xtremeparse.units import decompose
 from tests.helpers import (FakeIssue, ScriptedRunner, agent_result,
@@ -522,3 +524,73 @@ async def test_unmarked_fields_escape_the_verbatim_check():
     result = await Extractor(VerbatimRunner()).extract(
         VERBATIM_TEXT, unmarked, lambda d: [])
     assert result.trace.corrections == []  # the paraphrase survives
+
+
+REQUIRED_JOBS_SCHEMA = {
+    'type': 'object',
+    'properties': {
+        'basic_info': SCHEMA['properties']['basic_info'],
+        'career': {'type': 'object', 'properties': {
+            'jobs': {'type': 'array', 'description': '经历', 'items': {
+                'type': 'object', 'properties': {
+                    'company': {'type': 'string', 'description': '公司'}},
+                'required': ['company']}}},
+        },
+        'created': SCHEMA['properties']['created'],
+    },
+}
+
+
+class PhantomRunner(PipelineRunner):
+    """The second job extracts all-null and its repair round declares
+    no fix — the entry does not exist in the material."""
+
+    async def run(self, **kwargs):
+        schema = plain_schema(kwargs['result_schema'])
+        if (props := schema.get('properties')) and 'company' in props \
+                and '阿里' in kwargs['scope']:
+            if is_patch_round(kwargs['result_schema']):  # the correction round
+                return agent_result([])
+            return agent_result({'company': None})
+        return await super().run(**kwargs)
+
+
+async def test_no_fix_entry_drops_and_counts_align():
+    result = await extractor(PhantomRunner()).extract(TEXT, REQUIRED_JOBS_SCHEMA, validator)
+    assert result.data['career']['jobs'] == [{'company': '腾讯'}]
+    assert result.issues == []  # the dropped index's issues never ride out
+    assert result.trace.drops == [{'path': 'career.jobs', 'index': 1}]
+
+
+def test_drop_phantom_items_rekeys_sub_scopes():
+    schema = {'type': 'object', 'properties': {'work': {'type': 'array', 'items': {
+        'type': 'object', 'properties': {
+            'company': {'type': 'string'},
+            'subs': {'type': 'array', 'items': {'type': 'object', 'properties': {
+                'name': {'type': 'string'}}}}}}}}}
+    units = decompose(schema)
+    data = {'work': [
+        {'company': None, 'subs': [{'name': None}]},  # phantom parent
+        {'company': 'B', 'subs': [{'name': 'x'}]},
+        {'company': 'C', 'subs': []},
+    ]}
+    counts = {'work': 3, 'work[0].subs': 1, 'work[2].subs': 0}
+    drops = drop_phantom_items(data, counts, units)
+    assert drops == [{'path': 'work', 'index': 0}]
+    assert data['work'] == [{'company': 'B', 'subs': [{'name': 'x'}]},
+                            {'company': 'C', 'subs': []}]
+    assert counts == {'work': 2, 'work[1].subs': 0}  # the gone scope left, [2] re-keyed
+
+    data = {'work': [{'company': 'B', 'subs': [{'name': None}, {'name': 'x'}]}]}
+    counts = {'work': 1, 'work[0].subs': 2}
+    drops = drop_phantom_items(data, counts, units)
+    assert drops == [{'path': 'work[0].subs', 'index': 0}]
+    assert data['work'] == [{'company': 'B', 'subs': [{'name': 'x'}]}]
+    assert counts == {'work': 1, 'work[0].subs': 1}
+
+
+def test_phantom_predicate_keeps_partial_items():
+    assert _phantom(None) and _phantom('  ') and _phantom({'a': None, 'b': []})
+    assert not _phantom({'a': None, 'b': 'x'})
+    assert not _phantom(False)  # a checkbox state is content
+    assert not _phantom(0)

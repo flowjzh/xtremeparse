@@ -114,6 +114,7 @@ class Trace:
     groups: list = field(default_factory=list)
     corrections: list = field(default_factory=list)
     recounts: list = field(default_factory=list)
+    drops: list = field(default_factory=list)
     prompts: dict = field(default_factory=dict)
 
 

@@ -2,8 +2,13 @@
 
 from __future__ import annotations
 
-from xtremeparse.paths import split_index
-from xtremeparse.units import MISC
+import re
+
+from xtremeparse.paths import resolve_list, split_index
+from xtremeparse.units import MISC, values_key
+
+_SCOPED = re.compile(r'\[(\d+)\](\..+)?$')  # the '[k]' or '[k].field'
+# remainder after a counts key's unit path
 
 
 def merge(values: dict, yields: dict = None) -> dict:
@@ -44,6 +49,73 @@ def merge(values: dict, yields: dict = None) -> dict:
             for drop in drops:
                 item.pop(drop, None)
     return data
+
+
+def drop_phantom_items(data: dict, counts: dict, units: list) -> list:
+    """Remove repeat items that carry no content — every leaf None or
+    blank — and re-point ``counts`` (both mutated) at the shortened
+    arrays, so a declared instance that came back empty reads one
+    instance fewer, not a shortfall. The rule is unconditional on how
+    the empty item arose: an all-empty entry is never worth rendering,
+    and ``trace.drops`` records what left. Returns ``[{'path', 'index'}]``
+    — ``index`` the item's position before the drop, later siblings
+    re-indexing up one. Units process in decompose order: a parent array
+    drops before its lifted sub-arrays read the compacted indexing."""
+    drops = []
+    for unit in units:
+        if unit.kind != 'array':
+            continue
+        if unit.parent is None:
+            drops += _drop(resolve_list(data, unit.path), unit.path, counts)
+            continue
+        for i, parent in enumerate(resolve_list(data, unit.parent)):
+            if isinstance(parent, dict):
+                drops += _drop(resolve_list(parent, unit.field),
+                               values_key(unit, i), counts)
+    return drops
+
+
+def _drop(entries: list, path: str, counts: dict) -> list:
+    phantom = [i for i, e in enumerate(entries) if _phantom(e)]
+    if not phantom:
+        return []
+    for i in reversed(phantom):
+        del entries[i]
+    if path in counts:
+        counts[path] = len(entries)
+    _rekey_scopes(counts, path, phantom)
+    return [{'path': path, 'index': i} for i in phantom]
+
+
+def _rekey_scopes(counts: dict, path: str, removed: list) -> None:
+    """Counts scoped ``path[k]…`` under a parent array that dropped
+    instances: the dropped scopes go, the later ones shift down. Rebuilt
+    aside and merged back — a rekey in place would let a shifted entry
+    overwrite a not-yet-shifted one."""
+    moved = {}
+    for key in list(counts):
+        if not key.startswith(f'{path}[') \
+                or not (m := _SCOPED.match(key[len(path):])):
+            continue
+        i, suffix = int(m[1]), m[2]
+        value = counts.pop(key)
+        if i not in removed:
+            moved[f'{path}[{i - sum(r < i for r in removed)}]{suffix}'] = value
+    counts.update(moved)
+
+
+def _phantom(value) -> bool:
+    """Every leaf carries nothing — None, blank, an all-empty structure.
+    A bool or number is content: False is a legitimate checkbox state."""
+    if value is None:
+        return True
+    if isinstance(value, str):
+        return not value.strip()
+    if isinstance(value, dict):
+        return all(_phantom(v) for v in value.values())
+    if isinstance(value, list):
+        return all(_phantom(v) for v in value)
+    return False
 
 
 def _open(node: dict, part: str) -> dict:

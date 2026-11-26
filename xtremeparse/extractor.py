@@ -12,15 +12,15 @@ from xtremeparse.chunking import MAX_CHARS, chunk_text, normalize_newlines
 from xtremeparse.contracts import AgentRunner, BATCH_BUDGET_CAP, ExtractionResult, Trace, Validator
 from xtremeparse.corrections import (MAX_ROUNDS, correct, count_issues,
                                      count_mismatches)
-from xtremeparse.executor import execute, values_from_calls, values_key
-from xtremeparse.merge import merge
+from xtremeparse.executor import execute, values_from_calls
+from xtremeparse.merge import drop_phantom_items, merge
 from xtremeparse.prompting import (SPECIALIST_PLACEHOLDERS, check_placeholders,
                                    estimate_tokens, overall, provenance,
                                    router_tokens, schema_head)
 from xtremeparse.router import (RECOUNT_PLACEHOLDERS, ROUTE_PLACEHOLDERS,
                                 route)
 from xtremeparse.scheduling import TaskScheduler
-from xtremeparse.units import decompose
+from xtremeparse.units import decompose, values_key
 from xtremeparse.verbatim import (normalize_text, verbatim_budgets,
                                   verbatim_issues, verbatim_paths)
 
@@ -83,7 +83,7 @@ class Extractor:
         units = decompose(schema)
         marked = bool(verbatim_paths(schema))
         routing = execution = None
-        recounts, disputed = [], set()
+        recounts, disputed, drops = [], set(), []
         if chunks and units:
             # the router slice rides its own (stronger-index) model and
             # quota when one is configured — every router-plane call
@@ -163,13 +163,22 @@ class Extractor:
                                      'actual': actual, 'revised': revised,
                                      'answer': raw})
             source_norm = normalize_text(text) if marked else ''
+
+            def composite(d):
+                return (list(validator(d) or [])
+                        + (verbatim_issues(schema, d, source_norm) if marked else [])
+                        + count_issues(counts, d, soft=disputed))
+
             data, issues, rounds = await correct(
                 self.runner, execution, payload=text,
                 scheduler=self.scheduler, max_rounds=self.max_rounds,
                 specialist_instructions=self.specialist_instructions,
-                validator=lambda d: list(validator(d) or [])
-                + (verbatim_issues(schema, d, source_norm) if marked else [])
-                + count_issues(counts, d, soft=disputed))
+                validator=composite)
+            # a no-fix declaration's all-empty item is the pipeline's own
+            # "no such entry" verdict — re-read the validators against the
+            # shortened arrays so the dropped indexes' issues never ride out
+            if drops := drop_phantom_items(data, counts, units):
+                issues = composite(data)
         else:  # nothing routable: skip the agent fleet entirely
             data, issues, rounds = {}, list(validator({}) or []), []
         trace = Trace(chunks=chunks,
@@ -182,5 +191,6 @@ class Extractor:
                       corrections=[{'unit_path': r.unit_path, 'item': r.item,
                                     'issue_paths': r.issue_paths} for r in rounds],
                       recounts=recounts,
+                      drops=drops,
                       prompts=dict(self.prompts))
         return ExtractionResult(data, issues, trace)
